@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 import umap.umap_ as umap
@@ -13,11 +14,12 @@ def run_combat_and_visualize(
     merged_batch_path: str,
     output_dir: str = "combat_output",
     random_state: int = 42,
-    show_plots: bool = True,
+    show_plots: bool = False,  # Set to False to avoid interactive display
     save_plots: bool = True,
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Run ComBat batch correction with NaN handling (metabolomics: half min positive value).
+    Saves all plots to output_dir instead of showing them interactively.
     """
     # --- Setup ---
     output_dir = Path(output_dir)
@@ -56,11 +58,16 @@ def run_combat_and_visualize(
     if missing_samples:
         raise ValueError(f"Missing batch assignments for: {missing_samples}")
     batch_vector = np.array([batch_dict[col] for col in data.columns], dtype=int)
-    batch_vector_reordered = np.array([batch_dict[col] for col in data.T.index], dtype=int)
 
     # --- Run ComBat ---
     print("Running ComBat...")
-    combat_result = pycombat_norm(data, batch_vector, covar_mod=np.zeros((len(batch_vector), 0)), ref_batch=None, na_cov_action="na.omit")
+    combat_result = pycombat_norm(
+        data,
+        batch_vector,
+        covar_mod=np.zeros((len(batch_vector), 0)),
+        ref_batch=None,
+        na_cov_action="na.omit"
+    )
     corrected_data = pd.DataFrame(combat_result, index=data.index, columns=data.columns)
     corrected_data.to_csv(output_dir / "combat_corrected_data.csv")
     print(f"✓ Saved to {output_dir}/combat_corrected_data.csv")
@@ -82,7 +89,7 @@ def run_combat_and_visualize(
     }
 
     # --- Generate plots ---
-    if show_plots or save_plots:
+    if save_plots:
         for label, df in [("Before ComBat", data), ("After ComBat", corrected_data)]:
             # Ensure no NaN values for visualization
             if df.isna().any().any():
@@ -97,8 +104,7 @@ def run_combat_and_visualize(
             fig, ax = plt.subplots(figsize=(10, 8))
             sns.scatterplot(x=emb[:, 0], y=emb[:, 1], hue=batch_vector, palette='viridis', ax=ax)
             ax.set_title(f"{label} (UMAP)")
-            if save_plots: fig.savefig(output_dir / f"{suffix}_umap.png", dpi=300, bbox_inches='tight')
-            if show_plots: plt.show()
+            fig.savefig(output_dir / f"{suffix}_umap.png", dpi=300, bbox_inches='tight')
             plt.close(fig)
 
             # PCA
@@ -106,8 +112,7 @@ def run_combat_and_visualize(
             fig, ax = plt.subplots(figsize=(10, 8))
             sns.scatterplot(x=emb[:, 0], y=emb[:, 1], hue=batch_vector, palette='viridis', ax=ax)
             ax.set_title(f"{label} (PCA)")
-            if save_plots: fig.savefig(output_dir / f"{suffix}_pca.png", dpi=300, bbox_inches='tight')
-            if show_plots: plt.show()
+            fig.savefig(output_dir / f"{suffix}_pca.png", dpi=300, bbox_inches='tight')
             plt.close(fig)
 
             # Boxplot
@@ -117,8 +122,44 @@ def run_combat_and_visualize(
             ax.set_xlabel('Batch')
             ax.set_ylabel('Mean Intensity per Sample')
             ax.set_xticklabels(['Batch 1', 'Batch 2'])
-            if save_plots: fig.savefig(output_dir / f"{suffix}_boxplot.png", dpi=300, bbox_inches='tight')
-            if show_plots: plt.show()
+            fig.savefig(output_dir / f"{suffix}_boxplot.png", dpi=300, bbox_inches='tight')
             plt.close(fig)
+
+            # RSD for QC groups
+            qc_groups = {
+                "QC3": [col for col in df.columns if "QC3" in col],
+                "QC4": [col for col in df.columns if "QC4" in col],
+                "blauw": [col for col in df.columns if "blauw" in col],
+            }
+
+            for group_name, group_samples in qc_groups.items():
+                if not group_samples:
+                    print(f"No samples found for group: {group_name}")
+                    continue
+
+                group_data = df[group_samples]
+                group_means = group_data.mean(axis=1)
+                group_stds = group_data.std(axis=1)
+                rsd = (group_stds / group_means) * 100
+
+                # Print RSD summary
+                print(f"\n--- {group_name} ({label}) ---")
+                print(f"Median RSD: {rsd.median():.2f}%")
+                print(f"Mean RSD: {rsd.mean():.2f}%")
+                print(f"Features with RSD > 20%: {(rsd > 20).sum()} ({(rsd > 20).mean() * 100:.1f}%)")
+                print(f"Features with RSD > 15%: {(rsd > 15).sum()} ({(rsd > 15).mean() * 100:.1f}%)")
+
+                # Plot and save RSD distribution
+                plt.figure(figsize=(8, 4))
+                sns.histplot(rsd, bins=30, kde=True)
+                plt.axvline(15, color='red', linestyle='--', label='RSD = 15%')
+                plt.axvline(20, color='orange', linestyle='--', label='RSD = 20%')
+                plt.title(f"RSD Distribution for {group_name} ({label})")
+                plt.xlabel("RSD (%)")
+                plt.ylabel("Number of Features")
+                plt.legend()
+                plt.grid(True)
+                plt.savefig(output_dir / f"{suffix}_{group_name}_rsd_distribution.png", dpi=300, bbox_inches='tight')
+                plt.close()
 
     return corrected_data, metrics

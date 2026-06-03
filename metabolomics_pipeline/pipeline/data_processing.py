@@ -7,7 +7,7 @@ import csv
 from .injection_order import get_injection_order
 
 # --- Constants ---
-INTENSITY_THRESHOLD_DEFAULT = 5000
+INTENSITY_THRESHOLD_DEFAULT = 10000
 QC_RSD_THRESHOLD = 20.0  # %
 QC_INTENSITY_QUANTILE = 0.25  # 25th percentile
 BIO_MISSING_THRESHOLD = 0.2  # 20%
@@ -232,9 +232,6 @@ def process_metabolomics_data(
             continue
         sample_data = df[cols].copy().replace('', np.nan).astype(float)
 
-        # Apply median normalization to the sample data
-        #sample_data = normalize_by_median(sample_data, cols)
-
         # ONLY apply intensity threshold to NON-QC samples
         if base_id not in qc_samples:
             sample_data = sample_data.mask(sample_data <= intensity_threshold, np.nan)
@@ -247,7 +244,7 @@ def process_metabolomics_data(
         else:
             transformed_df[base_id] = sample_data.iloc[:, 0]
 
-    print(f"✓ Transformed and median-normalized {len(transformed_df)} features\n")
+    print(f"✓ Transformed {len(transformed_df)} features\n")
 
     # --- STEP 4: QUALITY CONTROL FILTERING ---
     print("[STEP 4] Applying quality control filters...")

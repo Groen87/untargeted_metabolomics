@@ -5,43 +5,6 @@ from typing import Tuple, Optional
 import pandas as pd
 from collections import defaultdict
 
-def run_ralps_correction(
-    ralps_input_dir: str,
-    ralps_script_path: Optional[Path] = None,
-) -> pd.DataFrame:
-    """
-    Run RALPS using the config file in ralps_input_dir.
-    - Reads `out_path` from config.csv to locate `normalized.csv`.
-    - Returns the corrected DataFrame.
-    - Raises FileNotFoundError if output is missing.
-    """
-    ralps_input_dir = Path(ralps_input_dir).resolve()
-    config_path = ralps_input_dir / "config.csv"
-
-    if ralps_script_path is None:
-        ralps_script_path = Path(__file__).parent.parent / "RALPS" / "src" / "ralps.py"
-
-    print("Running RALPS normalization...")
-    command = ["python", str(ralps_script_path), "-n", str(config_path)]
-    print("Command:", " ".join(command))
-    result = subprocess.run(command, check=False, capture_output=True, text=True)
-    if result.returncode != 0:
-        print("RALPS stderr:", result.stderr)
-        raise RuntimeError(f"RALPS failed with exit code {result.returncode}")
-    if result.stdout:
-        print("RALPS stdout:", result.stdout)
-
-    config_df = pd.read_csv(config_path, index_col=0)
-    ralps_output_dir = Path(config_df.loc["out_path", "values"]).resolve()
-    corrected_path = ralps_output_dir / "normalized.csv"
-
-    if not corrected_path.exists():
-        all_files = list(ralps_output_dir.rglob("*"))
-        print(f"Files in {ralps_output_dir}: {all_files}")
-        raise FileNotFoundError(f"RALPS output 'normalized.csv' not found in {ralps_output_dir}")
-
-    return pd.read_csv(corrected_path, index_col=0)
-
 def parse_feature(feature_name: str) -> Tuple[str, float, str]:
     """
     Parse a feature name into (base_name, RT, digit).
@@ -60,39 +23,38 @@ def parse_feature(feature_name: str) -> Tuple[str, float, str]:
         base, rt = name_part, 0.0
     return base, rt, digit
 
-def merge_batches_for_ralps(
+def merge_batches_for_combat(
     drift_corrected_file_batch1: str,
     drift_corrected_file_batch2: str,
     batch_file_batch1: str,
     batch_file_batch2: str,
-    ralps_input_dir: str = "output",
-    ralps_output_dir: Optional[str] = None,
+    combat_input_dir: str = "output",
+    combat_output_dir: Optional[str] = None,
     batch1_label: str = "current",
     batch2_label: str = "reference",
-    rt_threshold: float = 0.05,
-    ralps_script_path: Optional[Path] = None,
+    rt_threshold: float = 0.02,
+    combat_script_path: Optional[Path] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Merge two PQ-normalized batches for RALPS batch correction.
+    Merge two PQ-normalized batches for Combat batch correction.
     Steps:
     1. Loads and merges features with matching base names and RTs.
     2. Removes all sample columns containing 'expQC' (case-insensitive).
     3. Saves batch1-only features to a separate CSV.
     4. Removes ALL features present in only one batch (batch1-only or batch2-only).
     5. Ensures sample names match between data and batch info.
-    6. Generates RALPS config file.
     Returns:
         Tuple of (merged_data, merged_batch) DataFrames.
     """
     # --- Setup directories ---
-    ralps_input_dir = Path(ralps_input_dir).resolve()
-    ralps_input_dir.mkdir(parents=True, exist_ok=True)
+    combat_input_dir = Path(combat_input_dir).resolve()
+    combat_input_dir.mkdir(parents=True, exist_ok=True)
 
-    if ralps_output_dir is None:
-        ralps_output_dir = str(ralps_input_dir / "ralps_corrected")
+    if combat_output_dir is None:
+        combat_output_dir = combat_input_dir / "combat_corrected"
     else:
-        ralps_output_dir = Path(ralps_output_dir).resolve()
-    ralps_output_dir.mkdir(parents=True, exist_ok=True)
+        combat_output_dir = Path(combat_output_dir).resolve()
+    combat_output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Load data ---
     df1 = pd.read_csv(drift_corrected_file_batch1, index_col='Feature')
@@ -186,7 +148,7 @@ def merge_batches_for_ralps(
     if batch1_only_mask.any():
         # Save ONLY the batch1-only features (rows) with ALL columns (samples)
         batch1_only_features = merged_data.loc[batch1_only_mask]
-        batch1_only_path = ralps_input_dir / "current_batch_only_features.csv"
+        batch1_only_path = combat_input_dir / "current_batch_only_features.csv"
         batch1_only_features.to_csv(batch1_only_path)
         print(f"✓ Batch1-only features (n={batch1_only_mask.sum()}) saved to {batch1_only_path}")
 
@@ -210,27 +172,12 @@ def merge_batches_for_ralps(
     merged_data = merged_data[common_samples]
     merged_batch = merged_batch[merged_batch['sample_id'].isin(common_samples)]
 
-    # --- Save outputs for RALPS ---
-    merged_data_path = ralps_input_dir / "merged_data_for_ralps.csv"
-    merged_batch_path = ralps_input_dir / "merged_batch_for_ralps.csv"
+    # --- Save outputs for COMBAT ---
+    merged_data_path = combat_input_dir / "merged_data_for_combat.csv"
+    merged_batch_path = combat_input_dir / "merged_batch_for_combat.csv"
     merged_data.to_csv(merged_data_path)
     merged_batch.to_csv(merged_batch_path, index=False)
 
-    # --- Generate RALPS config ---
-    template_path = Path(__file__).parent.parent / "config" / "ralps_template.csv"
-    config_path = ralps_input_dir / "config.csv"
-    with open(template_path, 'r') as f_in, open(config_path, 'w') as f_out:
-        for line in f_in:
-            if line.startswith("data_path,"):
-                f_out.write(f"data_path,{merged_data_path.resolve()}\n")
-            elif line.startswith("info_path,"):
-                f_out.write(f"info_path,{merged_batch_path.resolve()}\n")
-            elif line.startswith("out_path,"):
-                f_out.write(f"out_path,{ralps_output_dir.resolve()}\n")
-            else:
-                f_out.write(line)
-
     print(f"✓ Merged data saved to {merged_data_path}")
     print(f"✓ Batch metadata saved to {merged_batch_path}")
-    print(f"✓ RALPS config saved to {config_path}")
     return merged_data, merged_batch

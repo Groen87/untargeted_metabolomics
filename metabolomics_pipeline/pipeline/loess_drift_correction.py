@@ -163,6 +163,6 @@ def correct_drift_with_loess(
         print("⚠️ Warning: No high-QC features found for LOESS correction")
 
     # Save corrected data (ALL features, including low-QC ones)
-    corrected_df.to_csv(f"{output_dir}/drift_corrected_data.csv")
+    corrected_df.to_csv(f"{output_dir}/loess_corrected.csv")
 
     return corrected_df

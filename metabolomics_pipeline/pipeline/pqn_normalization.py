@@ -1,7 +1,6 @@
 import os
 import logging
 from typing import Optional
-
 import numpy as np
 import pandas as pd
 
@@ -16,14 +15,15 @@ def pqn_normalize(
     - Uses 'expQC' samples (case-insensitive) as reference.
     - Normalizes ONLY sample columns (excludes metadata like 'Area:', 'PQF:', etc.).
     - Preserves relative scale and rare metabolites (ideal for IMD workflows).
+    - Keeps 'Feature' as the first column in the output.
     """
     os.makedirs(output_dir, exist_ok=True)
 
     if corrected_df.empty:
         raise ValueError("Input DataFrame is empty")
 
-    # Exclude metadata columns (e.g., 'Area:', 'PQF:', 'Gap Status:', etc.)
-    METADATA_PREFIXES = ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status', 'Feature']
+    # Exclude metadata columns (e.g., 'Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status')
+    METADATA_PREFIXES = ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status']
     sample_cols = [
         col for col in corrected_df.columns
         if col != 'Feature' and not any(col.startswith(prefix) for prefix in METADATA_PREFIXES)
@@ -60,10 +60,10 @@ def pqn_normalize(
     # Apply PQN: divide each sample by its scaling factor
     normalized_df = corrected_df[sample_cols].div(scaling_factors, axis=1)
 
-    # Reattach Feature index as column
-    normalized_df['Feature'] = corrected_df.index
+    # Reattach Feature index as the FIRST column
+    normalized_df.insert(0, 'Feature', corrected_df.index)
 
     # Save normalized data
-    normalized_df.to_csv(f"{output_dir}/pqn_normalized_data.csv", index=False)
+    normalized_df.to_csv(f"{output_dir}/pqn_normalized.csv", index=False)
 
     return normalized_df

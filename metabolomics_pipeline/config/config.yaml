@@ -1,7 +1,7 @@
 # Metabolomics Pipeline Configuration
 
 # File paths (relative to project root or absolute)
-batch_folder: "MZ25_38"
+batch_folder: "MZ25_36"
 reference_batch: "MZ26_10"
 intensity_threshold: 10000
 qc_pattern: "expQC"
