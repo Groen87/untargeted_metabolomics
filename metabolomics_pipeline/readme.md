@@ -4,7 +4,7 @@ A Python pipeline for processing metabolomics data, including:
 - Data transformation and cleaning
 - LOESS drift correction for QC samples
 - PQN normalization
-- Batch correction through ComBat
+- ComBat batch correction
 
 ## 🚀 Installation
 
