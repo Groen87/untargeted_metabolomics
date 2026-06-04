@@ -176,6 +176,7 @@ def run_combat_and_visualize(
             data=data,
             corrected_data=corrected_data,
             batch_vector=batch_vector,
+            batch_dict=batch_dict,
             output_dir=output_dir,
             random_state=random_state,
             rsd_xaxis_max=rsd_xaxis_max,
@@ -188,6 +189,7 @@ def _generate_diagnostic_plots(
     data: pd.DataFrame,
     corrected_data: pd.DataFrame,
     batch_vector: np.ndarray,
+    batch_dict: Dict[str, int],
     output_dir: Path,
     random_state: int = 42,
     rsd_xaxis_max: float = 50.0,
@@ -204,6 +206,7 @@ def _generate_diagnostic_plots(
         data: Original data before correction (features x samples)
         corrected_data: Data after ComBat correction (features x samples)
         batch_vector: Array of batch labels for each sample
+        batch_dict: Dictionary mapping sample names to batch labels
         output_dir: Directory to save plots
         random_state: Random seed for UMAP reproducibility
         rsd_xaxis_max: Maximum RSD value for x-axis (default: 50.0)
