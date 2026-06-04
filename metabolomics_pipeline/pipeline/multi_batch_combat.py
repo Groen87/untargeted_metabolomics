@@ -25,8 +25,8 @@ import numpy as np
 import traceback
 
 # Import pipeline functions
-from pipeline.merge_batches_for_combat import parse_feature
-from pipeline.combat_utils import run_combat_and_visualize
+from .merge_batches_for_combat import parse_feature
+from .combat_utils import run_combat_and_visualize
 
 # QC-specific imports (handle gracefully if not installed)
 try:
