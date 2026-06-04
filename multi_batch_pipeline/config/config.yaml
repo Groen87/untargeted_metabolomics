@@ -1,0 +1,18 @@
+# Multi-Batch Metabolomics Pipeline Configuration
+
+# File paths (relative to project root or absolute)
+batch_folders: []  # List of batch folders to process (can override via --batches)
+intensity_threshold: 10000
+qc_pattern: "expQC"
+qc_intensity_threshold: 1
+frac: 0.5
+rt_threshold: 0.02
+
+# Logging
+log_level: "INFO"
+log_file: "logs/multi_batch_pipeline.log"
+
+# Multi-batch options
+run_qc: true
+save_plots: true
+show_plots: false
