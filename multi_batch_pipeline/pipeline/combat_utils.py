@@ -209,8 +209,6 @@ def _generate_diagnostic_plots(
     - UMAP: Non-linear dimensionality reduction visualization
     - Boxplot: Distribution of mean intensities per sample by batch
     - RSD distributions: For QC groups (QC3, QC4, blauw)
-    
-    Additionally creates for post-correction data only:
     - PCA plot: For QC4 and blauw QC samples to verify clustering
     
     Args:
@@ -337,9 +335,18 @@ def _generate_diagnostic_plots(
             plt.savefig(output_dir / f"{suffix}_{group_name}_rsd_distribution.png", dpi=300, bbox_inches='tight')
             plt.close()
     
-    # --- PCA for QC4 and blauw QC samples (post-correction only) ---
-    # This verifies that QC samples cluster properly after batch correction
-    if label == "After ComBat":
+    # --- PCA for QC4 and blauw QC samples (both before and after) ---
+    # This verifies that QC samples cluster properly and shows the effect of batch correction
+    if label == "Before ComBat":
+        plot_qc_pca(
+            data=data,
+            batch_dict=batch_dict,
+            output_path=output_dir / "before_combat_qc4_blauw_pca.png",
+            title="PCA of QC4 and blauw QC Samples (Before ComBat)",
+            figsize=(10, 8),
+            dpi=300,
+        )
+    elif label == "After ComBat":
         plot_qc_pca(
             data=corrected_data,
             batch_dict=batch_dict,
