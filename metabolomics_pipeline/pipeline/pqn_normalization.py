@@ -7,8 +7,11 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 def pqn_normalize(
+    batch: str,
+    mode: str,
     corrected_df: pd.DataFrame,
     output_dir: str = "output",
+
 ) -> pd.DataFrame:
     """
     Apply PQN (Probabilistic Quotient Normalization) to metabolomics data.
@@ -39,10 +42,20 @@ def pqn_normalize(
     # Identify expQC samples (case-insensitive)
     qc_cols = [col for col in sample_cols if 'expqc' in col.lower()]
 
+    # Fallback to QC3 if no expQC samples are found
     if not qc_cols:
-        raise ValueError("No 'expQC' samples found in DataFrame columns.")
+        logger.warning("No 'expQC' samples found. Trying 'QC3' as fallback.")
+        qc_cols = [col for col in sample_cols if 'qc3' in col.lower()]
 
-    logger.info(f"Found {len(qc_cols)} expQC samples: {qc_cols}")
+        if not qc_cols:
+            raise ValueError(
+                "No 'expQC', 'QC3', 'QC4', or 'blauw' samples found in DataFrame columns. "
+                f"Available columns: {sample_cols}"
+            )
+        else:
+            logger.info(f"Fallback QC samples found: {qc_cols}")
+    else:
+        logger.info(f"Found expQC samples: {qc_cols}")
 
     # Calculate median for each QC sample
     qc_medians = corrected_df[qc_cols].median(axis=0)
@@ -64,6 +77,11 @@ def pqn_normalize(
     normalized_df.insert(0, 'Feature', corrected_df.index)
 
     # Save normalized data
-    normalized_df.to_csv(f"{output_dir}/pqn_normalized.csv", index=False)
+    normalized_df.to_csv(f"{output_dir}/{batch}_{mode}_pqn_normalized.csv")
+    normalized_df.to_csv(f"{output_dir}/pqn_normalized.csv")
+
+    central_dir = "/Users/j.groen/PycharmProjects/untargeted_pipeline/metabolomics_pipeline/data/pqn_normalized_batches"
+    os.makedirs(central_dir, exist_ok=True)  # Ensure the directory exists
+    normalized_df.to_csv(f"{central_dir}/{batch}_{mode}_pqn_normalized.csv")
 
     return normalized_df

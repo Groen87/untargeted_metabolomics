@@ -57,7 +57,11 @@ def run_combat_and_visualize(
     missing_samples = [col for col in data.columns if col not in batch_dict]
     if missing_samples:
         raise ValueError(f"Missing batch assignments for: {missing_samples}")
-    batch_vector = np.array([batch_dict[col] for col in data.columns], dtype=int)
+    batch_vector = pd.Series(
+        [batch_dict[col] for col in data.columns],
+        index=data.columns,
+        dtype="category"
+    )
 
     # --- Run ComBat ---
     print("Running ComBat...")
@@ -69,6 +73,7 @@ def run_combat_and_visualize(
         na_cov_action="na.omit"
     )
     corrected_data = pd.DataFrame(combat_result, index=data.index, columns=data.columns)
+    corrected_data = corrected_data.clip(lower=0)
     corrected_data.to_csv(output_dir / "combat_corrected_data.csv")
     print(f"✓ Saved to {output_dir}/combat_corrected_data.csv")
 
@@ -100,7 +105,7 @@ def run_combat_and_visualize(
             suffix = label.lower().replace(" ", "_")
 
             # UMAP
-            emb = umap.UMAP(random_state=random_state).fit_transform(df.T)
+            emb = umap.UMAP(random_state=random_state, n_jobs=1).fit_transform(df.T)
             fig, ax = plt.subplots(figsize=(10, 8))
             sns.scatterplot(x=emb[:, 0], y=emb[:, 1], hue=batch_vector, palette='viridis', ax=ax)
             ax.set_title(f"{label} (UMAP)")
@@ -109,19 +114,73 @@ def run_combat_and_visualize(
 
             # PCA
             emb = PCA(n_components=2, random_state=random_state).fit_transform(df.T)
+
             fig, ax = plt.subplots(figsize=(10, 8))
-            sns.scatterplot(x=emb[:, 0], y=emb[:, 1], hue=batch_vector, palette='viridis', ax=ax)
-            ax.set_title(f"{label} (PCA)")
-            fig.savefig(output_dir / f"{suffix}_pca.png", dpi=300, bbox_inches='tight')
+
+            # Base scatter: batch coloring
+            sns.scatterplot(
+                x=emb[:, 0],
+                y=emb[:, 1],
+                hue=batch_vector.astype(str),
+                palette="viridis",
+                ax=ax,
+                alpha=0.6,
+                s=40,
+                legend=True,
+            )
+
+            # Identify QC samples
+            qc3 = [i for i in df.columns if "QC3" in i]
+            qc4 = [i for i in df.columns if "QC4" in i]
+            blauw = [i for i in df.columns if "blauw" in i]
+
+            # Helper to overlay QC points
+            def plot_qc(samples, color, label_name, marker):
+                if not samples:
+                    return
+                idx = [df.columns.get_loc(s) for s in samples]
+                ax.scatter(
+                    emb[idx, 0],
+                    emb[idx, 1],
+                    c=color,
+                    s=120,
+                    marker=marker,
+                    edgecolor="black",
+                    linewidth=0.8,
+                    label=label_name,
+                    zorder=5,
+                )
+
+            # Overlay QC groups
+            plot_qc(qc3, "red", "QC3", "o")
+            plot_qc(qc4, "blue", "QC4", "s")
+            plot_qc(blauw, "green", "blauw", "^")
+
+            ax.set_title(f"{label} (PCA with QC overlay)")
+            ax.legend()
+
+            fig.savefig(output_dir / f"{suffix}_pca.png", dpi=300, bbox_inches="tight")
             plt.close(fig)
 
             # Boxplot
             fig, ax = plt.subplots(figsize=(12, 6))
-            sns.boxplot(x=batch_vector, y=df.T.mean(axis=1), palette='viridis', ax=ax, showfliers=False)
+            sns.boxplot(
+                y=df.T.mean(axis=1),
+                hue=batch_vector.astype(str).values,
+                x = batch_vector.values,
+                palette='viridis',
+                ax=ax,
+                showfliers=False,
+                legend=False,
+            )
+
+            # Explicitly set ticks and labels
+            unique_batches = sorted(set(batch_vector))
+            ax.set_xticks(range(len(unique_batches)))  # Set tick positions
+            ax.set_xticklabels([f'Batch {b + 1}' for b in unique_batches])  # Set labels
             ax.set_title(f"{label} (Boxplot)")
             ax.set_xlabel('Batch')
             ax.set_ylabel('Mean Intensity per Sample')
-            ax.set_xticklabels(['Batch 1', 'Batch 2'])
             fig.savefig(output_dir / f"{suffix}_boxplot.png", dpi=300, bbox_inches='tight')
             plt.close(fig)
 
