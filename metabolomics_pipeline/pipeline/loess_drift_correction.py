@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 def correct_drift_with_loess(
+    batch: str,
+    mode: str,
     intensity_df: pd.DataFrame,
     qc_pattern: str = "expQC",
     frac: float = 0.5,
@@ -59,12 +61,22 @@ def correct_drift_with_loess(
         if qc_pattern.lower() in col.lower() and
            not any(col.startswith(prefix) for prefix in ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status'])
     ]
+
+    # If no QC samples found with the current pattern, try "QC3"
+    if not qc_samples:
+        logger.warning(f"No QC samples found with pattern '{qc_pattern}'. Trying 'QC3' as fallback.")
+        qc_samples = [
+            col for col in intensity_df.columns
+            if "QC3".lower() in col.lower() and
+               not any(col.startswith(prefix) for prefix in ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status'])
+        ]
+
     if not qc_samples:
         logger.error(
-            f"No QC samples found with pattern '{qc_pattern}'. Available columns: {list(intensity_df.columns)}")
-        raise ValueError(f"No QC samples found with pattern '{qc_pattern}'")
+            f"No QC samples found with pattern '{qc_pattern}' or fallback 'QC3'. Available columns: {list(intensity_df.columns)}")
+        raise ValueError(f"No QC samples found with pattern '{qc_pattern}' or fallback 'QC3'")
     else:
-        logger.info(f"Found QC samples: {qc_samples}")  # Debug: Print matched QC samples
+        logger.info(f"Found QC samples: {qc_samples}")
 
     # Initialize corrected DataFrame
     corrected_df = intensity_df.copy()
@@ -163,6 +175,6 @@ def correct_drift_with_loess(
         print("⚠️ Warning: No high-QC features found for LOESS correction")
 
     # Save corrected data (ALL features, including low-QC ones)
-    corrected_df.to_csv(f"{output_dir}/loess_corrected.csv")
+    corrected_df.to_csv(f"{output_dir}/{batch}_{mode}_drift_corrected.csv")
 
     return corrected_df

@@ -32,7 +32,7 @@ def merge_batches_for_combat(
     combat_output_dir: Optional[str] = None,
     batch1_label: str = "current",
     batch2_label: str = "reference",
-    rt_threshold: float = 0.02,
+    rt_threshold: float = 0.04,
     combat_script_path: Optional[Path] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
