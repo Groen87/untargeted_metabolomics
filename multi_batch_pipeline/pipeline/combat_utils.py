@@ -3,12 +3,14 @@ ComBat batch correction utilities for metabolomics data.
 
 This module provides functionality to:
 1. Run ComBat batch correction with appropriate NaN handling
-2. Generate diagnostic visualizations (UMAP, Boxplots, RSD distributions)
+2. Generate diagnostic visualizations (UMAP, Boxplots, RSD distributions, PCA)
 3. Calculate pre/post correction metrics
 
 Note:
-    PCA plotting has been removed as it's handled by inmoose QC.
-    UMAP is kept as it provides complementary visualization to PCA.
+    General PCA plotting is handled by inmoose QC.
+    This module includes specific PCA plots for QC4 and blauw QC samples
+    to verify they cluster properly after batch correction.
+    UMAP is kept as it provides complementary non-linear visualization to PCA.
 """
 
 import logging
@@ -19,6 +21,8 @@ matplotlib.use('Agg')  # Use non-interactive backend for saving plots
 import matplotlib.pyplot as plt
 import seaborn as sns
 import umap.umap_ as umap
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 from pathlib import Path
 from typing import Tuple, Dict, List, Optional
 
@@ -206,6 +210,9 @@ def _generate_diagnostic_plots(
     - Boxplot: Distribution of mean intensities per sample by batch
     - RSD distributions: For QC groups (QC3, QC4, blauw)
     
+    Additionally creates for post-correction data only:
+    - PCA plot: For QC4 and blauw QC samples to verify clustering
+    
     Args:
         data: Original data before correction (features x samples)
         corrected_data: Data after ComBat correction (features x samples)
@@ -329,6 +336,18 @@ def _generate_diagnostic_plots(
             
             plt.savefig(output_dir / f"{suffix}_{group_name}_rsd_distribution.png", dpi=300, bbox_inches='tight')
             plt.close()
+    
+    # --- PCA for QC4 and blauw QC samples (post-correction only) ---
+    # This verifies that QC samples cluster properly after batch correction
+    if label == "After ComBat":
+        plot_qc_pca(
+            data=corrected_data,
+            batch_dict=batch_dict,
+            output_path=output_dir / "after_combat_qc4_blauw_pca.png",
+            title="PCA of QC4 and blauw QC Samples (After ComBat)",
+            figsize=(10, 8),
+            dpi=300,
+        )
 
 
 # =============================================================================
@@ -459,3 +478,109 @@ def plot_rsd_distribution(
     plt.xlim(0, xaxis_max)
     plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
     plt.close()
+
+
+def plot_qc_pca(
+    data: pd.DataFrame,
+    batch_dict: Dict[str, int],
+    output_path: Path,
+    title: str = "PCA of QC Samples",
+    figsize: Tuple[int, int] = (10, 8),
+    dpi: int = 300,
+    n_components: int = 2,
+) -> None:
+    """
+    Generate and save a PCA plot for QC4 and blauw QC samples.
+    
+    This function extracts QC4 and blauw QC samples from the data,
+    performs PCA, and plots the results with batch labels as hue
+    to verify that QC samples cluster properly after batch correction.
+    
+    Args:
+        data: Feature data (features x samples)
+        batch_dict: Dictionary mapping sample names to batch labels
+        output_path: Path to save the plot
+        title: Plot title (default: "PCA of QC Samples")
+        figsize: Figure size (default: (10, 8))
+        dpi: DPI for saved image (default: 300)
+        n_components: Number of PCA components to compute (default: 2)
+    """
+    # Identify QC4 and blauw QC samples
+    qc_samples = [col for col in data.columns if 'QC4' in col or 'blauw' in col]
+    
+    if not qc_samples:
+        logger.warning("No QC4 or blauw QC samples found for PCA plot")
+        return
+    
+    # Filter data to QC samples only
+    qc_data = data[qc_samples]
+    
+    # Handle NaN values
+    if qc_data.isna().any().any():
+        min_positive = qc_data[qc_data > 0].min().min()
+        small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
+        qc_data = qc_data.fillna(small_value)
+    
+    # Standardize the data (important for PCA)
+    scaler = StandardScaler()
+    qc_data_scaled = scaler.fit_transform(qc_data.T)
+    
+    # Perform PCA
+    pca = PCA(n_components=n_components, random_state=42)
+    pca_result = pca.fit_transform(qc_data_scaled)
+    
+    # Get batch labels for QC samples
+    batch_labels = [batch_dict.get(col, 'Unknown') for col in qc_samples]
+    batch_labels_str = [f"Batch {b}" for b in batch_labels]
+    
+    # Calculate explained variance
+    explained_variance = pca.explained_variance_ratio_
+    
+    # Create plot
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Create a color palette based on unique batches
+    unique_batches = sorted(set(batch_labels))
+    palette = sns.color_palette('viridis', n_colors=len(unique_batches))
+    
+    # Map batch labels to colors
+    batch_to_color = {b: palette[i] for i, b in enumerate(unique_batches)}
+    colors = [batch_to_color.get(b, 'gray') for b in batch_labels]
+    
+    # Scatter plot
+    scatter = ax.scatter(
+        pca_result[:, 0],
+        pca_result[:, 1],
+        c=colors,
+        alpha=0.7,
+        s=60,
+    )
+    
+    # Add sample labels for clarity
+    for i, sample in enumerate(qc_samples):
+        ax.text(
+            pca_result[i, 0],
+            pca_result[i, 1],
+            sample,
+            fontsize=8,
+            ha='right',
+            va='bottom',
+        )
+    
+    ax.set_title(f"{title}\nExplained Variance: PC1={explained_variance[0]:.2%}, PC2={explained_variance[1]:.2%}")
+    ax.set_xlabel(f"PC1 ({explained_variance[0]:.1%})")
+    ax.set_ylabel(f"PC2 ({explained_variance[1]:.1%})")
+    ax.grid(True, alpha=0.3)
+    
+    # Create legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor=batch_to_color[b], label=f"Batch {b}")
+        for b in sorted(unique_batches)
+    ]
+    ax.legend(handles=legend_elements, title="Batch")
+    
+    fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+    
+    logger.info(f"Saved QC PCA plot to {output_path}")
