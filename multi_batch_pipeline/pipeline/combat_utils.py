@@ -11,6 +11,7 @@ Note:
     UMAP is kept as it provides complementary visualization to PCA.
 """
 
+import logging
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -26,6 +27,9 @@ try:
     COMBAT_AVAILABLE = True
 except ImportError:
     COMBAT_AVAILABLE = False
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 def run_combat_and_visualize(
@@ -245,6 +249,9 @@ def _generate_diagnostic_plots(
         
         # Create proper batch labels
         batch_labels = [f"Batch {b}" for b in sorted(unique_batches)]
+        # Use set_xticks with the unique batch values, then set labels
+        unique_batches_sorted = sorted(unique_batches)
+        ax.set_xticks(range(len(unique_batches_sorted)))
         ax.set_xticklabels(batch_labels)
         
         fig.savefig(output_dir / f"{suffix}_boxplot.png", dpi=300, bbox_inches='tight')
