@@ -217,20 +217,25 @@ def _generate_diagnostic_plots(
             small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
             df = df.fillna(small_value)
         
+        # Filter batch_vector to match df columns
+        # This is critical: df might have been filtered, so batch_vector must match
+        df_samples = df.columns.tolist()
+        batch_vector_filtered = np.array([batch_dict[col] for col in df_samples])
+        
         suffix = label.lower().replace(" ", "_")
         
         # --- UMAP ---
         # UMAP provides non-linear dimensionality reduction
         emb = umap.UMAP(random_state=random_state).fit_transform(df.T)
         fig, ax = plt.subplots(figsize=(10, 8))
-        sns.scatterplot(x=emb[:, 0], y=emb[:, 1], hue=batch_vector, palette='viridis', ax=ax)
+        sns.scatterplot(x=emb[:, 0], y=emb[:, 1], hue=batch_vector_filtered, palette='viridis', ax=ax)
         ax.set_title(f"{label} (UMAP)")
         fig.savefig(output_dir / f"{suffix}_umap.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
         
         # --- Boxplot ---
         fig, ax = plt.subplots(figsize=(12, 6))
-        sns.boxplot(x=batch_vector, y=df.T.mean(axis=1), palette='viridis', ax=ax, showfliers=False)
+        sns.boxplot(x=batch_vector_filtered, y=df.T.mean(axis=1), palette='viridis', ax=ax, showfliers=False)
         ax.set_title(f"{label} (Boxplot)")
         ax.set_xlabel('Batch')
         ax.set_ylabel('Mean Intensity per Sample')
