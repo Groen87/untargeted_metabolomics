@@ -268,7 +268,27 @@ def _generate_diagnostic_plots(
             
             # Plot and save RSD distribution with x-axis limits
             plt.figure(figsize=(8, 4))
-            sns.histplot(rsd, bins=30, kde=True)
+            
+            # Filter RSD values for plotting (keep within x-axis range for better visualization)
+            # But print stats for all data including outliers
+            rsd_filtered = rsd[rsd <= rsd_xaxis_max]
+            num_outliers = (rsd > rsd_xaxis_max).sum()
+            
+            if len(rsd_filtered) == 0:
+                # All values are outliers, adjust the filter
+                rsd_filtered = rsd
+                logger.warning(f"All RSD values exceed {rsd_xaxis_max}% for {group_name} ({label}). Showing all data.")
+            elif num_outliers > 0:
+                logger.info(f"Filtered out {num_outliers} RSD outliers > {rsd_xaxis_max}% for {group_name} ({label})")
+            
+            # Use adaptive binning: more bins for smaller ranges, fewer for larger
+            data_range = rsd_filtered.max() - rsd_filtered.min()
+            if data_range > 0:
+                num_bins = min(30, max(10, int(data_range * 2)))
+            else:
+                num_bins = 10
+            
+            sns.histplot(rsd_filtered, bins=num_bins, kde=True)
             plt.axvline(15, color='red', linestyle='--', label='RSD = 15%')
             plt.axvline(20, color='orange', linestyle='--', label='RSD = 20%')
             plt.title(f"RSD Distribution for {group_name} ({label})")
@@ -277,7 +297,7 @@ def _generate_diagnostic_plots(
             plt.legend()
             plt.grid(True)
             
-            # Set x-axis limits to cap at rsd_xaxis_max on either side
+            # Set x-axis limits
             plt.xlim(0, rsd_xaxis_max)
             
             plt.savefig(output_dir / f"{suffix}_{group_name}_rsd_distribution.png", dpi=300, bbox_inches='tight')
@@ -385,7 +405,23 @@ def plot_rsd_distribution(
     rsd = (group_stds / group_means) * 100
     
     plt.figure(figsize=figsize)
-    sns.histplot(rsd, bins=30, kde=True)
+    
+    # Filter RSD values for plotting (keep within x-axis range for better visualization)
+    rsd_filtered = rsd[rsd <= xaxis_max]
+    num_outliers = (rsd > xaxis_max).sum()
+    
+    if len(rsd_filtered) == 0:
+        # All values are outliers, show all data
+        rsd_filtered = rsd
+    
+    # Use adaptive binning
+    data_range = rsd_filtered.max() - rsd_filtered.min()
+    if data_range > 0:
+        num_bins = min(30, max(10, int(data_range * 2)))
+    else:
+        num_bins = 10
+    
+    sns.histplot(rsd_filtered, bins=num_bins, kde=True)
     plt.axvline(15, color='red', linestyle='--', label='RSD = 15%')
     plt.axvline(20, color='orange', linestyle='--', label='RSD = 20%')
     plt.title(title)
