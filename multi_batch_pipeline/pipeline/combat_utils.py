@@ -235,7 +235,19 @@ def _generate_diagnostic_plots(
         # UMAP provides non-linear dimensionality reduction
         emb = umap.UMAP(random_state=random_state).fit_transform(df.T)
         fig, ax = plt.subplots(figsize=(10, 8))
-        sns.scatterplot(x=emb[:, 0], y=emb[:, 1], hue=batch_vector_filtered, palette='viridis', ax=ax)
+        
+        # Convert batch labels to strings to ensure all batches are plotted
+        # Seaborn can treat numeric hues as continuous, which may skip values
+        batch_labels_str = [f"Batch {b}" for b in batch_vector_filtered]
+        
+        sns.scatterplot(
+            x=emb[:, 0], 
+            y=emb[:, 1], 
+            hue=batch_labels_str, 
+            palette='viridis', 
+            ax=ax,
+            legend='full'  # Ensure all legend entries are shown
+        )
         ax.set_title(f"{label} (UMAP)")
         fig.savefig(output_dir / f"{suffix}_umap.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
