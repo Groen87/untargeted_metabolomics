@@ -284,7 +284,7 @@ def merge_multiple_batches(
     1. Loading all batch data and metadata
     2. Feature matching across batches using base name and RT
     3. Feature renaming to create consistent identifiers
-    4. Removal of expQC samples
+    4. Removal of expQC and QC3 samples (used for drift/PQN normalization)
     5. Identification and removal of batch-specific features
     6. Sample alignment between data and metadata
     
@@ -413,6 +413,15 @@ def merge_multiple_batches(
         merged_data = merged_data.drop(columns=expqc_cols)
         merged_batch = merged_batch[~merged_batch['sample_id'].str.lower().str.contains('expqc')]
         logger.info(f"Removed expQC samples from batch metadata")
+    
+    # --- Remove QC3 samples from data and batch info ---
+    # QC3 samples are used for drift correction/PQN but should not be in final merged data
+    qc3_cols = [col for col in merged_data.columns if 'qc3' in col.lower()]
+    if qc3_cols:
+        logger.info(f"Removing {len(qc3_cols)} QC3 columns from data")
+        merged_data = merged_data.drop(columns=qc3_cols)
+        merged_batch = merged_batch[~merged_batch['sample_id'].str.lower().str.contains('qc3')]
+        logger.info(f"Removed QC3 samples from batch metadata")
     
     # --- Identify batch-specific features ---
     # Get sample sets for each batch
