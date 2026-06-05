@@ -7,6 +7,7 @@ import umap.umap_ as umap
 from pathlib import Path
 from inmoose.pycombat import pycombat_norm
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 from typing import Tuple
 
 def run_combat_and_visualize(
@@ -334,40 +335,53 @@ def run_combat_and_visualize(
                     continue
 
                 group_data = df[group_samples]
-                group_means = group_data.mean(axis=1)
-                group_stds = group_data.std(axis=1)
-                rsd = (group_stds / group_means) * 100
 
                 # --- Improved RSD calculation with filtering ---
                 # Filter 1: Only features present in ALL QC samples (no NaN)
+                # This is CRITICAL: prevents gap-filled features from inflating RSD
                 qc_complete_mask = group_data.notna().all(axis=1)
-                rsd_complete = rsd[qc_complete_mask]
+                group_data_complete = group_data[qc_complete_mask]
+                
+                if len(group_data_complete) == 0:
+                    print(f"No features present in ALL {group_name} samples. Skipping RSD calculation.")
+                    continue
+                
+                group_means = group_data_complete.mean(axis=1)
+                group_stds = group_data_complete.std(axis=1)
+                rsd = (group_stds / group_means) * 100
+                
+                # For reference, also calculate on all features (including incomplete ones)
+                group_means_all = group_data.mean(axis=1)
+                group_stds_all = group_data.std(axis=1)
+                rsd_all = (group_stds_all / group_means_all) * 100
                 
                 # Filter 2: Only features with mean intensity above median
                 # This removes low-intensity features that have artificially high RSD
-                intensity_threshold = group_means[qc_complete_mask].median()
-                high_intensity_mask = group_means[qc_complete_mask] >= intensity_threshold
-                rsd_filtered = rsd_complete[high_intensity_mask]
+                intensity_threshold = group_means.median()
+                high_intensity_mask = group_means >= intensity_threshold
+                rsd_filtered = rsd[high_intensity_mask]
                 
-                # Print both unfiltered and filtered RSD summaries
+                # Print RSD summaries
                 print(f"\n--- {group_name} ({label}) ---")
-                print(f"ALL FEATURES:")
+                print(f"Features present in ALL {group_name} QC samples: {len(group_data_complete)} / {len(group_data)}")
+                print(f"\nFEATURES IN ALL QC SAMPLES ({len(group_data_complete)} features):")
                 print(f"  Median RSD: {rsd.median():.2f}%")
                 print(f"  Mean RSD: {rsd.mean():.2f}%")
                 print(f"  Features with RSD > 20%: {(rsd > 20).sum()} ({(rsd > 20).mean() * 100:.1f}%)")
                 print(f"  Features with RSD > 15%: {(rsd > 15).sum()} ({(rsd > 15).mean() * 100:.1f}%)")
                 
-                print(f"COMPLETE QC FEATURES ({qc_complete_mask.sum()} features):")
-                print(f"  Median RSD: {rsd_complete.median():.2f}%")
-                print(f"  Mean RSD: {rsd_complete.mean():.2f}%")
-                print(f"  Features with RSD > 20%: {(rsd_complete > 20).sum()} ({(rsd_complete > 20).mean() * 100:.1f}%)")
-                print(f"  Features with RSD > 15%: {(rsd_complete > 15).sum()} ({(rsd_complete > 15).mean() * 100:.1f}%)")
-                
-                print(f"HIGH INTENSITY + COMPLETE FEATURES ({high_intensity_mask.sum()} features):")
+                print(f"\nHIGH INTENSITY + COMPLETE FEATURES ({high_intensity_mask.sum()} features):")
                 print(f"  Median RSD: {rsd_filtered.median():.2f}%")
                 print(f"  Mean RSD: {rsd_filtered.mean():.2f}%")
                 print(f"  Features with RSD > 20%: {(rsd_filtered > 20).sum()} ({(rsd_filtered > 20).mean() * 100:.1f}%)")
                 print(f"  Features with RSD > 15%: {(rsd_filtered > 15).sum()} ({(rsd_filtered > 15).mean() * 100:.1f}%)")
+                
+                # Also print ALL features RSD for comparison (shows the problem with gap-filled features)
+                print(f"\nALL FEATURES (including incomplete, {len(rsd_all)} features):")
+                print(f"  Median RSD: {rsd_all.median():.2f}%")
+                print(f"  Mean RSD: {rsd_all.mean():.2f}%")
+                print(f"  Features with RSD > 20%: {(rsd_all > 20).sum()} ({(rsd_all > 20).mean() * 100:.1f}%)")
+                print(f"  Features with RSD > 15%: {(rsd_all > 15).sum()} ({(rsd_all > 15).mean() * 100:.1f}%)")
 
                 # Plot and save RSD distribution
                 plt.figure(figsize=(8, 4))
