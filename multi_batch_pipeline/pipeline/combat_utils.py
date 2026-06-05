@@ -171,7 +171,9 @@ def calculate_qc_clustering_metrics(embedding: np.ndarray, qc_labels: np.ndarray
     dist_matrix = pairwise_distances(qc_embedding, metric='euclidean')
     
     # Mean and max distance between QC samples (should be small if QC samples cluster together)
-    mean_dist = float(np.mean(dist_matrix[np.tri(len(dist_matrix), k=-1)]))
+    # Use upper triangle only (excluding diagonal) to avoid double-counting
+    upper_tri_indices = np.triu_indices(len(dist_matrix), k=1)
+    mean_dist = float(np.mean(dist_matrix[upper_tri_indices]))
     max_dist = float(np.max(dist_matrix))
     
     # Silhouette score for QC samples by type

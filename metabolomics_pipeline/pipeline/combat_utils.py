@@ -78,7 +78,9 @@ def calculate_qc_clustering_metrics(embedding: np.ndarray, qc_labels: np.ndarray
     qc_types = qc_labels[qc_mask]
     
     dist_matrix = pairwise_distances(qc_embedding, metric='euclidean')
-    mean_dist = float(np.mean(dist_matrix[np.tri(len(dist_matrix), k=-1)]))
+    # Use upper triangle only (excluding diagonal) to avoid double-counting
+    upper_tri_indices = np.triu_indices(len(dist_matrix), k=1)
+    mean_dist = float(np.mean(dist_matrix[upper_tri_indices]))
     max_dist = float(np.max(dist_matrix))
     
     unique_qc_types = np.unique(qc_types)
