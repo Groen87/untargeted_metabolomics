@@ -112,52 +112,81 @@ def run_combat_and_visualize(
             fig.savefig(output_dir / f"{suffix}_umap.png", dpi=300, bbox_inches='tight')
             plt.close(fig)
 
-            # PCA
+            # PCA - Plot all samples with batch colors and QC labels
             emb = PCA(n_components=2, random_state=random_state).fit_transform(df.T)
 
-            fig, ax = plt.subplots(figsize=(10, 8))
+            fig, ax = plt.subplots(figsize=(12, 10))
 
-            # Base scatter: batch coloring
-            sns.scatterplot(
-                x=emb[:, 0],
-                y=emb[:, 1],
-                hue=batch_vector.astype(str),
-                palette="viridis",
-                ax=ax,
-                alpha=0.6,
-                s=40,
-                legend=True,
-            )
-
+            # Get batch labels and colors
+            all_batch_labels = [batch_dict.get(col, 'Unknown') for col in df.columns]
+            unique_batches_all = sorted(set(all_batch_labels))
+            palette_all = sns.color_palette('viridis', n_colors=len(unique_batches_all))
+            batch_to_color_all = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
+            colors_all = [batch_to_color_all.get(b, 'gray') for b in all_batch_labels]
+            
             # Identify QC samples
-            qc3 = [i for i in df.columns if "QC3" in i]
-            qc4 = [i for i in df.columns if "QC4" in i]
-            blauw = [i for i in df.columns if "blauw" in i]
-
-            # Helper to overlay QC points
-            def plot_qc(samples, color, label_name, marker):
-                if not samples:
-                    return
-                idx = [df.columns.get_loc(s) for s in samples]
+            qc_samples_all = [col for col in df.columns if 'QC3' in col or 'QC4' in col or 'blauw' in col]
+            qc_indices = [list(df.columns).index(col) for col in qc_samples_all] if qc_samples_all else []
+            
+            # Scatter plot for all NON-QC samples (batch colored)
+            non_qc_indices = [i for i in range(len(df.columns)) if i not in qc_indices]
+            if non_qc_indices:
                 ax.scatter(
-                    emb[idx, 0],
-                    emb[idx, 1],
-                    c=color,
-                    s=120,
-                    marker=marker,
-                    edgecolor="black",
-                    linewidth=0.8,
-                    label=label_name,
-                    zorder=5,
+                    emb[non_qc_indices, 0],
+                    emb[non_qc_indices, 1],
+                    c=[colors_all[i] for i in non_qc_indices],
+                    alpha=0.6,
+                    s=40,
+                    label='Biological Samples'
                 )
-
-            # Overlay QC groups
-            plot_qc(qc3, "red", "QC3", "o")
-            plot_qc(qc4, "blue", "QC4", "s")
-            plot_qc(blauw, "green", "blauw", "^")
-
-            ax.set_title(f"{label} (PCA with QC overlay)")
-            ax.legend()
+            
+            # Scatter plot for QC samples with larger markers and batch colors
+            if qc_samples_all:
+                qc_emb = emb[qc_indices]
+                qc_colors = [colors_all[i] for i in qc_indices]
+                
+                # Plot QC samples with larger markers
+                ax.scatter(
+                    qc_emb[:, 0],
+                    qc_emb[:, 1],
+                    c=qc_colors,
+                    alpha=0.9,
+                    s=100,
+                    edgecolors='black',
+                    linewidth=1,
+                    label='QC Samples'
+                )
+                
+                # Add QC sample labels for clarity
+                for i, sample in enumerate(qc_samples_all):
+                    ax.text(
+                        qc_emb[i, 0],
+                        qc_emb[i, 1],
+                        sample,
+                        fontsize=9,
+                        ha='right',
+                        va='bottom',
+                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1)
+                    )
+            
+            # Calculate explained variance
+            explained_variance = PCA(n_components=2, random_state=random_state).fit(df.T).explained_variance_ratio_
+            
+            ax.set_title(f"{label} (PCA - All Samples)\nExplained Variance: PC1={explained_variance[0]:.2%}, PC2={explained_variance[1]:.2%}")
+            ax.set_xlabel(f"PC1 ({explained_variance[0]:.1%})")
+            ax.set_ylabel(f"PC2 ({explained_variance[1]:.1%})")
+            ax.grid(True, alpha=0.3)
+            
+            # Create legend for batches and sample types
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor=batch_to_color_all[b], label=f"Batch {b}")
+                for b in sorted(unique_batches_all)
+            ]
+            legend_elements.append(Patch(facecolor='gray', label='Biological Samples', alpha=0.6))
+            legend_elements.append(Patch(facecolor='black', label='QC Samples', edgecolor='black', linewidth=1))
+            
+            ax.legend(handles=legend_elements, title="Batch / Sample Type", loc='best')
 
             fig.savefig(output_dir / f"{suffix}_pca.png", dpi=300, bbox_inches="tight")
             plt.close(fig)

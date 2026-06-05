@@ -373,7 +373,6 @@ def _generate_diagnostic_plots(
         
         # Get batch labels for all samples
         all_batch_labels = [batch_dict.get(col, 'Unknown') for col in df.columns]
-        all_batch_labels_str = [f"Batch {b}" for b in all_batch_labels]
         
         # Create color palette based on unique batches
         unique_batches_all = sorted(set(all_batch_labels))
@@ -381,24 +380,28 @@ def _generate_diagnostic_plots(
         batch_to_color_all = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
         colors_all = [batch_to_color_all.get(b, 'gray') for b in all_batch_labels]
         
-        # Scatter plot for all samples
-        scatter = ax.scatter(
-            pca_result[:, 0],
-            pca_result[:, 1],
-            c=colors_all,
-            alpha=0.6,
-            s=40,
-        )
-        
-        # Highlight QC samples on top
+        # Identify QC samples
         qc_samples_all = [col for col in df.columns if 'QC3' in col or 'QC4' in col or 'blauw' in col]
+        qc_indices = [list(df.columns).index(col) for col in qc_samples_all] if qc_samples_all else []
+        
+        # Scatter plot for all NON-QC samples (batch colored)
+        non_qc_indices = [i for i in range(len(df.columns)) if i not in qc_indices]
+        if non_qc_indices:
+            ax.scatter(
+                pca_result[non_qc_indices, 0],
+                pca_result[non_qc_indices, 1],
+                c=[colors_all[i] for i in non_qc_indices],
+                alpha=0.6,
+                s=40,
+                label='Biological Samples'
+            )
+        
+        # Scatter plot for QC samples with larger markers and batch colors
         if qc_samples_all:
-            qc_indices = [list(df.columns).index(col) for col in qc_samples_all]
             qc_pca = pca_result[qc_indices]
-            qc_batch_labels = [all_batch_labels[i] for i in qc_indices]
-            qc_colors = [batch_to_color_all.get(b, 'gray') for b in qc_batch_labels]
+            qc_colors = [colors_all[i] for i in qc_indices]
             
-            # Plot QC samples with larger markers and labels
+            # Plot QC samples with larger markers
             ax.scatter(
                 qc_pca[:, 0],
                 qc_pca[:, 1],
@@ -407,9 +410,10 @@ def _generate_diagnostic_plots(
                 s=100,
                 edgecolors='black',
                 linewidth=1,
+                label='QC Samples'
             )
             
-            # Add QC sample labels
+            # Add QC sample labels for clarity
             for i, sample in enumerate(qc_samples_all):
                 ax.text(
                     qc_pca[i, 0],
@@ -435,7 +439,11 @@ def _generate_diagnostic_plots(
             Patch(facecolor=batch_to_color_all[b], label=f"Batch {b}")
             for b in sorted(unique_batches_all)
         ]
-        ax.legend(handles=legend_elements, title="Batch", loc='best')
+        # Add legend entries for sample types
+        legend_elements.append(Patch(facecolor='gray', label='Biological Samples', alpha=0.6))
+        legend_elements.append(Patch(facecolor='black', label='QC Samples', edgecolor='black', linewidth=1))
+        
+        ax.legend(handles=legend_elements, title="Batch / Sample Type", loc='best')
         
         fig.savefig(output_dir / f"{suffix}_all_samples_pca.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
