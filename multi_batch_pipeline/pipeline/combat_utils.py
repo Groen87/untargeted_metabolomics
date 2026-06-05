@@ -447,19 +447,6 @@ def _generate_diagnostic_plots(
         
         fig.savefig(output_dir / f"{suffix}_all_samples_pca.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
-        
-        # --- PCA for QC4 and blauw QC samples only ---
-        # This verifies that QC samples cluster properly and shows the effect of batch correction
-        qc_samples_only = [col for col in df.columns if 'QC4' in col or 'blauw' in col]
-        if qc_samples_only:
-            plot_qc_pca(
-                data=df,
-                batch_dict=batch_dict,
-                output_path=output_dir / f"{suffix}_qc4_blauw_pca.png",
-                title=f"PCA of QC4 and blauw QC Samples ({label})",
-                figsize=(10, 8),
-                dpi=300,
-            )
 
 
 # =============================================================================
