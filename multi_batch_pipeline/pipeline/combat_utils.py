@@ -208,8 +208,9 @@ def _generate_diagnostic_plots(
     Creates the following plots for both pre- and post-correction data:
     - UMAP: Non-linear dimensionality reduction visualization
     - Boxplot: Distribution of mean intensities per sample by batch
-    - RSD distributions: For QC groups (QC3, QC4, blauw)
-    - PCA plot: For QC4 and blauw QC samples to verify clustering
+    - RSD distributions: For QC groups (QC3, QC4, blauw) with filtering for complete and high-intensity features
+    - PCA plot: For ALL samples (showing batch separation) with QC samples highlighted
+    - PCA plot: For QC4 and blauw QC samples only to verify clustering
     
     Args:
         data: Original data before correction (features x samples)
@@ -291,39 +292,62 @@ def _generate_diagnostic_plots(
             group_stds = group_data.std(axis=1)
             rsd = (group_stds / group_means) * 100
             
-            # Print RSD summary
+            # --- Improved RSD calculation with filtering ---
+            # Filter 1: Only features present in ALL QC samples (no NaN)
+            qc_complete_mask = group_data.notna().all(axis=1)
+            rsd_complete = rsd[qc_complete_mask]
+            
+            # Filter 2: Only features with mean intensity above median
+            # This removes low-intensity features that have artificially high RSD
+            intensity_threshold = group_means[qc_complete_mask].median()
+            high_intensity_mask = group_means[qc_complete_mask] >= intensity_threshold
+            rsd_filtered = rsd_complete[high_intensity_mask]
+            
+            # Print both unfiltered and filtered RSD summaries
             print(f"\n--- {group_name} ({label}) ---")
-            print(f"Median RSD: {rsd.median():.2f}%")
-            print(f"Mean RSD: {rsd.mean():.2f}%")
-            print(f"Features with RSD > 20%: {(rsd > 20).sum()} ({(rsd > 20).mean() * 100:.1f}%)")
-            print(f"Features with RSD > 15%: {(rsd > 15).sum()} ({(rsd > 15).mean() * 100:.1f}%)")
+            print(f"ALL FEATURES:")
+            print(f"  Median RSD: {rsd.median():.2f}%")
+            print(f"  Mean RSD: {rsd.mean():.2f}%")
+            print(f"  Features with RSD > 20%: {(rsd > 20).sum()} ({(rsd > 20).mean() * 100:.1f}%)")
+            print(f"  Features with RSD > 15%: {(rsd > 15).sum()} ({(rsd > 15).mean() * 100:.1f}%)")
+            
+            print(f"COMPLETE QC FEATURES ({qc_complete_mask.sum()} features):")
+            print(f"  Median RSD: {rsd_complete.median():.2f}%")
+            print(f"  Mean RSD: {rsd_complete.mean():.2f}%")
+            print(f"  Features with RSD > 20%: {(rsd_complete > 20).sum()} ({(rsd_complete > 20).mean() * 100:.1f}%)")
+            print(f"  Features with RSD > 15%: {(rsd_complete > 15).sum()} ({(rsd_complete > 15).mean() * 100:.1f}%)")
+            
+            print(f"HIGH INTENSITY + COMPLETE FEATURES ({high_intensity_mask.sum()} features):")
+            print(f"  Median RSD: {rsd_filtered.median():.2f}%")
+            print(f"  Mean RSD: {rsd_filtered.mean():.2f}%")
+            print(f"  Features with RSD > 20%: {(rsd_filtered > 20).sum()} ({(rsd_filtered > 20).mean() * 100:.1f}%)")
+            print(f"  Features with RSD > 15%: {(rsd_filtered > 15).sum()} ({(rsd_filtered > 15).mean() * 100:.1f}%)")
             
             # Plot and save RSD distribution with x-axis limits
             plt.figure(figsize=(8, 4))
             
             # Filter RSD values for plotting (keep within x-axis range for better visualization)
-            # But print stats for all data including outliers
-            rsd_filtered = rsd[rsd <= rsd_xaxis_max]
-            num_outliers = (rsd > rsd_xaxis_max).sum()
+            rsd_for_plot = rsd_filtered[rsd_filtered <= rsd_xaxis_max]
+            num_outliers = (rsd_filtered > rsd_xaxis_max).sum()
             
-            if len(rsd_filtered) == 0:
+            if len(rsd_for_plot) == 0:
                 # All values are outliers, adjust the filter
-                rsd_filtered = rsd
-                logger.warning(f"All RSD values exceed {rsd_xaxis_max}% for {group_name} ({label}). Showing all data.")
+                rsd_for_plot = rsd_filtered
+                logger.warning(f"All filtered RSD values exceed {rsd_xaxis_max}% for {group_name} ({label}). Showing all filtered data.")
             elif num_outliers > 0:
                 logger.info(f"Filtered out {num_outliers} RSD outliers > {rsd_xaxis_max}% for {group_name} ({label})")
             
             # Use adaptive binning: more bins for smaller ranges, fewer for larger
-            data_range = rsd_filtered.max() - rsd_filtered.min()
+            data_range = rsd_for_plot.max() - rsd_for_plot.min()
             if data_range > 0:
                 num_bins = min(30, max(10, int(data_range * 2)))
             else:
                 num_bins = 10
             
-            sns.histplot(rsd_filtered, bins=num_bins, kde=True)
+            sns.histplot(rsd_for_plot, bins=num_bins, kde=True)
             plt.axvline(15, color='red', linestyle='--', label='RSD = 15%')
             plt.axvline(20, color='orange', linestyle='--', label='RSD = 20%')
-            plt.title(f"RSD Distribution for {group_name} ({label})")
+            plt.title(f"RSD Distribution for {group_name} ({label})\n(Complete + High Intensity Features)")
             plt.xlabel("RSD (%)")
             plt.ylabel("Number of Features")
             plt.legend()
@@ -335,26 +359,99 @@ def _generate_diagnostic_plots(
             plt.savefig(output_dir / f"{suffix}_{group_name}_rsd_distribution.png", dpi=300, bbox_inches='tight')
             plt.close()
     
-    # --- PCA for QC4 and blauw QC samples (both before and after) ---
-    # This verifies that QC samples cluster properly and shows the effect of batch correction
-    if label == "Before ComBat":
-        plot_qc_pca(
-            data=data,
-            batch_dict=batch_dict,
-            output_path=output_dir / "before_combat_qc4_blauw_pca.png",
-            title="PCA of QC4 and blauw QC Samples (Before ComBat)",
-            figsize=(10, 8),
-            dpi=300,
+        # --- PCA for ALL samples (both before and after) ---
+        # Plot PCA for all samples to show batch separation before/after correction
+        fig, ax = plt.subplots(figsize=(12, 10))
+        
+        # Standardize the data (important for PCA)
+        scaler = StandardScaler()
+        df_scaled = scaler.fit_transform(df.T)
+        
+        # Perform PCA
+        pca = PCA(n_components=2, random_state=42)
+        pca_result = pca.fit_transform(df_scaled)
+        
+        # Get batch labels for all samples
+        all_batch_labels = [batch_dict.get(col, 'Unknown') for col in df.columns]
+        all_batch_labels_str = [f"Batch {b}" for b in all_batch_labels]
+        
+        # Create color palette based on unique batches
+        unique_batches_all = sorted(set(all_batch_labels))
+        palette_all = sns.color_palette('viridis', n_colors=len(unique_batches_all))
+        batch_to_color_all = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
+        colors_all = [batch_to_color_all.get(b, 'gray') for b in all_batch_labels]
+        
+        # Scatter plot for all samples
+        scatter = ax.scatter(
+            pca_result[:, 0],
+            pca_result[:, 1],
+            c=colors_all,
+            alpha=0.6,
+            s=40,
         )
-    elif label == "After ComBat":
-        plot_qc_pca(
-            data=corrected_data,
-            batch_dict=batch_dict,
-            output_path=output_dir / "after_combat_qc4_blauw_pca.png",
-            title="PCA of QC4 and blauw QC Samples (After ComBat)",
-            figsize=(10, 8),
-            dpi=300,
-        )
+        
+        # Highlight QC samples on top
+        qc_samples_all = [col for col in df.columns if 'QC3' in col or 'QC4' in col or 'blauw' in col]
+        if qc_samples_all:
+            qc_indices = [list(df.columns).index(col) for col in qc_samples_all]
+            qc_pca = pca_result[qc_indices]
+            qc_batch_labels = [all_batch_labels[i] for i in qc_indices]
+            qc_colors = [batch_to_color_all.get(b, 'gray') for b in qc_batch_labels]
+            
+            # Plot QC samples with larger markers and labels
+            ax.scatter(
+                qc_pca[:, 0],
+                qc_pca[:, 1],
+                c=qc_colors,
+                alpha=0.9,
+                s=100,
+                edgecolors='black',
+                linewidth=1,
+            )
+            
+            # Add QC sample labels
+            for i, sample in enumerate(qc_samples_all):
+                ax.text(
+                    qc_pca[i, 0],
+                    qc_pca[i, 1],
+                    sample,
+                    fontsize=9,
+                    ha='right',
+                    va='bottom',
+                    bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1)
+                )
+        
+        # Calculate explained variance
+        explained_variance = pca.explained_variance_ratio_
+        
+        ax.set_title(f"{label} (PCA - All Samples)\nExplained Variance: PC1={explained_variance[0]:.2%}, PC2={explained_variance[1]:.2%}")
+        ax.set_xlabel(f"PC1 ({explained_variance[0]:.1%})")
+        ax.set_ylabel(f"PC2 ({explained_variance[1]:.1%})")
+        ax.grid(True, alpha=0.3)
+        
+        # Create legend for batches
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor=batch_to_color_all[b], label=f"Batch {b}")
+            for b in sorted(unique_batches_all)
+        ]
+        ax.legend(handles=legend_elements, title="Batch", loc='best')
+        
+        fig.savefig(output_dir / f"{suffix}_all_samples_pca.png", dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        
+        # --- PCA for QC4 and blauw QC samples only ---
+        # This verifies that QC samples cluster properly and shows the effect of batch correction
+        qc_samples_only = [col for col in df.columns if 'QC4' in col or 'blauw' in col]
+        if qc_samples_only:
+            plot_qc_pca(
+                data=df,
+                batch_dict=batch_dict,
+                output_path=output_dir / f"{suffix}_qc4_blauw_pca.png",
+                title=f"PCA of QC4 and blauw QC Samples ({label})",
+                figsize=(10, 8),
+                dpi=300,
+            )
 
 
 # =============================================================================
