@@ -35,19 +35,20 @@ def run_combat_and_visualize(
     data.columns = data.columns.astype(str)
     batch_info['sample_id'] = batch_info['sample_id'].astype(str)
 
-    # --- Identify QC samples and track complete features BEFORE gap-filling ---
-    # This is CRITICAL: we need to know which features are present in ALL QC samples
+    # --- Identify QC samples and track feature presence BEFORE gap-filling ---
+    # This is CRITICAL: we need to know which features are present in QC samples
     # BEFORE any gap-filling, otherwise we can't distinguish gap-filled from real features
     qc4_samples = [col for col in data.columns if 'QC4' in col]
     blauw_samples = [col for col in data.columns if 'blauw' in col]
     
-    # Track which features are present in ALL QC samples (before gap-filling)
-    qc_complete_features = {}
+    # Track feature presence percentage in each QC group (before gap-filling)
+    # We'll use this to filter features for RSD calculation and QC PCA
+    qc_feature_presence = {}
     for group_name, group_samples in [("QC4", qc4_samples), ("blauw", blauw_samples)]:
         if group_samples:
             group_data_raw = data[group_samples]
-            # Features present in ALL samples of this QC group (no NaN in any sample)
-            qc_complete_features[group_name] = group_data_raw.notna().all(axis=1)
+            # Calculate percentage of QC samples where each feature is present (non-NaN)
+            qc_feature_presence[group_name] = group_data_raw.notna().mean(axis=1)
 
     # Replace NaN with half the minimum positive value (metabolomics best practice)
     min_positive = data[data > 0].min().min()
@@ -230,11 +231,13 @@ def run_combat_and_visualize(
         if len(qc_samples_for_filter) >= 2:  # Need at least 2 QC samples
             qc_data_for_filter = df[qc_samples_for_filter]
             
+            # Use the pre-computed presence percentages from BEFORE gap-filling
+            # For combined QC samples, we need to compute presence across all QC samples
             # Calculate percentage of QC samples where each feature is present (non-NaN)
             feature_presence = qc_data_for_filter.notna().mean(axis=1)
             
-            # Filter: features present in >=90% of QC samples
-            high_presence_mask = feature_presence >= 0.90
+            # Filter: features present in >=80% of QC samples (more inclusive than 90%)
+            high_presence_mask = feature_presence >= 0.80
             filtered_features = high_presence_mask[high_presence_mask].index
             
             if len(filtered_features) > 0:
@@ -290,7 +293,7 @@ def run_combat_and_visualize(
                 # Calculate explained variance
                 explained_variance_qc = pca_qc.explained_variance_ratio_
                 
-                ax_qc.set_title(f"{label} (QC-only PCA, {len(filtered_features)} features in ≥90% QC)\nExplained Variance: PC1={explained_variance_qc[0]:.2%}, PC2={explained_variance_qc[1]:.2%}")
+                ax_qc.set_title(f"{label} (QC-only PCA, {len(filtered_features)} features in ≥80% QC)\nExplained Variance: PC1={explained_variance_qc[0]:.2%}, PC2={explained_variance_qc[1]:.2%}")
                 ax_qc.set_xlabel(f"PC1 ({explained_variance_qc[0]:.1%})")
                 ax_qc.set_ylabel(f"PC2 ({explained_variance_qc[1]:.1%})")
                 ax_qc.grid(True, alpha=0.3)
@@ -350,66 +353,81 @@ def run_combat_and_visualize(
 
                 group_data = df[group_samples]
 
-                # --- Improved RSD calculation with filtering ---
-                # Use the pre-computed mask from BEFORE gap-filling
+                # --- Improved RSD calculation with percentage-based filtering ---
+                # Use the pre-computed presence percentages from BEFORE gap-filling
                 # This is CRITICAL: prevents gap-filled features from inflating RSD
-                if group_name in qc_complete_features:
-                    qc_complete_mask = qc_complete_features[group_name]
-                    # Align mask with current df (in case df has been filtered)
-                    qc_complete_mask = qc_complete_mask.reindex(df.index, fill_value=False)
-                    group_data_complete = group_data[qc_complete_mask]
+                
+                # Get feature presence percentages for this QC group
+                if group_name in qc_feature_presence:
+                    presence_pct = qc_feature_presence[group_name].reindex(df.index, fill_value=0.0)
                 else:
                     # Fallback: compute from current data (shouldn't happen)
-                    qc_complete_mask = group_data.notna().all(axis=1)
-                    group_data_complete = group_data[qc_complete_mask]
+                    presence_pct = group_data.notna().mean(axis=1)
                 
-                if len(group_data_complete) == 0:
-                    print(f"No features present in ALL {group_name} samples. Skipping RSD calculation.")
-                    continue
+                # Define filtering thresholds
+                presence_thresholds = [0.80, 0.90, 1.00]  # 80%, 90%, 100%
                 
-                group_means = group_data_complete.mean(axis=1)
-                group_stds = group_data_complete.std(axis=1)
-                rsd = (group_stds / group_means) * 100
-                
-                # For reference, also calculate on all features (including incomplete ones)
+                # Calculate RSD for all features first
                 group_means_all = group_data.mean(axis=1)
                 group_stds_all = group_data.std(axis=1)
                 rsd_all = (group_stds_all / group_means_all) * 100
                 
-                # Filter 2: Only features with mean intensity above median
-                # This removes low-intensity features that have artificially high RSD
-                intensity_threshold = group_means.median()
-                high_intensity_mask = group_means >= intensity_threshold
-                rsd_filtered = rsd[high_intensity_mask]
-                
-                # Print RSD summaries
+                # Print RSD summaries for different presence thresholds
                 print(f"\n--- {group_name} ({label}) ---")
-                print(f"Features present in ALL {group_name} QC samples: {len(group_data_complete)} / {len(group_data)}")
-                print(f"\nFEATURES IN ALL QC SAMPLES ({len(group_data_complete)} features):")
-                print(f"  Median RSD: {rsd.median():.2f}%")
-                print(f"  Mean RSD: {rsd.mean():.2f}%")
-                print(f"  Features with RSD > 20%: {(rsd > 20).sum()} ({(rsd > 20).mean() * 100:.1f}%)")
-                print(f"  Features with RSD > 15%: {(rsd > 15).sum()} ({(rsd > 15).mean() * 100:.1f}%)")
                 
-                print(f"\nHIGH INTENSITY + COMPLETE FEATURES ({high_intensity_mask.sum()} features):")
-                print(f"  Median RSD: {rsd_filtered.median():.2f}%")
-                print(f"  Mean RSD: {rsd_filtered.mean():.2f}%")
-                print(f"  Features with RSD > 20%: {(rsd_filtered > 20).sum()} ({(rsd_filtered > 20).mean() * 100:.1f}%)")
-                print(f"  Features with RSD > 15%: {(rsd_filtered > 15).sum()} ({(rsd_filtered > 15).mean() * 100:.1f}%)")
+                for threshold in presence_thresholds:
+                    mask = presence_pct >= threshold
+                    group_data_filtered = group_data[mask]
+                    
+                    if len(group_data_filtered) == 0:
+                        print(f"\nFEATURES IN >= {int(threshold*100)}% QC SAMPLES: 0 features (skipped)")
+                        continue
+                    
+                    group_means = group_data_filtered.mean(axis=1)
+                    group_stds = group_data_filtered.std(axis=1)
+                    rsd = (group_stds / group_means) * 100
+                    
+                    # Also filter by intensity (above median)
+                    intensity_threshold = group_means.median()
+                    high_intensity_mask = group_means >= intensity_threshold
+                    rsd_filtered = rsd[high_intensity_mask]
+                    
+                    print(f"\nFEATURES IN >= {int(threshold*100)}% QC SAMPLES ({mask.sum()} features):")
+                    print(f"  Median RSD: {rsd.median():.2f}%")
+                    print(f"  Mean RSD: {rsd.mean():.2f}%")
+                    print(f"  Features with RSD > 20%: {(rsd > 20).sum()} ({(rsd > 20).mean() * 100:.1f}%)")
+                    print(f"  Features with RSD > 15%: {(rsd > 15).sum()} ({(rsd > 15).mean() * 100:.1f}%)")
+                    
+                    print(f"  HIGH INTENSITY + >= {int(threshold*100)}% PRESENT ({high_intensity_mask.sum()} features):")
+                    print(f"    Median RSD: {rsd_filtered.median():.2f}%")
+                    print(f"    Mean RSD: {rsd_filtered.mean():.2f}%")
+                    print(f"    Features with RSD > 20%: {(rsd_filtered > 20).sum()} ({(rsd_filtered > 20).mean() * 100:.1f}%)")
+                    print(f"    Features with RSD > 15%: {(rsd_filtered > 15).sum()} ({(rsd_filtered > 15).mean() * 100:.1f}%)")
                 
-                # Also print ALL features RSD for comparison (shows the problem with gap-filled features)
+                # Also print ALL features RSD for comparison
                 print(f"\nALL FEATURES (including incomplete, {len(rsd_all)} features):")
                 print(f"  Median RSD: {rsd_all.median():.2f}%")
                 print(f"  Mean RSD: {rsd_all.mean():.2f}%")
                 print(f"  Features with RSD > 20%: {(rsd_all > 20).sum()} ({(rsd_all > 20).mean() * 100:.1f}%)")
                 print(f"  Features with RSD > 15%: {(rsd_all > 15).sum()} ({(rsd_all > 15).mean() * 100:.1f}%)")
+                
+                # For plotting, use 80% threshold + high intensity
+                presence_80_mask = presence_pct >= 0.80
+                group_data_80 = group_data[presence_80_mask]
+                if len(group_data_80) > 0:
+                    group_means_80 = group_data_80.mean(axis=1)
+                    intensity_threshold_80 = group_means_80.median()
+                    high_intensity_mask_80 = group_means_80 >= intensity_threshold_80
+                    rsd_for_plot = rsd[presence_80_mask][high_intensity_mask_80]
+                else:
+                    rsd_for_plot = rsd
 
-                # Plot and save RSD distribution
+                # Plot and save RSD distribution (using 80% presence + high intensity)
                 plt.figure(figsize=(8, 4))
-                sns.histplot(rsd_filtered, bins=30, kde=True)
+                sns.histplot(rsd_for_plot, bins=30, kde=True)
                 plt.axvline(15, color='red', linestyle='--', label='RSD = 15%')
                 plt.axvline(20, color='orange', linestyle='--', label='RSD = 20%')
-                plt.title(f"RSD Distribution for {group_name} ({label})\n(Complete + High Intensity Features)")
+                plt.title(f"RSD Distribution for {group_name} ({label})\n(>=80% QC samples + High Intensity)")
                 plt.xlabel("RSD (%)")
                 plt.ylabel("Number of Features")
                 plt.legend()
