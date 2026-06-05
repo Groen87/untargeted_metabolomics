@@ -177,7 +177,10 @@ def filter_by_qc_quality(
     qc_df = df[qc_samples]
 
     # Identify IMD features (case-insensitive)
-    is_imd = df['Feature'].str.contains('|'.join(imd_features), case=False, regex=True)
+    if imd_features:
+        is_imd = df['Feature'].str.contains('|'.join(imd_features), case=False, regex=True)
+    else:
+        is_imd = pd.Series(False, index=df.index)
 
     # Filter 1: Present in all QC samples
     mask_all_qc = qc_df.notna().all(axis=1)
