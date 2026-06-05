@@ -227,6 +227,116 @@ def run_combat_and_visualize(
 
             fig.savefig(output_dir / f"{suffix}_pca.png", dpi=300, bbox_inches="tight")
             plt.close(fig)
+        
+        # --- PCA for QC samples ONLY with filtered features ---
+        # Filter to features present in >=90% of QC samples to remove gap-filled features
+        qc_samples_for_filter = qc3_samples + qc4_samples + blauw_samples
+        if len(qc_samples_for_filter) >= 2:  # Need at least 2 QC samples
+            qc_data_for_filter = df[qc_samples_for_filter]
+            
+            # Calculate percentage of QC samples where each feature is present (non-NaN)
+            feature_presence = qc_data_for_filter.notna().mean(axis=1)
+            
+            # Filter: features present in >=90% of QC samples
+            high_presence_mask = feature_presence >= 0.90
+            filtered_features = high_presence_mask[high_presence_mask].index
+            
+            if len(filtered_features) > 0:
+                df_qc_filtered = df.loc[filtered_features, qc_samples_for_filter]
+                
+                # Handle NaN values
+                if df_qc_filtered.isna().any().any():
+                    min_positive = df_qc_filtered[df_qc_filtered > 0].min().min()
+                    small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
+                    df_qc_filtered = df_qc_filtered.fillna(small_value)
+                
+                # Standardize and perform PCA
+                scaler_qc = StandardScaler()
+                df_qc_scaled = scaler_qc.fit_transform(df_qc_filtered.T)
+                
+                pca_qc = PCA(n_components=2, random_state=random_state)
+                pca_qc_result = pca_qc.fit_transform(df_qc_scaled)
+                
+                # Create figure for QC-only PCA
+                fig_qc, ax_qc = plt.subplots(figsize=(10, 8))
+                
+                # Plot each QC type with its bright color
+                if qc3_samples:
+                    qc3_idx = [qc_samples_for_filter.index(s) for s in qc3_samples if s in qc_samples_for_filter]
+                    if qc3_idx:
+                        ax_qc.scatter(
+                            pca_qc_result[qc3_idx, 0],
+                            pca_qc_result[qc3_idx, 1],
+                            c='red',
+                            alpha=1.0,
+                            s=100,
+                            marker='s',
+                            edgecolors='black',
+                            linewidth=0.5,
+                            label='QC3'
+                        )
+                
+                if qc4_samples:
+                    qc4_idx = [qc_samples_for_filter.index(s) for s in qc4_samples if s in qc_samples_for_filter]
+                    if qc4_idx:
+                        ax_qc.scatter(
+                            pca_qc_result[qc4_idx, 0],
+                            pca_qc_result[qc4_idx, 1],
+                            c='blue',
+                            alpha=1.0,
+                            s=100,
+                            marker='^',
+                            edgecolors='black',
+                            linewidth=0.5,
+                            label='QC4'
+                        )
+                
+                if blauw_samples:
+                    blauw_idx = [qc_samples_for_filter.index(s) for s in blauw_samples if s in qc_samples_for_filter]
+                    if blauw_idx:
+                        ax_qc.scatter(
+                            pca_qc_result[blauw_idx, 0],
+                            pca_qc_result[blauw_idx, 1],
+                            c='gold',
+                            alpha=1.0,
+                            s=100,
+                            marker='D',
+                            edgecolors='black',
+                            linewidth=0.5,
+                            label='blauw QC'
+                        )
+                
+                # Calculate explained variance
+                explained_variance_qc = pca_qc.explained_variance_ratio_
+                
+                ax_qc.set_title(f"{label} (QC-only PCA, {len(filtered_features)} features in ≥90% QC)\nExplained Variance: PC1={explained_variance_qc[0]:.2%}, PC2={explained_variance_qc[1]:.2%}")
+                ax_qc.set_xlabel(f"PC1 ({explained_variance_qc[0]:.1%})")
+                ax_qc.set_ylabel(f"PC2 ({explained_variance_qc[1]:.1%})")
+                ax_qc.grid(True, alpha=0.3)
+                
+                # Create legend
+                from matplotlib.lines import Line2D
+                qc_legend_elements = []
+                if qc3_samples:
+                    qc_legend_elements.append(Line2D([0], [0], marker='s', color='red', markersize=8,
+                                                       markeredgecolor='black', markeredgewidth=0.5,
+                                                       label='QC3', linestyle='None'))
+                if qc4_samples:
+                    qc_legend_elements.append(Line2D([0], [0], marker='^', color='blue', markersize=8,
+                                                       markeredgecolor='black', markeredgewidth=0.5,
+                                                       label='QC4', linestyle='None'))
+                if blauw_samples:
+                    qc_legend_elements.append(Line2D([0], [0], marker='D', color='gold', markersize=8,
+                                                       markeredgecolor='black', markeredgewidth=0.5,
+                                                       label='blauw QC', linestyle='None'))
+                
+                if qc_legend_elements:
+                    ax_qc.legend(handles=qc_legend_elements, title="QC Type", loc='best')
+                
+                fig_qc.savefig(output_dir / f"{suffix}_qc_filtered_pca.png", dpi=300, bbox_inches='tight')
+                plt.close(fig_qc)
+                
+                print(f"  ✓ Saved QC-only PCA (filtered features) to {output_dir / f'{suffix}_qc_filtered_pca.png'}")
 
             # Boxplot
             fig, ax = plt.subplots(figsize=(12, 6))
