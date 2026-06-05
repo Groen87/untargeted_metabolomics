@@ -277,7 +277,6 @@ def _generate_diagnostic_plots(
         
         # --- RSD for QC groups ---
         qc_groups = {
-            "QC3": [col for col in df.columns if "QC3" in col],
             "QC4": [col for col in df.columns if "QC4" in col],
             "blauw": [col for col in df.columns if "blauw" in col],
         }
@@ -380,16 +379,14 @@ def _generate_diagnostic_plots(
         batch_to_color_all = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
         colors_all = [batch_to_color_all.get(b, 'gray') for b in all_batch_labels]
         
-        # Identify QC samples by type for different markers
-        qc3_samples = [col for col in df.columns if 'QC3' in col]
+        # Identify QC samples by type for different markers (excluding QC3)
         qc4_samples = [col for col in df.columns if 'QC4' in col]
         blauw_samples = [col for col in df.columns if 'blauw' in col]
         
         # Get indices for all QC samples
-        qc3_indices = [list(df.columns).index(col) for col in qc3_samples] if qc3_samples else []
         qc4_indices = [list(df.columns).index(col) for col in qc4_samples] if qc4_samples else []
         blauw_indices = [list(df.columns).index(col) for col in blauw_samples] if blauw_samples else []
-        all_qc_indices = qc3_indices + qc4_indices + blauw_indices
+        all_qc_indices = qc4_indices + blauw_indices
         
         # Scatter plot for all NON-QC samples (batch colored circles)
         non_qc_indices = [i for i in range(len(df.columns)) if i not in all_qc_indices]
@@ -405,20 +402,7 @@ def _generate_diagnostic_plots(
             )
         
         # Scatter plot for QC samples with distinct markers and BRIGHT colors
-        # QC3: bright red squares, QC4: bright blue triangles, blauw: bright yellow diamonds
-        if qc3_indices:
-            ax.scatter(
-                pca_result[qc3_indices, 0],
-                pca_result[qc3_indices, 1],
-                c='red',
-                alpha=1.0,
-                s=80,
-                marker='s',
-                edgecolors='black',
-                linewidth=0.5,
-                label='QC3'
-            )
-        
+        # QC4: bright blue triangles, blauw: bright yellow diamonds
         if qc4_indices:
             ax.scatter(
                 pca_result[qc4_indices, 0],
@@ -466,10 +450,6 @@ def _generate_diagnostic_plots(
         legend_elements.append(Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
                                        markeredgecolor='black', markersize=8, alpha=0.6, 
                                        label='Biological', linestyle='None'))
-        if qc3_indices:
-            legend_elements.append(Line2D([0], [0], marker='s', color='red', markersize=8, 
-                                           markeredgecolor='black', markeredgewidth=0.5,
-                                           label='QC3', linestyle='None'))
         if qc4_indices:
             legend_elements.append(Line2D([0], [0], marker='^', color='blue', markersize=8,
                                            markeredgecolor='black', markeredgewidth=0.5,
@@ -486,7 +466,7 @@ def _generate_diagnostic_plots(
         
         # --- PCA for QC samples ONLY with filtered features ---
         # Filter to features present in >=90% of QC samples to remove gap-filled features
-        qc_samples_for_filter = qc3_samples + qc4_samples + blauw_samples
+        qc_samples_for_filter = qc4_samples + blauw_samples
         if len(qc_samples_for_filter) >= 2:  # Need at least 2 QC samples
             qc_data_for_filter = df[qc_samples_for_filter]
             
@@ -517,21 +497,6 @@ def _generate_diagnostic_plots(
                 fig_qc, ax_qc = plt.subplots(figsize=(10, 8))
                 
                 # Plot each QC type with its bright color
-                if qc3_samples:
-                    qc3_idx = [qc_samples_for_filter.index(s) for s in qc3_samples if s in qc_samples_for_filter]
-                    if qc3_idx:
-                        ax_qc.scatter(
-                            pca_qc_result[qc3_idx, 0],
-                            pca_qc_result[qc3_idx, 1],
-                            c='red',
-                            alpha=1.0,
-                            s=100,
-                            marker='s',
-                            edgecolors='black',
-                            linewidth=0.5,
-                            label='QC3'
-                        )
-                
                 if qc4_samples:
                     qc4_idx = [qc_samples_for_filter.index(s) for s in qc4_samples if s in qc_samples_for_filter]
                     if qc4_idx:
@@ -573,10 +538,6 @@ def _generate_diagnostic_plots(
                 # Create legend
                 from matplotlib.lines import Line2D
                 qc_legend_elements = []
-                if qc3_samples:
-                    qc_legend_elements.append(Line2D([0], [0], marker='s', color='red', markersize=8,
-                                                       markeredgecolor='black', markeredgewidth=0.5,
-                                                       label='QC3', linestyle='None'))
                 if qc4_samples:
                     qc_legend_elements.append(Line2D([0], [0], marker='^', color='blue', markersize=8,
                                                        markeredgecolor='black', markeredgewidth=0.5,
