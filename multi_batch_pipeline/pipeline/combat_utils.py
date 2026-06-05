@@ -170,7 +170,7 @@ def run_combat_and_visualize(
     corrected_data = corrected_data.clip(lower=0)
     
     # Restore zero-variance features with their original values (they can't be corrected)
-    zero_variance_features = feature_variances[feature_variance_features == 0].index
+    zero_variance_features = feature_variances[feature_variances == 0].index
     for feat in zero_variance_features:
         corrected_data.loc[feat] = data.loc[feat]
     
