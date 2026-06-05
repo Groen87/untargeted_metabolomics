@@ -514,6 +514,7 @@ def run_multi_batch_combat(
     show_plots: bool = False,
     save_plots: bool = True,
     run_qc: bool = True,
+    ref_batch: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Run the complete multi-batch ComBat correction pipeline.
@@ -534,6 +535,8 @@ def run_multi_batch_combat(
         show_plots: Whether to display plots interactively (default: False)
         save_plots: Whether to save plots to disk (default: True)
         run_qc: Whether to run QC analysis after ComBat (default: True)
+        ref_batch: Reference batch for ComBat correction (default: None).
+            If None, ComBat uses the largest batch as reference.
         
     Returns:
         Tuple of:
@@ -582,6 +585,7 @@ def run_multi_batch_combat(
         output_dir=str(combat_output_dir),
         show_plots=show_plots,
         save_plots=save_plots,
+        ref_batch=ref_batch,
     )
     
     logger.info(f"ComBat correction completed!")

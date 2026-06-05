@@ -106,6 +106,7 @@ def run_combat_and_visualize(
     random_state: int = 42,
     show_plots: bool = False,  # Set to False to avoid interactive display
     save_plots: bool = True,
+    ref_batch: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Run ComBat batch correction with NaN handling (metabolomics: half min positive value).
@@ -194,7 +195,7 @@ def run_combat_and_visualize(
         data_for_combat,
         batch_vector,
         covar_mod=np.zeros((len(batch_vector), 0)),  # No covariates
-        ref_batch=None,
+        ref_batch=ref_batch,
         na_cov_action="na.omit"
     )
     corrected_data = pd.DataFrame(combat_result, index=data_for_combat.index, columns=data_for_combat.columns)

@@ -201,6 +201,7 @@ def run_combat_and_visualize(
     show_plots: bool = False,
     save_plots: bool = True,
     rsd_xaxis_max: float = 50.0,
+    ref_batch: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
     """
     Run ComBat batch correction with NaN handling and generate diagnostic visualizations.
@@ -221,6 +222,9 @@ def run_combat_and_visualize(
         save_plots: Whether to save plots to disk (default: True)
         rsd_xaxis_max: Maximum RSD value to show on x-axis of RSD plots (default: 50.0)
             This caps the x-axis to avoid extreme outliers distorting the visualization.
+        ref_batch: Reference batch for ComBat correction (default: None).
+            If None, ComBat uses the largest batch as reference.
+            Specify an integer to use a specific batch as reference.
             
     Returns:
         Tuple of:
@@ -332,7 +336,7 @@ def run_combat_and_visualize(
         data_for_combat,
         batch_vector,
         covar_mod=np.zeros((len(batch_vector), 0)),  # No covariates
-        ref_batch=None,
+        ref_batch=ref_batch,
         na_cov_action="na.omit"
     )
     corrected_data = pd.DataFrame(combat_result, index=data_for_combat.index, columns=data_for_combat.columns)

@@ -325,6 +325,7 @@ def run_full_multi_batch_pipeline(
                 show_plots=show_plots,
                 save_plots=save_plots,
                 run_qc=run_qc,
+                ref_batch=config.get("ref_batch"),
             )
             
             results[mode] = (combat_corrected_df, combat_metrics)

@@ -8,6 +8,7 @@ fallback_qc_pattern: "QC3"  # Fallback QC pattern if expQC not found
 qc_intensity_threshold: 1
 frac: 0.5
 rt_threshold: 0.02
+ref_batch: null  # Reference batch for ComBat correction. Use null for automatic (largest batch), or specify batch number (e.g., 1)
 
 # Logging
 log_level: "INFO"
