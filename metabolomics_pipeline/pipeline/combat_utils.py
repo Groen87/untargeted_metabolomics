@@ -201,19 +201,43 @@ def run_combat_and_visualize(
                 group_stds = group_data.std(axis=1)
                 rsd = (group_stds / group_means) * 100
 
-                # Print RSD summary
+                # --- Improved RSD calculation with filtering ---
+                # Filter 1: Only features present in ALL QC samples (no NaN)
+                qc_complete_mask = group_data.notna().all(axis=1)
+                rsd_complete = rsd[qc_complete_mask]
+                
+                # Filter 2: Only features with mean intensity above median
+                # This removes low-intensity features that have artificially high RSD
+                intensity_threshold = group_means[qc_complete_mask].median()
+                high_intensity_mask = group_means[qc_complete_mask] >= intensity_threshold
+                rsd_filtered = rsd_complete[high_intensity_mask]
+                
+                # Print both unfiltered and filtered RSD summaries
                 print(f"\n--- {group_name} ({label}) ---")
-                print(f"Median RSD: {rsd.median():.2f}%")
-                print(f"Mean RSD: {rsd.mean():.2f}%")
-                print(f"Features with RSD > 20%: {(rsd > 20).sum()} ({(rsd > 20).mean() * 100:.1f}%)")
-                print(f"Features with RSD > 15%: {(rsd > 15).sum()} ({(rsd > 15).mean() * 100:.1f}%)")
+                print(f"ALL FEATURES:")
+                print(f"  Median RSD: {rsd.median():.2f}%")
+                print(f"  Mean RSD: {rsd.mean():.2f}%")
+                print(f"  Features with RSD > 20%: {(rsd > 20).sum()} ({(rsd > 20).mean() * 100:.1f}%)")
+                print(f"  Features with RSD > 15%: {(rsd > 15).sum()} ({(rsd > 15).mean() * 100:.1f}%)")
+                
+                print(f"COMPLETE QC FEATURES ({qc_complete_mask.sum()} features):")
+                print(f"  Median RSD: {rsd_complete.median():.2f}%")
+                print(f"  Mean RSD: {rsd_complete.mean():.2f}%")
+                print(f"  Features with RSD > 20%: {(rsd_complete > 20).sum()} ({(rsd_complete > 20).mean() * 100:.1f}%)")
+                print(f"  Features with RSD > 15%: {(rsd_complete > 15).sum()} ({(rsd_complete > 15).mean() * 100:.1f}%)")
+                
+                print(f"HIGH INTENSITY + COMPLETE FEATURES ({high_intensity_mask.sum()} features):")
+                print(f"  Median RSD: {rsd_filtered.median():.2f}%")
+                print(f"  Mean RSD: {rsd_filtered.mean():.2f}%")
+                print(f"  Features with RSD > 20%: {(rsd_filtered > 20).sum()} ({(rsd_filtered > 20).mean() * 100:.1f}%)")
+                print(f"  Features with RSD > 15%: {(rsd_filtered > 15).sum()} ({(rsd_filtered > 15).mean() * 100:.1f}%)")
 
                 # Plot and save RSD distribution
                 plt.figure(figsize=(8, 4))
-                sns.histplot(rsd, bins=30, kde=True)
+                sns.histplot(rsd_filtered, bins=30, kde=True)
                 plt.axvline(15, color='red', linestyle='--', label='RSD = 15%')
                 plt.axvline(20, color='orange', linestyle='--', label='RSD = 20%')
-                plt.title(f"RSD Distribution for {group_name} ({label})")
+                plt.title(f"RSD Distribution for {group_name} ({label})\n(Complete + High Intensity Features)")
                 plt.xlabel("RSD (%)")
                 plt.ylabel("Number of Features")
                 plt.legend()
