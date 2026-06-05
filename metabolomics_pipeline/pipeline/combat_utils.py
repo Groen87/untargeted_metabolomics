@@ -80,15 +80,37 @@ def run_combat_and_visualize(
 
     # --- Run ComBat ---
     print("Running ComBat...")
+    
+    # Filter out zero-variance features to prevent numerical instability in ComBat
+    # Features with zero variance across all samples cannot be batch-corrected
+    feature_variances = data.var(axis=1)
+    nonzero_variance_features = feature_variances[feature_variances > 0].index
+    data_filtered = data.loc[nonzero_variance_features]
+    
+    if len(data_filtered) == 0:
+        raise ValueError("All features have zero variance. Cannot run ComBat.")
+    
+    print(f"  Features with non-zero variance: {len(data_filtered)}/{len(data)}")
+    
+    # Add small epsilon to prevent division by zero in ComBat
+    # This handles cases where some features have very small but non-zero variance
+    epsilon = 1e-10
+    data_for_combat = data_filtered + epsilon
+    
     combat_result = pycombat_norm(
-        data,
+        data_for_combat,
         batch_vector,
-        covar_mod=np.zeros((len(batch_vector), 0)),
+        covar_mod=np.zeros((len(batch_vector), 0)),  # No covariates
         ref_batch=None,
         na_cov_action="na.omit"
     )
-    corrected_data = pd.DataFrame(combat_result, index=data.index, columns=data.columns)
+    corrected_data = pd.DataFrame(combat_result, index=data_for_combat.index, columns=data_for_combat.columns)
     corrected_data = corrected_data.clip(lower=0)
+    
+    # Restore zero-variance features with their original values (they can't be corrected)
+    zero_variance_features = feature_variances[feature_variance_features == 0].index
+    for feat in zero_variance_features:
+        corrected_data.loc[feat] = data.loc[feat]
     corrected_data.to_csv(output_dir / "combat_corrected_data.csv")
     print(f"✓ Saved to {output_dir}/combat_corrected_data.csv")
 
