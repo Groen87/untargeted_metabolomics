@@ -514,11 +514,31 @@ def _generate_diagnostic_plots(
         fig.savefig(output_dir / f"{suffix}_all_samples_pca.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
         
-        # --- PCA for QC samples ONLY with all features ---
+        # --- PCA for QC samples ONLY with filtered features ---
+        # Filter to features present in >=80% of QC samples to remove gap-filled features
         qc_samples_for_filter = qc4_samples + blauw_samples
         if len(qc_samples_for_filter) >= 2:  # Need at least 2 QC samples
-            # Use ALL features for QC PCA (no filtering)
-            filtered_features = df.index  # All features
+            qc_data_for_filter = df[qc_samples_for_filter]
+            
+            # Calculate feature presence across ALL QC samples (QC4 + blauw) before gap-filling
+            # Use the pre-computed presence from the original data
+            if qc4_samples and "QC4" in qc_feature_presence:
+                presence_qc4 = qc_feature_presence["QC4"].reindex(df.index, fill_value=0.0)
+            else:
+                presence_qc4 = pd.Series(0.0, index=df.index)
+            
+            if blauw_samples and "blauw" in qc_feature_presence:
+                presence_blauw = qc_feature_presence["blauw"].reindex(df.index, fill_value=0.0)
+            else:
+                presence_blauw = pd.Series(0.0, index=df.index)
+            
+            # Combined presence: average across all QC samples
+            total_qc_samples = len(qc_samples_for_filter)
+            combined_presence = (presence_qc4 * len(qc4_samples) + presence_blauw * len(blauw_samples)) / total_qc_samples
+            
+            # Filter: features present in >=80% of ALL QC samples
+            high_presence_mask = combined_presence >= 0.80
+            filtered_features = df.index[high_presence_mask]
             
             if len(filtered_features) > 0:
                 df_qc_filtered = df.loc[filtered_features, qc_samples_for_filter]
@@ -573,7 +593,7 @@ def _generate_diagnostic_plots(
                 # Calculate explained variance
                 explained_variance_qc = pca_qc.explained_variance_ratio_
                 
-                ax_qc.set_title(f"{label} (QC-only PCA, all {len(filtered_features)} features)\nExplained Variance: PC1={explained_variance_qc[0]:.2%}, PC2={explained_variance_qc[1]:.2%}")
+                ax_qc.set_title(f"{label} (QC-only PCA, {len(filtered_features)} features in ≥80% QC)\nExplained Variance: PC1={explained_variance_qc[0]:.2%}, PC2={explained_variance_qc[1]:.2%}")
                 ax_qc.set_xlabel(f"PC1 ({explained_variance_qc[0]:.1%})")
                 ax_qc.set_ylabel(f"PC2 ({explained_variance_qc[1]:.1%})")
                 ax_qc.grid(True, alpha=0.3)
