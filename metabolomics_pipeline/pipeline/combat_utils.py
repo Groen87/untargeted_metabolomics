@@ -148,13 +148,13 @@ def run_combat_and_visualize(
                     label='Biological Samples'
                 )
             
-            # Scatter plot for QC samples with distinct markers and batch colors
-            # QC3: squares, QC4: triangles, blauw: diamonds
+            # Scatter plot for QC samples with distinct markers and BRIGHT colors
+            # QC3: bright red squares, QC4: bright blue triangles, blauw: bright yellow diamonds
             if qc3_indices:
                 ax.scatter(
                     emb[qc3_indices, 0],
                     emb[qc3_indices, 1],
-                    c=[colors_all[i] for i in qc3_indices],
+                    c='red',
                     alpha=1.0,
                     s=80,
                     marker='s',
@@ -167,7 +167,7 @@ def run_combat_and_visualize(
                 ax.scatter(
                     emb[qc4_indices, 0],
                     emb[qc4_indices, 1],
-                    c=[colors_all[i] for i in qc4_indices],
+                    c='blue',
                     alpha=1.0,
                     s=80,
                     marker='^',
@@ -180,7 +180,7 @@ def run_combat_and_visualize(
                 ax.scatter(
                     emb[blauw_indices, 0],
                     emb[blauw_indices, 1],
-                    c=[colors_all[i] for i in blauw_indices],
+                    c='gold',
                     alpha=1.0,
                     s=80,
                     marker='D',
@@ -206,21 +206,21 @@ def run_combat_and_visualize(
                 for b in sorted(unique_batches_all)
             ]
             
-            # Add markers for sample types
+            # Add markers for sample types with their actual colors
             legend_elements.append(Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
                                            markeredgecolor='black', markersize=8, alpha=0.6, 
                                            label='Biological', linestyle='None'))
             if qc3_indices:
-                legend_elements.append(Line2D([0], [0], marker='s', color='w', markerfacecolor='gray',
-                                               markeredgecolor='black', markersize=8, 
+                legend_elements.append(Line2D([0], [0], marker='s', color='red', markersize=8, 
+                                               markeredgecolor='black', markeredgewidth=0.5,
                                                label='QC3', linestyle='None'))
             if qc4_indices:
-                legend_elements.append(Line2D([0], [0], marker='^', color='w', markerfacecolor='gray',
-                                               markeredgecolor='black', markersize=8, 
+                legend_elements.append(Line2D([0], [0], marker='^', color='blue', markersize=8,
+                                               markeredgecolor='black', markeredgewidth=0.5,
                                                label='QC4', linestyle='None'))
             if blauw_indices:
-                legend_elements.append(Line2D([0], [0], marker='D', color='w', markerfacecolor='gray',
-                                               markeredgecolor='black', markersize=8, 
+                legend_elements.append(Line2D([0], [0], marker='D', color='gold', markersize=8,
+                                               markeredgecolor='black', markeredgewidth=0.5,
                                                label='blauw QC', linestyle='None'))
             
             ax.legend(handles=legend_elements, title="Batch / QC Type", loc='best', bbox_to_anchor=(1.05, 1), borderaxespad=0)
