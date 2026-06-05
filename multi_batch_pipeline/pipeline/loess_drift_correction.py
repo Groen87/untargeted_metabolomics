@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 def identify_qc_samples(
     sample_cols: List[str],
     qc_pattern: str = "expQC",
+    fallback_pattern: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
     """
     Identify QC and non-QC (biological) samples from column names.
@@ -37,12 +38,18 @@ def identify_qc_samples(
     Args:
         sample_cols: List of sample column names
         qc_pattern: Pattern to identify QC samples (default: "expQC")
+        fallback_pattern: Optional fallback pattern if primary pattern yields no samples
         
     Returns:
         Tuple of (qc_samples, bio_samples) where each is a list of column names
     """
     qc_samples = [col for col in sample_cols if qc_pattern in col]
-    bio_samples = [col for col in sample_cols if qc_pattern not in col]
+    
+    # If no QC samples found with primary pattern, try fallback
+    if not qc_samples and fallback_pattern:
+        qc_samples = [col for col in sample_cols if fallback_pattern in col]
+    
+    bio_samples = [col for col in sample_cols if col not in qc_samples]
     return qc_samples, bio_samples
 
 
@@ -136,12 +143,13 @@ def correct_drift_with_loess(
     frac: float = 0.5,
     qc_intensity_threshold: float = 0.1,
     output_dir: str = "output",
+    fallback_qc_pattern: Optional[str] = "QC3",
 ) -> pd.DataFrame:
     """
     Correct drift in metabolomics data using LOESS smoothing for high-QC features.
     
     This function performs the following steps:
-    1. Identifies QC and biological samples
+    1. Identifies QC and biological samples (tries expQC first, then QC3 if no expQC found)
     2. Selects features with high intensity in QC samples
     3. For each feature, fits a LOESS curve to QC sample intensities across injection order
     4. Calculates correction factors as the inverse of the LOESS curve
@@ -160,14 +168,14 @@ def correct_drift_with_loess(
         qc_intensity_threshold: Quantile threshold for selecting high-QC features
             (default: 0.1, meaning top 10% of features by QC intensity)
         output_dir: Directory to save output files (default: "output")
+        fallback_qc_pattern: Fallback pattern if primary qc_pattern yields no samples
+            (default: "QC3"). Only used if at least 2 QC3 samples are found.
         
     Returns:
         Drift-corrected DataFrame with all original features retained.
         The 'Feature' column is preserved if present in input.
+        If no suitable QC samples are found, returns the original data unchanged.
         
-    Raises:
-        ValueError: If input DataFrame is invalid or QC samples are missing
-    
     Note:
         The correction is applied to ALL features, not just the high-QC ones used
         for fitting. This assumes that the drift pattern estimated from high-QC
@@ -192,14 +200,30 @@ def correct_drift_with_loess(
         intensity_df[col] = pd.to_numeric(intensity_df[col], errors='coerce')
     
     # --- Identify QC and biological samples ---
-    qc_samples, bio_samples = identify_qc_samples(sample_cols, qc_pattern)
+    # Try primary pattern first, then fallback to QC3 if no expQC found
+    qc_samples, bio_samples = identify_qc_samples(
+        sample_cols, 
+        qc_pattern=qc_pattern,
+        fallback_pattern=fallback_qc_pattern
+    )
     
-    if not qc_samples:
-        logger.warning(f"No QC samples found matching pattern '{qc_pattern}'. Skipping drift correction.")
+    # Only proceed if we have at least 2 QC samples (needed for drift estimation)
+    if len(qc_samples) < 2:
+        logger.warning(
+            f"Insufficient QC samples for drift correction. "
+            f"Found {len(qc_samples)} QC samples (need at least 2). "
+            f"Skipping drift correction and proceeding without it."
+        )
         # Return original data with Feature column restored
         if feature_col is not None:
             intensity_df['Feature'] = feature_col
         return intensity_df
+    
+    # Log which QC pattern was used
+    if qc_pattern in qc_samples[0]:
+        logger.info(f"Using {qc_pattern} QC samples for drift correction")
+    else:
+        logger.info(f"Using fallback {fallback_qc_pattern} QC samples for drift correction")
     
     logger.info(f"Found {len(qc_samples)} QC samples: {qc_samples}")
     logger.info(f"Found {len(bio_samples)} biological samples")

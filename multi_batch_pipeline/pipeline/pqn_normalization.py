@@ -62,6 +62,7 @@ def identify_sample_columns(
 def identify_qc_samples(
     sample_cols: List[str],
     qc_pattern: str = "expQC",
+    fallback_pattern: Optional[str] = None,
 ) -> List[str]:
     """
     Identify QC samples from sample column names.
@@ -69,11 +70,18 @@ def identify_qc_samples(
     Args:
         sample_cols: List of sample column names
         qc_pattern: Pattern to identify QC samples (case-insensitive, default: "expQC")
+        fallback_pattern: Optional fallback pattern if primary pattern yields no samples
         
     Returns:
         List of QC sample column names
     """
-    return [col for col in sample_cols if qc_pattern.lower() in col.lower()]
+    qc_cols = [col for col in sample_cols if qc_pattern.lower() in col.lower()]
+    
+    # If no QC samples found with primary pattern, try fallback
+    if not qc_cols and fallback_pattern:
+        qc_cols = [col for col in sample_cols if fallback_pattern.lower() in col.lower()]
+    
+    return qc_cols
 
 
 def calculate_pqn_scaling_factors(
@@ -117,6 +125,7 @@ def pqn_normalize(
     corrected_df: pd.DataFrame,
     output_dir: str = "output",
     qc_pattern: str = "expQC",
+    fallback_qc_pattern: Optional[str] = "QC3",
 ) -> pd.DataFrame:
     """
     Apply PQN (Probabilistic Quotient Normalization) to metabolomics data.
@@ -128,7 +137,7 @@ def pqn_normalize(
     
     Steps:
     1. Identify sample columns (excluding metadata and Feature)
-    2. Identify QC samples from sample columns
+    2. Identify QC samples from sample columns (tries expQC first, then QC3)
     3. Calculate reference median from QC sample medians
     4. Calculate scaling factor for each sample: sample_median / reference_median
     5. Divide each sample by its scaling factor
@@ -140,15 +149,17 @@ def pqn_normalize(
             May have a 'Feature' column and/or metadata columns.
         output_dir: Directory to save output files (default: "output")
         qc_pattern: Pattern to identify QC samples (case-insensitive, default: "expQC")
+        fallback_qc_pattern: Fallback pattern if primary qc_pattern yields no samples
+            (default: "QC3")
         
     Returns:
         DataFrame with PQN-normalized data.
         The 'Feature' column is the first column, followed by normalized sample columns.
+        If no QC samples are found, returns the original data unchanged.
         
     Raises:
         ValueError: If input DataFrame is empty
         ValueError: If no sample columns are found
-        ValueError: If no QC samples are found
     
     Note:
         This normalization method is particularly suitable for metabolomics data
@@ -173,14 +184,24 @@ def pqn_normalize(
     if 'Feature' in corrected_df.columns:
         corrected_df = corrected_df.set_index('Feature')
     
-    # Identify QC samples
-    qc_cols = identify_qc_samples(sample_cols, qc_pattern)
+    # Identify QC samples (try primary pattern, then fallback)
+    qc_cols = identify_qc_samples(sample_cols, qc_pattern, fallback_pattern=fallback_qc_pattern)
     
     if not qc_cols:
-        raise ValueError(
-            f"No QC samples matching pattern '{qc_pattern}' found in DataFrame columns. "
-            f"Available columns: {sample_cols}"
+        logger.warning(
+            f"No QC samples found matching patterns '{qc_pattern}' or '{fallback_qc_pattern}'. "
+            f"Skipping PQN normalization and returning original data."
         )
+        # Return original data with Feature as first column
+        if 'Feature' in corrected_df.index.name:
+            corrected_df = corrected_df.reset_index()
+        return corrected_df
+    
+    # Log which QC pattern was used
+    if qc_pattern.lower() in qc_cols[0].lower():
+        logger.info(f"Using {qc_pattern} QC samples for PQN normalization")
+    else:
+        logger.info(f"Using fallback {fallback_qc_pattern} QC samples for PQN normalization")
     
     logger.info(f"Found {len(qc_cols)} QC samples: {qc_cols}")
     

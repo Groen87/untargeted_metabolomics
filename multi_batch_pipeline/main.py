@@ -170,6 +170,7 @@ def process_single_batch(
             qc_intensity_threshold=config["qc_intensity_threshold"],
             frac=config["frac"],
             output_dir=str(output_dir),
+            fallback_qc_pattern=config.get("fallback_qc_pattern", "QC3"),
         )
         
         # --- Step 3: PQN Normalization ---
@@ -177,6 +178,8 @@ def process_single_batch(
         normalized_df = pqn_normalize(
             corrected_df,
             output_dir=str(output_dir),
+            qc_pattern=config["qc_pattern"],
+            fallback_qc_pattern=config.get("fallback_qc_pattern", "QC3"),
         )
         
         logger.info(f"  ✓ {batch_folder}/{mode} processed successfully!")
