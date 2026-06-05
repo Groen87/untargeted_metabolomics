@@ -42,18 +42,11 @@ def pqn_normalize(
     # Identify expQC samples (case-insensitive)
     qc_cols = [col for col in sample_cols if 'expqc' in col.lower()]
 
-    # Fallback to QC3 if no expQC samples are found
     if not qc_cols:
-        logger.warning("No 'expQC' samples found. Trying 'QC3' as fallback.")
-        qc_cols = [col for col in sample_cols if 'qc3' in col.lower()]
-
-        if not qc_cols:
-            raise ValueError(
-                "No 'expQC', 'QC3', 'QC4', or 'blauw' samples found in DataFrame columns. "
-                f"Available columns: {sample_cols}"
-            )
-        else:
-            logger.info(f"Fallback QC samples found: {qc_cols}")
+        raise ValueError(
+            "No 'expQC' samples found in DataFrame columns. "
+            f"Available columns: {sample_cols}"
+        )
     else:
         logger.info(f"Found expQC samples: {qc_cols}")
 

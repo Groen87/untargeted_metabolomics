@@ -62,19 +62,10 @@ def correct_drift_with_loess(
            not any(col.startswith(prefix) for prefix in ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status'])
     ]
 
-    # If no QC samples found with the current pattern, try "QC3"
-    if not qc_samples:
-        logger.warning(f"No QC samples found with pattern '{qc_pattern}'. Trying 'QC3' as fallback.")
-        qc_samples = [
-            col for col in intensity_df.columns
-            if "QC3".lower() in col.lower() and
-               not any(col.startswith(prefix) for prefix in ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status'])
-        ]
-
     if not qc_samples:
         logger.error(
-            f"No QC samples found with pattern '{qc_pattern}' or fallback 'QC3'. Available columns: {list(intensity_df.columns)}")
-        raise ValueError(f"No QC samples found with pattern '{qc_pattern}' or fallback 'QC3'")
+            f"No QC samples found with pattern '{qc_pattern}'. Available columns: {list(intensity_df.columns)}")
+        raise ValueError(f"No QC samples found with pattern '{qc_pattern}'")
     else:
         logger.info(f"Found QC samples: {qc_samples}")
 
