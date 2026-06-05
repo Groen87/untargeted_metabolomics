@@ -1,7 +1,7 @@
 # Multi-Batch Metabolomics Pipeline Configuration
 
 # File paths (relative to project root or absolute)
-batch_folders: []  # List of batch folders to process (can override via --batches)
+batch_folders: ["MZ25_36", "MZ25_38", "MZ25_43", "MZ25_45", "MZ25_50", "MZ25_53", "MZ26_10", "MZ26_15", "MZ26_16", "MZ26_21"]  # List of batch folders to process (can override via --batches)
 intensity_threshold: 10000
 qc_pattern: "expQC"
 qc_intensity_threshold: 1

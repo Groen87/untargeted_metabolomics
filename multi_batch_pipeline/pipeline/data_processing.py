@@ -27,19 +27,19 @@ from .injection_order import get_injection_order
 # Constants
 # =============================================================================
 
-INTENSITY_THRESHOLD_DEFAULT = 10000
+INTENSITY_THRESHOLD_DEFAULT = 5000
 """Default intensity threshold for filtering low-abundance features."""
 
-QC_RSD_THRESHOLD = 20.0  # %
+QC_RSD_THRESHOLD = 10.0
 """Maximum RSD (Relative Standard Deviation) allowed for QC samples."""
 
-QC_INTENSITY_QUANTILE = 0.25  # 25th percentile
+QC_INTENSITY_QUANTILE = 0.30
 """Minimum intensity quantile for features to pass QC filtering."""
 
-BIO_MISSING_THRESHOLD = 0.2  # 20%
+BIO_MISSING_THRESHOLD = 0.1
 """Maximum fraction of missing values allowed in biological samples."""
 
-BIO_INTENSITY_QUANTILE = 0.10  # 10th percentile
+BIO_INTENSITY_QUANTILE = 0.20
 """Minimum intensity quantile for features to pass biological filtering."""
 
 # Known Inborn Metabolic Disorder (IMD) metabolites that should always be preserved
@@ -162,53 +162,67 @@ def filter_by_qc_quality(
     qc_samples: List[str],
     rsd_threshold: float = QC_RSD_THRESHOLD,
     intensity_quantile: float = QC_INTENSITY_QUANTILE,
+    missing_threshold: float = 0.1,  # New: Max 10% missing in QC samples
+    min_snr: float = 2.0,  # New: Minimum SNR
+    imd_features: List[str] = IMD_METABOLITES,  # New: IMD features to exempt
 ) -> pd.DataFrame:
     """
     Filter features based on QC sample quality metrics.
-    
-    Applies three sequential filters:
-    1. Features must be present (non-NaN) in ALL QC samples
-    2. Features must have RSD ≤ threshold across QC samples
-    3. Features must have mean intensity ≥ specified quantile across QC samples
-    
-    Args:
-        df: Input DataFrame with features as rows and samples as columns
-        qc_samples: List of column names corresponding to QC samples
-        rsd_threshold: Maximum allowed RSD percentage (default: 20.0)
-        intensity_quantile: Minimum intensity quantile (default: 0.25)
-        
-    Returns:
-        DataFrame with only features passing all QC quality filters
-        
-    Note:
-        RSD (Relative Standard Deviation) = (std / mean) * 100
-        Features with NaN RSD (due to division by zero) are filtered out.
     """
     if not qc_samples:
         return df
-    
-    # Get QC subset
+
+    initial_features = len(df)
     qc_df = df[qc_samples]
-    
+
+    # Identify IMD features (case-insensitive)
+    is_imd = df['Feature'].str.contains('|'.join(imd_features), case=False, regex=True)
+
     # Filter 1: Present in all QC samples
     mask_all_qc = qc_df.notna().all(axis=1)
+    mask_all_qc[is_imd] = True  # Exempt IMD features
     df = df[mask_all_qc]
-    
-    # Filter 2: RSD ≤ threshold in QC samples
-    qc_df = df[qc_samples]  # Update qc_df after Filter 1
+    print(f"✓ QC Filter 1: Removed {initial_features - len(df)} features (not present in all QC samples)")
+
+    # Filter 2: Missing values ≤ threshold in QC samples (NEW)
+    missing_rate = qc_df.isna().mean(axis=1)
+    mask_low_missing = missing_rate <= missing_threshold
+    mask_low_missing[is_imd] = True  # Exempt IMD features
+    df = df[mask_low_missing]
+    print(f"✓ QC Filter 2: Removed {initial_features - len(df)} features (missing in >{missing_threshold*100}% QC samples)")
+
+    # Filter 3: RSD ≤ threshold in QC samples
+    qc_df = df[qc_samples]
     qc_rsd = (qc_df.std(axis=1) / qc_df.mean(axis=1) * 100).fillna(100)
     mask_low_rsd = qc_rsd <= rsd_threshold
+    mask_low_rsd[is_imd] = True  # Exempt IMD features
     df = df[mask_low_rsd]
-    
-    # Filter 3: Mean QC intensity ≥ quantile
-    qc_df = df[qc_samples]  # Update qc_df after Filter 2
+    print(f"✓ QC Filter 3: Removed {initial_features - len(df)} features (RSD > {rsd_threshold}%)")
+
+    # Filter 4: SNR ≥ min_snr (NEW)
+    qc_df = df[qc_samples]
+    qc_mean = qc_df.mean(axis=1)
+    qc_std = qc_df.std(axis=1)
+    snr = qc_mean / qc_std
+    mask_high_snr = snr >= min_snr
+    mask_high_snr[is_imd] = True  # Exempt IMD features
+    df = df[mask_high_snr]
+    print(f"✓ QC Filter 4: Removed {initial_features - len(df)} features (SNR < {min_snr})")
+
+    # Filter 5: Mean QC intensity ≥ quantile
     qc_mean = qc_df.mean(axis=1)
     intensity_threshold = qc_mean.quantile(intensity_quantile)
     mask_high_intensity = qc_mean >= intensity_threshold
+    mask_high_intensity[is_imd] = True  # Exempt IMD features
     df = df[mask_high_intensity]
-    
-    return df
+    print(f"✓ QC Filter 5: Removed {initial_features - len(df)} features (intensity < {intensity_quantile*100}th percentile)")
 
+    # Log IMD features that passed due to exemption
+    imd_passed = is_imd[mask_all_qc & mask_low_missing & mask_low_rsd & mask_high_snr & mask_high_intensity]
+    if imd_passed.any():
+        print(f"⚠️ Preserved {imd_passed.sum()} IMD features that would have been filtered")
+
+    return df
 
 def filter_by_biological_quality(
     df: pd.DataFrame,
@@ -386,11 +400,9 @@ def process_metabolomics_data(
         if base_id not in ordered_base_ids:
             continue
         sample_data = df[cols].copy().replace('', np.nan).astype(float)
-        
-        # ONLY apply intensity threshold to NON-QC samples
-        if base_id not in qc_samples:
-            sample_data = sample_data.mask(sample_data <= intensity_threshold, np.nan)
-        
+
+        sample_data = sample_data.mask(sample_data <= intensity_threshold, np.nan)
+
         if len(cols) > 1:
             mask_all_valid = sample_data.notna().all(axis=1)
             merged = sample_data.mean(axis=1)
@@ -416,7 +428,15 @@ def process_metabolomics_data(
     
     # Filter by biological quality
     initial_bio_features = len(transformed_df)
-    transformed_df = filter_by_biological_quality(transformed_df, bio_samples)
+    transformed_df = filter_by_qc_quality(
+        transformed_df,
+        qc_samples,
+        rsd_threshold=QC_RSD_THRESHOLD,
+        intensity_quantile=QC_INTENSITY_QUANTILE,
+        missing_threshold=0.1,  # New
+        min_snr=2.0,  # New
+        imd_features=IMD_METABOLITES,  # New
+    )
     bio_filtered = initial_bio_features - len(transformed_df)
     print(f"✓ Removed {bio_filtered} features by biological quality filters")
     
@@ -433,11 +453,13 @@ def process_metabolomics_data(
     print("[STEP 5] Applying global intensity filter...")
     if bio_samples:
         features_before = len(transformed_df)
+        # Remove features where >50% of biological samples are ≤ threshold OR missing
         below_or_nan = (transformed_df[bio_samples] <= intensity_threshold) | transformed_df[bio_samples].isna()
-        keep_features = ~below_or_nan.all(axis=1)
+        missing_rate = below_or_nan.mean(axis=1)
+        keep_features = missing_rate <= 0.5  # Max 50% of biological samples ≤ threshold or missing
         transformed_df = transformed_df.loc[keep_features]
         features_removed = features_before - len(transformed_df)
-        print(f"✓ Removed {features_removed} features (all samples ≤ threshold)\n")
+        print(f"✓ Removed {features_removed} features (>50% of biological samples ≤ threshold or missing)\n")
     else:
         print("⚠️ Warning: No biological samples found for global filtering\n")
     

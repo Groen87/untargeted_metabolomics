@@ -89,7 +89,7 @@ def main():
                 corrected_df=corrected_df,
                 output_dir=str(output_dir),
             )
-            '''
+
             # Step 4: Merge with Reference Batch for ComBat
             if reference_batch:
                 ref_data_file = Path(f"data/{reference_batch}/output/{mode}/pqn_normalized.csv")
