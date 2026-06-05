@@ -29,16 +29,30 @@ def run_combat_and_visualize(
     # --- Load and preprocess data ---
     data = pd.read_csv(merged_data_path, index_col=0)  # Features x Samples
 
-    # Replace NaN with half the minimum positive value (metabolomics best practice)
-    min_positive = data[data > 0].min().min()
-    small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
-    data = data.fillna(small_value)
-
     batch_info = pd.read_csv(merged_batch_path)
 
     # Standardize to strings
     data.columns = data.columns.astype(str)
     batch_info['sample_id'] = batch_info['sample_id'].astype(str)
+
+    # --- Identify QC samples and track complete features BEFORE gap-filling ---
+    # This is CRITICAL: we need to know which features are present in ALL QC samples
+    # BEFORE any gap-filling, otherwise we can't distinguish gap-filled from real features
+    qc4_samples = [col for col in data.columns if 'QC4' in col]
+    blauw_samples = [col for col in data.columns if 'blauw' in col]
+    
+    # Track which features are present in ALL QC samples (before gap-filling)
+    qc_complete_features = {}
+    for group_name, group_samples in [("QC4", qc4_samples), ("blauw", blauw_samples)]:
+        if group_samples:
+            group_data_raw = data[group_samples]
+            # Features present in ALL samples of this QC group (no NaN in any sample)
+            qc_complete_features[group_name] = group_data_raw.notna().all(axis=1)
+
+    # Replace NaN with half the minimum positive value (metabolomics best practice)
+    min_positive = data[data > 0].min().min()
+    small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
+    data = data.fillna(small_value)
 
     # Check for common samples
     common_samples = list(set(data.columns) & set(batch_info['sample_id']))
@@ -337,10 +351,17 @@ def run_combat_and_visualize(
                 group_data = df[group_samples]
 
                 # --- Improved RSD calculation with filtering ---
-                # Filter 1: Only features present in ALL QC samples (no NaN)
+                # Use the pre-computed mask from BEFORE gap-filling
                 # This is CRITICAL: prevents gap-filled features from inflating RSD
-                qc_complete_mask = group_data.notna().all(axis=1)
-                group_data_complete = group_data[qc_complete_mask]
+                if group_name in qc_complete_features:
+                    qc_complete_mask = qc_complete_features[group_name]
+                    # Align mask with current df (in case df has been filtered)
+                    qc_complete_mask = qc_complete_mask.reindex(df.index, fill_value=False)
+                    group_data_complete = group_data[qc_complete_mask]
+                else:
+                    # Fallback: compute from current data (shouldn't happen)
+                    qc_complete_mask = group_data.notna().all(axis=1)
+                    group_data_complete = group_data[qc_complete_mask]
                 
                 if len(group_data_complete) == 0:
                     print(f"No features present in ALL {group_name} samples. Skipping RSD calculation.")
