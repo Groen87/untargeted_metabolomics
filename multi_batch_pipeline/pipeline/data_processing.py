@@ -173,6 +173,7 @@ def filter_by_qc_quality(
         return df
 
     initial_features = len(df)
+    features_before = initial_features
     qc_df = df[qc_samples]
 
     # Identify IMD features (case-insensitive)
@@ -182,14 +183,19 @@ def filter_by_qc_quality(
     mask_all_qc = qc_df.notna().all(axis=1)
     mask_all_qc[is_imd] = True  # Exempt IMD features
     df = df[mask_all_qc]
-    print(f"✓ QC Filter 1: Removed {initial_features - len(df)} features (not present in all QC samples)")
+    removed = features_before - len(df)
+    print(f"✓ QC Filter 1: Removed {removed} features (not present in all QC samples)")
+    features_before = len(df)
 
     # Filter 2: Missing values ≤ threshold in QC samples (NEW)
+    qc_df = df[qc_samples]
     missing_rate = qc_df.isna().mean(axis=1)
     mask_low_missing = missing_rate <= missing_threshold
     mask_low_missing[is_imd] = True  # Exempt IMD features
     df = df[mask_low_missing]
-    print(f"✓ QC Filter 2: Removed {initial_features - len(df)} features (missing in >{missing_threshold*100}% QC samples)")
+    removed = features_before - len(df)
+    print(f"✓ QC Filter 2: Removed {removed} features (missing in >{missing_threshold*100}% QC samples)")
+    features_before = len(df)
 
     # Filter 3: RSD ≤ threshold in QC samples
     qc_df = df[qc_samples]
@@ -197,7 +203,9 @@ def filter_by_qc_quality(
     mask_low_rsd = qc_rsd <= rsd_threshold
     mask_low_rsd[is_imd] = True  # Exempt IMD features
     df = df[mask_low_rsd]
-    print(f"✓ QC Filter 3: Removed {initial_features - len(df)} features (RSD > {rsd_threshold}%)")
+    removed = features_before - len(df)
+    print(f"✓ QC Filter 3: Removed {removed} features (RSD > {rsd_threshold}%)")
+    features_before = len(df)
 
     # Filter 4: SNR ≥ min_snr (NEW)
     qc_df = df[qc_samples]
@@ -207,20 +215,24 @@ def filter_by_qc_quality(
     mask_high_snr = snr >= min_snr
     mask_high_snr[is_imd] = True  # Exempt IMD features
     df = df[mask_high_snr]
-    print(f"✓ QC Filter 4: Removed {initial_features - len(df)} features (SNR < {min_snr})")
+    removed = features_before - len(df)
+    print(f"✓ QC Filter 4: Removed {removed} features (SNR < {min_snr})")
+    features_before = len(df)
 
     # Filter 5: Mean QC intensity ≥ quantile
+    qc_df = df[qc_samples]
     qc_mean = qc_df.mean(axis=1)
     intensity_threshold = qc_mean.quantile(intensity_quantile)
     mask_high_intensity = qc_mean >= intensity_threshold
     mask_high_intensity[is_imd] = True  # Exempt IMD features
     df = df[mask_high_intensity]
-    print(f"✓ QC Filter 5: Removed {initial_features - len(df)} features (intensity < {intensity_quantile*100}th percentile)")
+    removed = features_before - len(df)
+    print(f"✓ QC Filter 5: Removed {removed} features (intensity < {intensity_quantile*100}th percentile)")
 
     # Log IMD features that passed due to exemption
-    imd_passed = is_imd[mask_all_qc & mask_low_missing & mask_low_rsd & mask_high_snr & mask_high_intensity]
-    if imd_passed.any():
-        print(f"⚠️ Preserved {imd_passed.sum()} IMD features that would have been filtered")
+    imd_count = is_imd.sum()
+    if imd_count > 0:
+        print(f"⚠️ Preserved {imd_count} IMD features that would have been filtered")
 
     return df
 

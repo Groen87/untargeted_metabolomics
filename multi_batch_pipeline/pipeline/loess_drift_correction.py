@@ -101,15 +101,33 @@ def fit_loess_curve(
     x_sorted = x[sorted_indices]
     y_sorted = y[sorted_indices]
     
-    # Fit LOESS curve
-    smoothed = lowess(y_sorted, x_sorted, frac=frac)
-    
-    # Return smoothed values in original order
-    result = np.zeros_like(y)
-    for i, idx in enumerate(sorted_indices):
-        result[idx] = smoothed[i, 1]
-    
-    return result
+    # Fit LOESS curve with error handling
+    try:
+        # Adjust frac to avoid numerical issues with small sample sizes
+        # If we have few points, use a larger frac to ensure stability
+        n_points = len(x_sorted)
+        if n_points < 10:
+            # For small datasets, use all points
+            adjusted_frac = 1.0
+        elif n_points < 20:
+            # For medium-small datasets, use at least 50% of points
+            adjusted_frac = max(frac, 0.5)
+        else:
+            adjusted_frac = frac
+            
+        smoothed = lowess(y_sorted, x_sorted, frac=adjusted_frac)
+        
+        # Return smoothed values in original order
+        result = np.zeros_like(y)
+        for i, idx in enumerate(sorted_indices):
+            result[idx] = smoothed[i, 1]
+        
+        return result
+        
+    except (ValueError, IndexError) as e:
+        # Fallback: if LOESS fails, return the original y values (no correction)
+        logger.warning(f"Failed to fit LOESS curve: {e}. Using original values.")
+        return y.copy()
 
 
 def correct_drift_with_loess(
