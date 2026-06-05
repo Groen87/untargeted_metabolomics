@@ -43,11 +43,15 @@ def run_combat_and_visualize(
     # Track feature presence percentage in each QC group (before gap-filling)
     # Used only for reporting, NOT for filtering RSD calculation
     qc_feature_presence = {}
+    qc_feature_detected = {}  # Boolean mask: True if feature was detected (non-NaN) in ALL QC samples of group
+    
     for group_name, group_samples in [("QC4", qc4_samples), ("blauw", blauw_samples)]:
         if group_samples:
             group_data_raw = data[group_samples]
             # Calculate percentage of QC samples where each feature is present (non-NaN)
             qc_feature_presence[group_name] = group_data_raw.notna().mean(axis=1)
+            # Track which features were detected in ALL QC samples of this group
+            qc_feature_detected[group_name] = group_data_raw.notna().all(axis=1)
 
     # Replace NaN with half the minimum positive value (metabolomics best practice)
     min_positive = data[data > 0].min().min()
@@ -401,9 +405,17 @@ def run_combat_and_visualize(
                 presence_counts = (presence_pct * len(group_samples)).round().astype(int)
                 presence_distribution = presence_counts.value_counts().sort_index(ascending=False)
                 
+                # Also report detection in ALL QC samples
+                if group_name in qc_feature_detected:
+                    detected_in_all = qc_feature_detected[group_name].reindex(df.index, fill_value=False)
+                    n_detected_in_all = detected_in_all.sum()
+                else:
+                    n_detected_in_all = 0
+                
                 # Print RSD summaries
                 print(f"\n--- {group_name} ({label}) ---")
                 print(f"Total features: {len(rsd)}")
+                print(f"Features detected in ALL {len(group_samples)} QC samples: {n_detected_in_all} ({n_detected_in_all/len(rsd)*100:.1f}%)")
                 print(f"\nFeature presence distribution (before gap-filling):")
                 for num_samples, count in presence_distribution.items():
                     pct = (count / len(presence_pct)) * 100
