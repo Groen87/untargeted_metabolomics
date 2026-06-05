@@ -8,7 +8,94 @@ from pathlib import Path
 from inmoose.pycombat import pycombat_norm
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from typing import Tuple
+from sklearn.metrics import silhouette_score
+from sklearn.neighbors import NearestNeighbors
+from scipy.stats import entropy
+from typing import Tuple, Dict, List, Optional
+from sklearn.metrics import pairwise_distances
+
+
+def calculate_batch_asw(embedding: np.ndarray, batch_labels: np.ndarray) -> float:
+    """
+    Calculate Average Silhouette Width (ASW) per batch.
+    Lower ASW indicates better batch correction (samples less separated by batch).
+    """
+    unique_batches = np.unique(batch_labels)
+    
+    if len(unique_batches) < 2:
+        return float('nan')
+    
+    try:
+        score = silhouette_score(embedding, batch_labels, metric='euclidean')
+        return float(score)
+    except ValueError as e:
+        return float('nan')
+
+
+def calculate_batch_mixing_entropy_from_embedding(embedding: np.ndarray, batch_labels: np.ndarray, n_neighbors: int = 10) -> float:
+    """
+    Calculate entropy of batch mixing using k-nearest neighbors on embedding.
+    Higher entropy means more diverse (mixed) batches in the neighborhood.
+    """
+    unique_batches = np.unique(batch_labels)
+    n_samples = len(batch_labels)
+    
+    if len(unique_batches) < 2 or n_samples < n_neighbors + 1:
+        return float('nan')
+    
+    try:
+        nbrs = NearestNeighbors(n_neighbors=n_neighbors).fit(embedding)
+        distances, indices = nbrs.kneighbors(embedding)
+        
+        entropies = []
+        for i in range(n_samples):
+            neighbor_idx = indices[i]
+            neighbor_batches = batch_labels[neighbor_idx]
+            unique, counts = np.unique(neighbor_batches, return_counts=True)
+            probs = counts / counts.sum()
+            ent = entropy(probs)
+            entropies.append(ent)
+        
+        return float(np.mean(entropies))
+    except Exception as e:
+        return float('nan')
+
+
+def calculate_qc_clustering_metrics(embedding: np.ndarray, qc_labels: np.ndarray) -> Dict[str, float]:
+    """
+    Calculate metrics for QC sample clustering.
+    """
+    qc_mask = qc_labels != 'Non-QC'
+    
+    if np.sum(qc_mask) < 2:
+        return {
+            'qc_silhouette': float('nan'),
+            'qc_mean_distance': float('nan'),
+            'qc_max_distance': float('nan'),
+        }
+    
+    qc_embedding = embedding[qc_mask]
+    qc_types = qc_labels[qc_mask]
+    
+    dist_matrix = pairwise_distances(qc_embedding, metric='euclidean')
+    mean_dist = float(np.mean(dist_matrix[np.tri(len(dist_matrix), k=-1)]))
+    max_dist = float(np.max(dist_matrix))
+    
+    unique_qc_types = np.unique(qc_types)
+    if len(unique_qc_types) >= 2:
+        try:
+            qc_silhouette = float(silhouette_score(qc_embedding, qc_types, metric='euclidean'))
+        except ValueError:
+            qc_silhouette = float('nan')
+    else:
+        qc_silhouette = float('nan')
+    
+    return {
+        'qc_silhouette': qc_silhouette,
+        'qc_mean_distance': mean_dist,
+        'qc_max_distance': max_dist,
+    }
+
 
 def run_combat_and_visualize(
     merged_data_path: str,
@@ -144,14 +231,126 @@ def run_combat_and_visualize(
                 df = df.fillna(small_value)
 
             suffix = label.lower().replace(" ", "_")
+            
+            # Filter batch_vector to match df columns
+            df_samples = df.columns.tolist()
+            batch_vector_filtered = np.array([batch_dict[col] for col in df_samples])
 
             # UMAP
             emb = umap.UMAP(random_state=random_state, n_jobs=1).fit_transform(df.T)
-            fig, ax = plt.subplots(figsize=(10, 8))
-            sns.scatterplot(x=emb[:, 0], y=emb[:, 1], hue=batch_vector, palette='viridis', ax=ax)
+            fig, ax = plt.subplots(figsize=(12, 10))
+            
+            # Identify QC samples for special markers
+            qc4_samples_list = [col for col in df.columns if 'QC4' in col]
+            blauw_samples_list = [col for col in df.columns if 'blauw' in col]
+            
+            # Get indices for QC samples
+            qc4_indices = [list(df.columns).index(col) for col in qc4_samples_list] if qc4_samples_list else []
+            blauw_indices = [list(df.columns).index(col) for col in blauw_samples_list] if blauw_samples_list else []
+            all_qc_indices = qc4_indices + blauw_indices
+            non_qc_indices = [i for i in range(len(df.columns)) if i not in all_qc_indices]
+            
+            # Create color palette for batches
+            unique_batches_all = sorted(set(batch_vector_filtered))
+            palette_all = sns.color_palette('viridis', n_colors=len(unique_batches_all))
+            batch_to_color = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
+            
+            # Plot non-QC samples with batch colors
+            if non_qc_indices:
+                non_qc_colors = [batch_to_color.get(batch_vector_filtered[i], 'gray') for i in non_qc_indices]
+                ax.scatter(
+                    emb[non_qc_indices, 0],
+                    emb[non_qc_indices, 1],
+                    c=non_qc_colors,
+                    alpha=0.6,
+                    s=40,
+                    marker='o',
+                    label='Biological Samples'
+                )
+            
+            # Plot QC4 samples with bright blue triangles
+            if qc4_indices:
+                ax.scatter(
+                    emb[qc4_indices, 0],
+                    emb[qc4_indices, 1],
+                    c='blue',
+                    alpha=1.0,
+                    s=100,
+                    marker='^',
+                    edgecolors='black',
+                    linewidth=0.5,
+                    label='QC4'
+                )
+            
+            # Plot blauw samples with bright gold diamonds
+            if blauw_indices:
+                ax.scatter(
+                    emb[blauw_indices, 0],
+                    emb[blauw_indices, 1],
+                    c='gold',
+                    alpha=1.0,
+                    s=100,
+                    marker='D',
+                    edgecolors='black',
+                    linewidth=0.5,
+                    label='blauw QC'
+                )
+            
             ax.set_title(f"{label} (UMAP)")
+            
+            # Create legend
+            from matplotlib.patches import Patch
+            from matplotlib.lines import Line2D
+            legend_elements = [
+                Patch(facecolor=batch_to_color[b], label=f"Batch {b}")
+                for b in sorted(unique_batches_all)
+            ]
+            legend_elements.append(Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
+                                           markeredgecolor='black', markersize=8, alpha=0.6,
+                                           label='Biological', linestyle='None'))
+            if qc4_indices:
+                legend_elements.append(Line2D([0], [0], marker='^', color='blue', markersize=8,
+                                               markeredgecolor='black', markeredgewidth=0.5,
+                                               label='QC4', linestyle='None'))
+            if blauw_indices:
+                legend_elements.append(Line2D([0], [0], marker='D', color='gold', markersize=8,
+                                               markeredgecolor='black', markeredgewidth=0.5,
+                                               label='blauw QC', linestyle='None'))
+            
+            ax.legend(handles=legend_elements, title="Batch / QC Type", loc='best',
+                      bbox_to_anchor=(1.05, 1), borderaxespad=0)
+            
             fig.savefig(output_dir / f"{suffix}_umap.png", dpi=300, bbox_inches='tight')
             plt.close(fig)
+            
+            # --- Calculate and print batch effect removal metrics for UMAP embedding ---
+            batch_asw = calculate_batch_asw(emb, batch_vector_filtered)
+            batch_entropy = calculate_batch_mixing_entropy_from_embedding(emb, batch_vector_filtered, n_neighbors=10)
+            
+            # Create QC labels for QC clustering metrics
+            qc_labels_all = []
+            for col in df.columns:
+                if 'QC4' in col:
+                    qc_labels_all.append('QC4')
+                elif 'blauw' in col:
+                    qc_labels_all.append('blauw')
+                else:
+                    qc_labels_all.append('Non-QC')
+            qc_labels_arr = np.array(qc_labels_all)
+            
+            qc_metrics = calculate_qc_clustering_metrics(emb, qc_labels_arr)
+            
+            print(f"\n--- Batch Effect Removal Metrics ({label}) [UMAP] ---")
+            print(f"  Batch ASW (Silhouette): {batch_asw:.4f}")
+            print(f"    Interpretation: Lower is better (samples less separated by batch)")
+            print(f"    Range: [-1, 1], where ~0 means no batch separation")
+            print(f"  Batch Mixing Entropy: {batch_entropy:.4f}")
+            print(f"    Interpretation: Higher is better (more batch mixing in neighborhoods)")
+            print(f"    Max entropy for {len(np.unique(batch_vector_filtered))} batches: {np.log(len(np.unique(batch_vector_filtered))):.4f}")
+            print(f"  QC Clustering:")
+            print(f"    QC Silhouette: {qc_metrics['qc_silhouette']:.4f}")
+            print(f"    QC Mean Distance: {qc_metrics['qc_mean_distance']:.4f}")
+            print(f"    QC Max Distance: {qc_metrics['qc_max_distance']:.4f}")
 
             # PCA - Plot all samples with batch colors and QC markers
             emb = PCA(n_components=2, random_state=random_state).fit_transform(df.T)
@@ -249,6 +448,33 @@ def run_combat_and_visualize(
 
             fig.savefig(output_dir / f"{suffix}_pca.png", dpi=300, bbox_inches="tight")
             plt.close(fig)
+            
+            # --- Calculate and print batch effect removal metrics for PCA embedding ---
+            pca_batch_asw = calculate_batch_asw(emb, batch_vector_filtered)
+            pca_batch_entropy = calculate_batch_mixing_entropy_from_embedding(emb, batch_vector_filtered, n_neighbors=10)
+            
+            # Create QC labels for QC clustering metrics
+            qc_labels_pca = []
+            for col in df.columns:
+                if 'QC4' in col:
+                    qc_labels_pca.append('QC4')
+                elif 'blauw' in col:
+                    qc_labels_pca.append('blauw')
+                else:
+                    qc_labels_pca.append('Non-QC')
+            qc_labels_pca_arr = np.array(qc_labels_pca)
+            
+            pca_qc_metrics = calculate_qc_clustering_metrics(emb, qc_labels_pca_arr)
+            
+            print(f"\n--- Batch Effect Removal Metrics ({label}) [PCA] ---")
+            print(f"  Batch ASW (Silhouette): {pca_batch_asw:.4f}")
+            print(f"    Interpretation: Lower is better (samples less separated by batch)")
+            print(f"  Batch Mixing Entropy: {pca_batch_entropy:.4f}")
+            print(f"    Interpretation: Higher is better (more batch mixing in neighborhoods)")
+            print(f"  QC Clustering:")
+            print(f"    QC Silhouette: {pca_qc_metrics['qc_silhouette']:.4f}")
+            print(f"    QC Mean Distance: {pca_qc_metrics['qc_mean_distance']:.4f}")
+            print(f"    QC Max Distance: {pca_qc_metrics['qc_max_distance']:.4f}")
         
         # --- PCA for QC samples ONLY with filtered features ---
         # Filter to features present in >=80% of QC samples to remove gap-filled features
