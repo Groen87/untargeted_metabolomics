@@ -380,12 +380,19 @@ def _generate_diagnostic_plots(
         batch_to_color_all = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
         colors_all = [batch_to_color_all.get(b, 'gray') for b in all_batch_labels]
         
-        # Identify QC samples
-        qc_samples_all = [col for col in df.columns if 'QC3' in col or 'QC4' in col or 'blauw' in col]
-        qc_indices = [list(df.columns).index(col) for col in qc_samples_all] if qc_samples_all else []
+        # Identify QC samples by type for different markers
+        qc3_samples = [col for col in df.columns if 'QC3' in col]
+        qc4_samples = [col for col in df.columns if 'QC4' in col]
+        blauw_samples = [col for col in df.columns if 'blauw' in col]
         
-        # Scatter plot for all NON-QC samples (batch colored)
-        non_qc_indices = [i for i in range(len(df.columns)) if i not in qc_indices]
+        # Get indices for all QC samples
+        qc3_indices = [list(df.columns).index(col) for col in qc3_samples] if qc3_samples else []
+        qc4_indices = [list(df.columns).index(col) for col in qc4_samples] if qc4_samples else []
+        blauw_indices = [list(df.columns).index(col) for col in blauw_samples] if blauw_samples else []
+        all_qc_indices = qc3_indices + qc4_indices + blauw_indices
+        
+        # Scatter plot for all NON-QC samples (batch colored circles)
+        non_qc_indices = [i for i in range(len(df.columns)) if i not in all_qc_indices]
         if non_qc_indices:
             ax.scatter(
                 pca_result[non_qc_indices, 0],
@@ -393,37 +400,50 @@ def _generate_diagnostic_plots(
                 c=[colors_all[i] for i in non_qc_indices],
                 alpha=0.6,
                 s=40,
+                marker='o',
                 label='Biological Samples'
             )
         
-        # Scatter plot for QC samples with larger markers and batch colors
-        if qc_samples_all:
-            qc_pca = pca_result[qc_indices]
-            qc_colors = [colors_all[i] for i in qc_indices]
-            
-            # Plot QC samples with larger markers
+        # Scatter plot for QC samples with distinct markers and batch colors
+        # QC3: squares, QC4: triangles, blauw: diamonds
+        if qc3_indices:
             ax.scatter(
-                qc_pca[:, 0],
-                qc_pca[:, 1],
-                c=qc_colors,
-                alpha=0.9,
-                s=100,
+                pca_result[qc3_indices, 0],
+                pca_result[qc3_indices, 1],
+                c=[colors_all[i] for i in qc3_indices],
+                alpha=1.0,
+                s=80,
+                marker='s',
                 edgecolors='black',
-                linewidth=1,
-                label='QC Samples'
+                linewidth=0.5,
+                label='QC3'
             )
-            
-            # Add QC sample labels for clarity
-            for i, sample in enumerate(qc_samples_all):
-                ax.text(
-                    qc_pca[i, 0],
-                    qc_pca[i, 1],
-                    sample,
-                    fontsize=9,
-                    ha='right',
-                    va='bottom',
-                    bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1)
-                )
+        
+        if qc4_indices:
+            ax.scatter(
+                pca_result[qc4_indices, 0],
+                pca_result[qc4_indices, 1],
+                c=[colors_all[i] for i in qc4_indices],
+                alpha=1.0,
+                s=80,
+                marker='^',
+                edgecolors='black',
+                linewidth=0.5,
+                label='QC4'
+            )
+        
+        if blauw_indices:
+            ax.scatter(
+                pca_result[blauw_indices, 0],
+                pca_result[blauw_indices, 1],
+                c=[colors_all[i] for i in blauw_indices],
+                alpha=1.0,
+                s=80,
+                marker='D',
+                edgecolors='black',
+                linewidth=0.5,
+                label='blauw QC'
+            )
         
         # Calculate explained variance
         explained_variance = pca.explained_variance_ratio_
@@ -433,17 +453,33 @@ def _generate_diagnostic_plots(
         ax.set_ylabel(f"PC2 ({explained_variance[1]:.1%})")
         ax.grid(True, alpha=0.3)
         
-        # Create legend for batches
+        # Create legend for batches and QC types
         from matplotlib.patches import Patch
+        from matplotlib.lines import Line2D
+        
         legend_elements = [
             Patch(facecolor=batch_to_color_all[b], label=f"Batch {b}")
             for b in sorted(unique_batches_all)
         ]
-        # Add legend entries for sample types
-        legend_elements.append(Patch(facecolor='gray', label='Biological Samples', alpha=0.6))
-        legend_elements.append(Patch(facecolor='black', label='QC Samples', edgecolor='black', linewidth=1))
         
-        ax.legend(handles=legend_elements, title="Batch / Sample Type", loc='best')
+        # Add markers for sample types
+        legend_elements.append(Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
+                                       markeredgecolor='black', markersize=8, alpha=0.6, 
+                                       label='Biological', linestyle='None'))
+        if qc3_indices:
+            legend_elements.append(Line2D([0], [0], marker='s', color='w', markerfacecolor='gray',
+                                           markeredgecolor='black', markersize=8, 
+                                           label='QC3', linestyle='None'))
+        if qc4_indices:
+            legend_elements.append(Line2D([0], [0], marker='^', color='w', markerfacecolor='gray',
+                                           markeredgecolor='black', markersize=8, 
+                                           label='QC4', linestyle='None'))
+        if blauw_indices:
+            legend_elements.append(Line2D([0], [0], marker='D', color='w', markerfacecolor='gray',
+                                           markeredgecolor='black', markersize=8, 
+                                           label='blauw QC', linestyle='None'))
+        
+        ax.legend(handles=legend_elements, title="Batch / QC Type", loc='best', bbox_to_anchor=(1.05, 1), borderaxespad=0)
         
         fig.savefig(output_dir / f"{suffix}_all_samples_pca.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
