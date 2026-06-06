@@ -295,9 +295,9 @@ def process_metabolomics_data(
     # --- STEP 7: SAVE OUTPUT ---
     print("[STEP 7] Saving outputs...")
     os.makedirs(output_dir, exist_ok=True)
-    transformed_df.to_csv(f"{output_dir}/{batch}_{mode}_transformed.csv")
-    batchdata_df.to_csv(f"{output_dir}/{batch}_{mode}_batch_data.csv")
-    batchdata_df.to_csv(f"{output_dir}/batch_data.csv")
+    transformed_df.to_csv(f"{output_dir}/{batch}_{mode}_transformed.csv", index=False)
+    batchdata_df.to_csv(f"{output_dir}/{batch}_{mode}_batch_data.csv", index=False)
+    batchdata_df.to_csv(f"{output_dir}/batch_data.csv", index=False)
     central_dir = "/Users/j.groen/PycharmProjects/untargeted_pipeline/metabolomics_pipeline/data/pqn_normalized_batches"
     os.makedirs(central_dir, exist_ok=True)  # Ensure the directory exists
     batchdata_df.to_csv(f"{central_dir}/{batch}_{mode}_batch_data.csv")
