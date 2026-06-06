@@ -143,8 +143,10 @@ def merge_batches_for_combat(
     
     # Load RT columns from the input files
     # RT is stored as a column, not in the index
-    rt1 = df1_raw[['Feature', 'RT [min]']].set_index(index_col)
-    rt2 = df2_raw[['Feature', 'RT [min]']].set_index(index_col)
+    # Include index_col (Compounds ID or Feature) in the selection so we can set it as index
+    rt_cols = [index_col, 'Feature', 'RT [min]']
+    rt1 = df1_raw[rt_cols].set_index(index_col)
+    rt2 = df2_raw[rt_cols].set_index(index_col)
     
     batch1 = pd.read_csv(batch_file_batch1)
     batch2 = pd.read_csv(batch_file_batch2)
