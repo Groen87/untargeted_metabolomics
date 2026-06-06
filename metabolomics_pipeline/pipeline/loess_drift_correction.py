@@ -102,7 +102,7 @@ def correct_drift_with_loess(
 
     # --- LOESS Correction for HIGH-QC FEATURES ONLY ---
     injection_order = np.arange(len(sample_cols))
-    qc_positions = np.array([sample_cols.index(col) for col in qc_samples])
+    qc_positions = np.array([i for i, col in enumerate(sample_cols) if col in qc_samples])
 
     for feature in high_qc_features:
         qc_values = intensity_df.loc[feature, qc_samples].to_numpy().flatten()
