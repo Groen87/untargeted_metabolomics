@@ -80,7 +80,11 @@ def pqn_normalize(
     normalized_df = normalized_df.reset_index()
     
     # Reattach all metadata columns (Feature, RT [min])
-    # Use the original metadata_df which has the correct order
+    # metadata_df already has Feature and RT [min], normalized_df has Feature from reset_index
+    # So we need to drop the Feature column from normalized_df to avoid duplication
+    if 'Feature' in normalized_df.columns:
+        normalized_df = normalized_df.drop(columns=['Feature'])
+    
     result_df = pd.concat([metadata_df.reset_index(drop=True), normalized_df], axis=1)
 
     # Save normalized data
