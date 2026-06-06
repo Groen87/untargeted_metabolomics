@@ -198,16 +198,16 @@ def process_metabolomics_data(
 
     # --- STEP 3: VECTORIZED DATA TRANSFORMATION AND MEDIAN NORMALIZATION ---
     print("[STEP 3] Transforming data and applying median normalization (vectorized)...")
-    df['base_feature'] = df.apply(
-        lambda row: f"{row['Name']}_{row['Formula']}_{row['RT [min]']}"
-        if pd.notna(row['Name']) else f"{row['Formula']}_{row['RT [min]']}",
+    df['feature'] = df.apply(
+        lambda row: f"{row['Name']}_{row['Formula']}"
+        if pd.notna(row['Name']) else f"{row['Formula']}",
         axis=1
     )
-    df['feature'] = df['base_feature'] + ' ' + (df.groupby('base_feature').cumcount() + 1).astype(str)
 
     # Initialize output DataFrame
-    transformed_df = pd.DataFrame(index=df.index, columns=['Feature'] + ordered_base_ids)
+    transformed_df = pd.DataFrame(index=df.index, columns=['Feature', 'RT [min]'] + ordered_base_ids)
     transformed_df['Feature'] = df['feature']
+    transformed_df['RT [min]'] = df['RT [min]']
 
    # Apply median normalization to each sample column before merging duplicates
     for base_id, cols in base_to_cols.items():

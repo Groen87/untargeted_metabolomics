@@ -8,6 +8,11 @@ qc_pattern: "expQC"
 qc_intensity_threshold: 1
 frac: 0.5
 
+# Feature matching parameters
+rt_threshold: 0.05  # RT difference threshold in minutes for feature matching
+use_spline: true    # Use spline (true) or cubic interpolation (false) for RT warping
+reference_batch_label: "MZ26_10"  # Label of reference batch for RT alignment
+
 # Logging
 log_level: "INFO"
 log_file: "logs/pipeline.log"

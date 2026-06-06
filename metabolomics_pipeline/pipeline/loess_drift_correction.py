@@ -22,14 +22,16 @@ def correct_drift_with_loess(
     Correct drift in metabolomics data using LOESS for high-QC features.
 
     Args:
-        intensity_df: Input DataFrame with features as rows and samples as columns
+        intensity_df: Input DataFrame with features as rows and samples as columns.
+            Can include metadata columns like 'Feature' and 'RT [min]'.
         qc_pattern: Pattern to identify QC samples in column names
         frac: Fraction of data for LOESS smoothing (0.0-1.0)
         qc_intensity_threshold: Threshold to classify high-QC features
         output_dir: Directory to save output files
 
     Returns:
-        Drift-corrected DataFrame with all original features retained
+        Drift-corrected DataFrame with all original features and metadata columns
+        (including RT [min]) retained.
 
     Raises:
         ValueError: If input DataFrame is invalid or QC samples are missing
@@ -37,13 +39,22 @@ def correct_drift_with_loess(
     os.makedirs(output_dir, exist_ok=True)
 
     # --- Input Setup ---
+    # Identify metadata columns (Feature, RT [min], etc.) vs sample columns
+    metadata_cols = []
     if 'Feature' in intensity_df.columns:
-        feature_col = intensity_df['Feature']
-        sample_cols = [col for col in intensity_df.columns if col != 'Feature']
-        intensity_df = intensity_df.drop(columns=['Feature'])
-    else:
-        feature_col = None
-        sample_cols = list(intensity_df.columns)
+        metadata_cols.append('Feature')
+    if 'RT [min]' in intensity_df.columns:
+        metadata_cols.append('RT [min]')
+    
+    sample_cols = [col for col in intensity_df.columns if col not in metadata_cols]
+    
+    # Store metadata
+    metadata_df = intensity_df[metadata_cols].copy()
+    
+    # Work with sample data only
+    intensity_df = intensity_df[sample_cols].copy()
+    
+    feature_col = metadata_df['Feature'] if 'Feature' in metadata_cols else None
 
     if not sample_cols:
         raise ValueError("No sample columns found in DataFrame")
@@ -52,9 +63,10 @@ def correct_drift_with_loess(
     for col in sample_cols:
         intensity_df[col] = pd.to_numeric(intensity_df[col], errors='coerce')
 
-    # Reattach Feature column as index
+    # Set Feature column as index for processing
     if feature_col is not None:
         intensity_df = intensity_df.set_index(feature_col)
+        corrected_df = corrected_df.set_index(feature_col)
 
     qc_samples = [
         col for col in intensity_df.columns
@@ -69,7 +81,7 @@ def correct_drift_with_loess(
     else:
         logger.info(f"Found QC samples: {qc_samples}")
 
-    # Initialize corrected DataFrame
+    # Initialize corrected DataFrame (with same index as intensity_df)
     corrected_df = intensity_df.copy()
 
     # --- Pre-process: Replace outliers in QC samples ---
@@ -165,7 +177,18 @@ def correct_drift_with_loess(
     else:
         print("⚠️ Warning: No high-QC features found for LOESS correction")
 
-    # Save corrected data (ALL features, including low-QC ones)
-    corrected_df.to_csv(f"{output_dir}/{batch}_{mode}_drift_corrected.csv")
+    # Reattach metadata columns to corrected data
+    # Reset index to get Feature as a column
+    corrected_df_reset = corrected_df.reset_index()
+    
+    # Merge with metadata
+    if feature_col is not None:
+        # Use the original metadata_df which has the correct Feature order
+        result_df = pd.concat([metadata_df.reset_index(drop=True), corrected_df_reset], axis=1)
+    else:
+        result_df = corrected_df_reset
+    
+    # Save corrected data (ALL features, including low-QC ones, with metadata)
+    result_df.to_csv(f"{output_dir}/{batch}_{mode}_drift_corrected.csv", index=False)
 
-    return corrected_df
+    return result_df

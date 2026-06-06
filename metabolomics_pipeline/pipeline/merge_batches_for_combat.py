@@ -2,26 +2,20 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Tuple, Optional
+import numpy as np
 import pandas as pd
 from collections import defaultdict
+from scipy.interpolate import UnivariateSpline, interp1d
 
-def parse_feature(feature_name: str) -> Tuple[str, float, str]:
+def parse_feature(feature_name: str) -> str:
     """
-    Parse a feature name into (base_name, RT, digit).
-    Example: "C6H12O6_5.172 1" -> ("C6H12O6", 5.172, "1")
+    Parse a feature name to get the base name (without RT and digit).
+    Example: "C6H12O6 1" -> "C6H12O6"
+    Now just returns the base name since RT is in a separate column.
     """
     parts = feature_name.rsplit(' ', 1)
     name_part = parts[0] if len(parts) > 1 else feature_name
-    digit = parts[1] if len(parts) > 1 else '1'
-    if '_' in name_part:
-        base, rt_str = name_part.rsplit('_', 1)
-        try:
-            rt = float(rt_str)
-        except ValueError:
-            rt = 0.0
-    else:
-        base, rt = name_part, 0.0
-    return base, rt, digit
+    return name_part
 
 def merge_batches_for_combat(
     drift_corrected_file_batch1: str,
@@ -32,19 +26,94 @@ def merge_batches_for_combat(
     combat_output_dir: Optional[str] = None,
     batch1_label: str = "current",
     batch2_label: str = "reference",
-    rt_threshold: float = 0.04,
+    rt_threshold: Optional[float] = None,
     combat_script_path: Optional[Path] = None,
+    reference_batch_label: Optional[str] = None,
+    use_spline: Optional[bool] = None,
+    config_path: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Merge two PQ-normalized batches for Combat batch correction.
+    
+    Uses RT warping (spline or LOESS) to align RTs to a reference batch (MZ26_10_QC3),
+    then matches features by name + warped RT (within threshold).
+    
     Steps:
-    1. Loads and merges features with matching base names and RTs.
-    2. Removes all sample columns containing 'expQC' (case-insensitive).
-    3. Saves batch1-only features to a separate CSV.
-    4. Removes ALL features present in only one batch (batch1-only or batch2-only).
-    5. Ensures sample names match between data and batch info.
+    1. Load data and RT columns from both batches.
+    2. Identify reference batch (MZ26_10_QC3) and warp other batch RTs to match.
+    3. Match features by name + warped RT (within rt_threshold).
+    4. For features not in reference, try to match across other batches.
+    5. Keep unique features that have no matches.
+    6. Remove expQC samples and ensure sample names match.
+    
     Returns:
         Tuple of (merged_data, merged_batch) DataFrames.
+    
+    Args:
+        drift_corrected_file_batch1: Path to first batch's drift-corrected CSV
+        drift_corrected_file_batch2: Path to second batch's drift-corrected CSV
+        batch_file_batch1: Path to first batch's metadata CSV
+        batch_file_batch2: Path to second batch's metadata CSV
+        combat_input_dir: Directory for input files
+        combat_output_dir: Directory for output files (default: combat_input_dir/combat_corrected)
+        batch1_label: Label for first batch
+        batch2_label: Label for second batch
+        rt_threshold: RT difference threshold in minutes for feature matching.
+            If None, uses config value (default: 0.05 min)
+        reference_batch_label: Label of reference batch for RT alignment.
+            If None, uses config value (default: "MZ26_10")
+        use_spline: Use spline interpolation (True) or cubic interpolation (False) for RT warping.
+            If None, uses config value (default: True)
+        config_path: Path to config YAML file. If None, uses default config.
+    """
+    # Load config if parameters not provided
+    if config_path is not None or rt_threshold is None or reference_batch_label is None or use_spline is None:
+        try:
+            from ..config.config import Config
+            config = Config(config_path) if config_path else Config()
+            if rt_threshold is None:
+                rt_threshold = config.get('rt_threshold', 0.05)
+            if reference_batch_label is None:
+                reference_batch_label = config.get('reference_batch_label', 'MZ26_10')
+            if use_spline is None:
+                use_spline = config.get('use_spline', True)
+        except ImportError:
+            # Fallback if config not available
+            if rt_threshold is None:
+                rt_threshold = 0.05
+            if reference_batch_label is None:
+                reference_batch_label = 'MZ26_10'
+            if use_spline is None:
+                use_spline = True
+    """
+    Merge two PQ-normalized batches for Combat batch correction.
+    
+    Uses RT warping (spline or LOESS) to align RTs to a reference batch (MZ26_10_QC3),
+    then matches features by name + warped RT (within threshold).
+    
+    Steps:
+    1. Load data and RT columns from both batches.
+    2. Identify reference batch (MZ26_10_QC3) and warp other batch RTs to match.
+    3. Match features by name + warped RT (within rt_threshold).
+    4. For features not in reference, try to match across other batches.
+    5. Keep unique features that have no matches.
+    6. Remove expQC samples and ensure sample names match.
+    
+    Returns:
+        Tuple of (merged_data, merged_batch) DataFrames.
+    
+    Args:
+        drift_corrected_file_batch1: Path to first batch's drift-corrected CSV
+        drift_corrected_file_batch2: Path to second batch's drift-corrected CSV
+        batch_file_batch1: Path to first batch's metadata CSV
+        batch_file_batch2: Path to second batch's metadata CSV
+        combat_input_dir: Directory for input files
+        combat_output_dir: Directory for output files (default: combat_input_dir/combat_corrected)
+        batch1_label: Label for first batch
+        batch2_label: Label for second batch
+        rt_threshold: RT difference threshold for feature matching (default: 0.05 min)
+        reference_batch_label: Label of reference batch for RT alignment (default: "MZ26_10")
+        use_spline: Use spline interpolation (True) or LOESS (False) for RT warping (default: True)
     """
     # --- Setup directories ---
     combat_input_dir = Path(combat_input_dir).resolve()
@@ -59,6 +128,12 @@ def merge_batches_for_combat(
     # --- Load data ---
     df1 = pd.read_csv(drift_corrected_file_batch1, index_col='Feature')
     df2 = pd.read_csv(drift_corrected_file_batch2, index_col='Feature')
+    
+    # Load RT columns from the input files
+    # RT is stored as a column, not in the index
+    rt1 = pd.read_csv(drift_corrected_file_batch1)[['Feature', 'RT [min]']].set_index('Feature')
+    rt2 = pd.read_csv(drift_corrected_file_batch2)[['Feature', 'RT [min]']].set_index('Feature')
+    
     batch1 = pd.read_csv(batch_file_batch1)
     batch2 = pd.read_csv(batch_file_batch2)
 
@@ -80,55 +155,174 @@ def merge_batches_for_combat(
         batch1 = batch1.drop(columns=[col], errors='ignore')
         batch2 = batch2.drop(columns=[col], errors='ignore')
 
-    # --- Merge features ---
+    # --- RT Warping: Align RTs to reference batch ---
+    # Determine which batch is the reference batch (MZ26_10_QC3)
+    # We need to check which batch label contains the reference_batch_label
+    
+    is_batch1_reference = reference_batch_label in batch1_label
+    is_batch2_reference = reference_batch_label in batch2_label
+    
+    if not is_batch1_reference and not is_batch2_reference:
+        print(f"⚠️ Warning: Reference batch '{reference_batch_label}' not found in batch labels. Using batch1 as reference.")
+        is_batch1_reference = True
+    
+    # Get reference batch RT data
+    if is_batch1_reference:
+        ref_rt = rt1
+        ref_label = batch1_label
+        other_rt = rt2
+        other_label = batch2_label
+        ref_df = df1
+        other_df = df2
+    else:
+        ref_rt = rt2
+        ref_label = batch2_label
+        other_rt = rt1
+        other_label = batch1_label
+        ref_df = df2
+        other_df = df1
+    
+    # For RT warping, we need common features between reference and other batch
+    # to build the warping function
+    common_features_ref = set(ref_rt.index) & set(other_rt.index)
+    
+    if len(common_features_ref) >= 3:
+        # We have enough common features to build a warping function
+        ref_rt_values = np.array([ref_rt.loc[feat, 'RT [min]'] for feat in common_features_ref])
+        other_rt_values = np.array([other_rt.loc[feat, 'RT [min]'] for feat in common_features_ref])
+        
+        # Sort by reference RT
+        sort_idx = np.argsort(ref_rt_values)
+        ref_rt_sorted = ref_rt_values[sort_idx]
+        other_rt_sorted = other_rt_values[sort_idx]
+        
+        # Create warping function: other_RT -> reference_RT
+        if use_spline:
+            # Use spline interpolation
+            warp_func = UnivariateSpline(other_rt_sorted, ref_rt_sorted, s=0.1)
+            print("✓ Using spline interpolation for RT warping")
+        else:
+            # Use LOESS-like interpolation (linear for simplicity, or cubic)
+            warp_func = interp1d(other_rt_sorted, ref_rt_sorted, kind='cubic', fill_value='extrapolate')
+            print("✓ Using cubic interpolation for RT warping")
+        
+        # Warp all RTs in the other batch
+        warped_rt_values = {}
+        for feat in other_rt.index:
+            original_rt = other_rt.loc[feat, 'RT [min]']
+            warped_rt = warp_func(original_rt)
+            warped_rt_values[feat] = float(warped_rt)
+        
+        # Create warped RT series for other batch
+        other_rt_warped = other_rt.copy()
+        other_rt_warped['RT [min]'] = other_rt_warped.index.map(warped_rt_values)
+        
+        print(f"✓ Warped {len(other_rt)} RTs from {other_label} to align with {ref_label}")
+    else:
+        # Not enough common features for warping, use original RTs
+        print(f"⚠️ Only {len(common_features_ref)} common features, skipping RT warping")
+        other_rt_warped = other_rt.copy()
+    
+    # --- Feature Matching with Warped RTs ---
+    # Now match features by name + RT (within threshold)
+    # Build a dictionary of features with their RTs (warped for non-reference batch)
+    
+    # Reference batch features: use original RT
+    ref_features = {}
+    for feat in ref_df.index:
+        if feat in ref_rt.index:
+            ref_features[feat] = ref_rt.loc[feat, 'RT [min]']
+    
+    # Other batch features: use warped RT
+    other_features = {}
+    for feat in other_df.index:
+        if feat in other_rt_warped.index:
+            other_features[feat] = other_rt_warped.loc[feat, 'RT [min]']
+    
+    # Group features by name across both batches
     feature_groups = defaultdict(list)
-
-    # Group features by base name + RT
-    for feature in df1.index:
-        base, rt, _ = parse_feature(feature)
-        feature_groups[base].append(('batch1', feature, rt))
-    for feature in df2.index:
-        base, rt, _ = parse_feature(feature)
-        feature_groups[base].append(('batch2', feature, rt))
-
-    # Assign match keys (use batch1 feature names)
+    
+    for feat, rt in ref_features.items():
+        feature_groups[feat].append(('ref', feat, rt))
+    
+    for feat, rt in other_features.items():
+        feature_groups[feat].append(('other', feat, rt))
+    
+    # For each feature name, find matches based on RT similarity
     feature_to_match_key = {}
-    for base, features in feature_groups.items():
-        features_sorted = sorted(features, key=lambda x: x[2])  # Sort by RT
-        current_group = [features_sorted[0]]
-
-        for i in range(1, len(features_sorted)):
-            prev_batch, prev_feature, prev_rt = current_group[-1]
-            curr_batch, curr_feature, curr_rt = features_sorted[i]
+    matched_features = set()
+    
+    for feat_name, entries in feature_groups.items():
+        # Sort by RT
+        entries_sorted = sorted(entries, key=lambda x: x[2])
+        
+        # Group entries by RT similarity (within threshold)
+        groups = []
+        current_group = [entries_sorted[0]]
+        
+        for i in range(1, len(entries_sorted)):
+            prev_rt = current_group[-1][2]
+            curr_rt = entries_sorted[i][2]
+            
             if abs(curr_rt - prev_rt) <= rt_threshold:
-                current_group.append((curr_batch, curr_feature, curr_rt))
+                current_group.append(entries_sorted[i])
             else:
-                # Assign match key to the current group
-                batch1_feature = next((f for b, f, _ in current_group if b == 'batch1'), current_group[0][1])
-                for _, f, _ in current_group:
-                    feature_to_match_key[f] = batch1_feature
-                current_group = [(curr_batch, curr_feature, curr_rt)]
-
-        # Assign match key to the last group
-        batch1_feature = next((f for b, f, _ in current_group if b == 'batch1'), current_group[0][1])
-        for _, f, _ in current_group:
-            feature_to_match_key[f] = batch1_feature
-
-    # Rename features
+                groups.append(current_group)
+                current_group = [entries_sorted[i]]
+        groups.append(current_group)
+        
+        # For each RT group, create a match key
+        for group in groups:
+            # Use reference batch feature if available, otherwise first feature
+            ref_feature = next((f for source, f, _ in group if source == 'ref'), group[0][1])
+            match_key = ref_feature
+            
+            for source, f, _ in group:
+                feature_to_match_key[f] = match_key
+                matched_features.add(f)
+    
+    # Features that weren't matched (no RT within threshold of any other)
+    # These will be kept as unique features
+    all_features = set(ref_features.keys()) | set(other_features.keys())
+    unmatched_features = all_features - matched_features
+    
+    for feat in unmatched_features:
+        feature_to_match_key[feat] = feat  # Keep as unique
+    
+    # --- Apply matching and merge ---
+    # Rename features in both batches according to match keys
     df1_renamed = df1.rename(index=lambda x: feature_to_match_key.get(x, x))
     df2_renamed = df2.rename(index=lambda x: feature_to_match_key.get(x, x))
-
+    
     # Merge duplicates within each batch
     df1_merged = df1_renamed.groupby(level=0).mean()
     df2_merged = df2_renamed.groupby(level=0).mean()
-
-    # Concatenate (keep ALL features)
+    
+    # Concatenate (keep ALL features, including unmatched ones)
     merged_data = pd.concat([df1_merged, df2_merged], axis=1, join='outer')
     merged_batch = pd.concat([batch1, batch2], ignore_index=True)
+    
+    # --- Add RT column to merged data ---
+    # Use the RT from the match key (which is from reference batch when available)
+    rt_values = {}
+    for feat in merged_data.index:
+        # The feature name in merged_data is the match key
+        # We need to find the original RT for this match key
+        if feat in ref_features:
+            rt_values[feat] = ref_features[feat]
+        elif feat in other_features:
+            rt_values[feat] = other_features[feat]
+        else:
+            rt_values[feat] = None
+    
+    merged_data['RT [min]'] = pd.Series(rt_values)
+    
+    print(f"✓ Matched {len(matched_features)} features by name + warped RT")
+    print(f"✓ Kept {len(unmatched_features)} unique features")
 
     # --- Remove expQC samples from data and batch info ---
-    # Find all columns containing 'expqc' (case-insensitive)
-    expqc_cols = [col for col in merged_data.columns if 'expqc' in col.lower()]
+    # Find all columns containing 'expqc' (case-insensitive), excluding RT column
+    expqc_cols = [col for col in merged_data.columns if col != 'RT [min]' and 'expqc' in col.lower()]
     if expqc_cols:
         print(f"✓ Removing {len(expqc_cols)} expQC columns from data: {expqc_cols}")
         merged_data = merged_data.drop(columns=expqc_cols)
@@ -136,46 +330,49 @@ def merge_batches_for_combat(
         merged_batch = merged_batch[~merged_batch['sample_id'].str.lower().str.contains('expqc')]
         print(f"✓ Removed expQC samples from batch metadata")
 
-    # --- Identify and handle batch-specific features ---
+    # --- Identify batch-specific features (keep them as unique) ---
     # Use filtered batch metadata to get sample IDs
     batch1_samples = set(merged_batch[merged_batch['batch'] == 1]['sample_id'])
     batch2_samples = set(merged_batch[merged_batch['batch'] == 2]['sample_id'])
-    batch1_cols = [col for col in merged_data.columns if col in batch1_samples]
-    batch2_cols = [col for col in merged_data.columns if col in batch2_samples]
+    batch1_cols = [col for col in merged_data.columns if col != 'RT [min]' and col in batch1_samples]
+    batch2_cols = [col for col in merged_data.columns if col != 'RT [min]' and col in batch2_samples]
 
     # Batch1-only features: rows with values in batch1 cols AND all NaN in batch2 cols
     batch1_only_mask = merged_data[batch1_cols].notna().any(axis=1) & merged_data[batch2_cols].isna().all(axis=1)
-    if batch1_only_mask.any():
-        # Save ONLY the batch1-only features (rows) with ALL columns (samples)
-        batch1_only_features = merged_data.loc[batch1_only_mask]
-        batch1_only_path = combat_input_dir / "current_batch_only_features.csv"
-        batch1_only_features.to_csv(batch1_only_path)
-        print(f"✓ Batch1-only features (n={batch1_only_mask.sum()}) saved to {batch1_only_path}")
-
+    
     # Batch2-only features: rows with values in batch2 cols AND all NaN in batch1 cols
     batch2_only_mask = merged_data[batch2_cols].notna().any(axis=1) & merged_data[batch1_cols].isna().all(axis=1)
-
-    # Remove ALL features present in only one batch (both batch1-only and batch2-only)
-    batch_specific_mask = batch1_only_mask | batch2_only_mask
-    if batch_specific_mask.any():
-        merged_data = merged_data[~batch_specific_mask]
-        print(f"✓ Removed {batch_specific_mask.sum()} features present in only one batch")
+    
+    # Count unique features (already handled in matching, but log for info)
+    n_batch1_only = batch1_only_mask.sum()
+    n_batch2_only = batch2_only_mask.sum()
+    if n_batch1_only > 0 or n_batch2_only > 0:
+        print(f"✓ Found {n_batch1_only} batch1-only and {n_batch2_only} batch2-only unique features (kept)")
 
     # --- Ensure sample names match between data and batch info ---
-    data_samples = set(merged_data.columns)
+    # Separate RT column from sample columns
+    sample_cols = [col for col in merged_data.columns if col != 'RT [min]']
+    data_samples = set(sample_cols)
     batch_samples = set(merged_batch['sample_id'])
     common_samples = list(data_samples & batch_samples)
 
     if not common_samples:
         raise ValueError(f"No common samples between data ({data_samples}) and batch info ({batch_samples})")
 
-    merged_data = merged_data[common_samples]
+    # Keep RT column and common sample columns
+    merged_data = merged_data[['RT [min]'] + common_samples]
     merged_batch = merged_batch[merged_batch['sample_id'].isin(common_samples)]
 
     # --- Save outputs for COMBAT ---
     merged_data_path = combat_input_dir / "merged_data_for_combat.csv"
     merged_batch_path = combat_input_dir / "merged_batch_for_combat.csv"
-    merged_data.to_csv(merged_data_path)
+    
+    # Reset index to include Feature as a column, with RT [min] as second column
+    merged_data_reset = merged_data.reset_index()
+    # Reorder columns: Feature, RT [min], then samples
+    cols = ['Feature', 'RT [min]'] + [c for c in merged_data_reset.columns if c not in ['Feature', 'RT [min]']]
+    merged_data_reset = merged_data_reset[cols]
+    merged_data_reset.to_csv(merged_data_path, index=False)
     merged_batch.to_csv(merged_batch_path, index=False)
 
     print(f"✓ Merged data saved to {merged_data_path}")

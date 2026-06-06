@@ -18,23 +18,33 @@ def pqn_normalize(
     - Uses 'expQC' samples (case-insensitive) as reference.
     - Normalizes ONLY sample columns (excludes metadata like 'Area:', 'PQF:', etc.).
     - Preserves relative scale and rare metabolites (ideal for IMD workflows).
-    - Keeps 'Feature' as the first column in the output.
+    - Keeps 'Feature' and 'RT [min]' as the first columns in the output.
     """
     os.makedirs(output_dir, exist_ok=True)
 
     if corrected_df.empty:
         raise ValueError("Input DataFrame is empty")
 
-    # Exclude metadata columns (e.g., 'Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status')
+    # Identify metadata columns to preserve (Feature, RT [min])
+    metadata_cols = []
+    if 'Feature' in corrected_df.columns:
+        metadata_cols.append('Feature')
+    if 'RT [min]' in corrected_df.columns:
+        metadata_cols.append('RT [min]')
+    
+    # Exclude metadata columns and other metadata prefixes
     METADATA_PREFIXES = ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status']
     sample_cols = [
         col for col in corrected_df.columns
-        if col != 'Feature' and not any(col.startswith(prefix) for prefix in METADATA_PREFIXES)
+        if col not in metadata_cols and not any(col.startswith(prefix) for prefix in METADATA_PREFIXES)
     ]
 
     if not sample_cols:
         raise ValueError(f"No sample columns found in DataFrame. Columns: {corrected_df.columns.tolist()}")
 
+    # Store metadata for later reattachment
+    metadata_df = corrected_df[metadata_cols].copy()
+    
     # Set Feature as index if it exists
     if 'Feature' in corrected_df.columns:
         corrected_df = corrected_df.set_index('Feature')
@@ -66,15 +76,19 @@ def pqn_normalize(
     # Apply PQN: divide each sample by its scaling factor
     normalized_df = corrected_df[sample_cols].div(scaling_factors, axis=1)
 
-    # Reattach Feature index as the FIRST column
-    normalized_df.insert(0, 'Feature', corrected_df.index)
+    # Reset index to get Feature as a column
+    normalized_df = normalized_df.reset_index()
+    
+    # Reattach all metadata columns (Feature, RT [min])
+    # Use the original metadata_df which has the correct order
+    result_df = pd.concat([metadata_df.reset_index(drop=True), normalized_df], axis=1)
 
     # Save normalized data
-    normalized_df.to_csv(f"{output_dir}/{batch}_{mode}_pqn_normalized.csv")
-    normalized_df.to_csv(f"{output_dir}/pqn_normalized.csv")
+    result_df.to_csv(f"{output_dir}/{batch}_{mode}_pqn_normalized.csv", index=False)
+    result_df.to_csv(f"{output_dir}/pqn_normalized.csv", index=False)
 
     central_dir = "/Users/j.groen/PycharmProjects/untargeted_pipeline/metabolomics_pipeline/data/pqn_normalized_batches"
     os.makedirs(central_dir, exist_ok=True)  # Ensure the directory exists
-    normalized_df.to_csv(f"{central_dir}/{batch}_{mode}_pqn_normalized.csv")
+    result_df.to_csv(f"{central_dir}/{batch}_{mode}_pqn_normalized.csv", index=False)
 
-    return normalized_df
+    return result_df
