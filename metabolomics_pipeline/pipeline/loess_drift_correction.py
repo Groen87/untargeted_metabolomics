@@ -66,7 +66,6 @@ def correct_drift_with_loess(
     # Set Feature column as index for processing
     if feature_col is not None:
         intensity_df = intensity_df.set_index(feature_col)
-        corrected_df = corrected_df.set_index(feature_col)
 
     qc_samples = [
         col for col in intensity_df.columns
