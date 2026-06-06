@@ -204,10 +204,10 @@ def process_metabolomics_data(
         axis=1
     )
 
-    # Initialize output DataFrame
-    transformed_df = pd.DataFrame(index=df.index, columns=['Feature', 'RT [min]'] + ordered_base_ids)
-    transformed_df['Feature'] = df['feature']
-    transformed_df['RT [min]'] = df['RT [min]']
+    # Initialize output DataFrame with a clean index
+    transformed_df = pd.DataFrame(columns=['Feature', 'RT [min]'] + ordered_base_ids)
+    transformed_df['Feature'] = df['feature'].values
+    transformed_df['RT [min]'] = df['RT [min]'].values
 
    # Apply median normalization to each sample column before merging duplicates
     for base_id, cols in base_to_cols.items():
