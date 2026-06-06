@@ -27,8 +27,10 @@ def pqn_normalize(
 
     logger.info(f"PQN input columns: {list(corrected_df.columns)}")
 
-    # Identify metadata columns to preserve (Feature, RT [min])
+    # Identify metadata columns to preserve (Compounds ID, Feature, RT [min])
     metadata_cols = []
+    if 'Compounds ID' in corrected_df.columns:
+        metadata_cols.append('Compounds ID')
     if 'Feature' in corrected_df.columns:
         metadata_cols.append('Feature')
     if 'RT [min]' in corrected_df.columns:
@@ -49,8 +51,10 @@ def pqn_normalize(
     # Store metadata for later reattachment
     metadata_df = corrected_df[metadata_cols].copy()
     
-    # Set Feature as index if it exists
-    if 'Feature' in corrected_df.columns:
+    # Set Compounds ID as index if it exists (unique identifier), otherwise Feature
+    if 'Compounds ID' in corrected_df.columns:
+        corrected_df = corrected_df.set_index('Compounds ID')
+    elif 'Feature' in corrected_df.columns:
         corrected_df = corrected_df.set_index('Feature')
 
     # Identify expQC samples (case-insensitive)
@@ -80,14 +84,15 @@ def pqn_normalize(
     # Apply PQN: divide each sample by its scaling factor
     normalized_df = corrected_df[sample_cols].div(scaling_factors, axis=1)
 
-    # Reset index to get Feature as a column
+    # Reset index to get Compounds ID or Feature as a column
     normalized_df = normalized_df.reset_index()
     
-    # Reattach all metadata columns (Feature, RT [min])
-    # metadata_df already has Feature and RT [min], normalized_df has Feature from reset_index
-    # So we need to drop the Feature column from normalized_df to avoid duplication
-    if 'Feature' in normalized_df.columns:
-        normalized_df = normalized_df.drop(columns=['Feature'])
+    # Reattach all metadata columns
+    # metadata_df already has all metadata, normalized_df has the index column from reset_index
+    # So we need to drop the index column from normalized_df to avoid duplication
+    index_col_name = 'Compounds ID' if 'Compounds ID' in metadata_df.columns else 'Feature'
+    if index_col_name in normalized_df.columns:
+        normalized_df = normalized_df.drop(columns=[index_col_name])
     
     result_df = pd.concat([metadata_df.reset_index(drop=True), normalized_df], axis=1)
 

@@ -41,8 +41,10 @@ def correct_drift_with_loess(
     # --- Input Setup ---
     logger.info(f"LOESS input columns: {list(intensity_df.columns)}")
     
-    # Identify metadata columns (Feature, RT [min], etc.) vs sample columns
+    # Identify metadata columns (Compounds ID, Feature, RT [min], etc.) vs sample columns
     metadata_cols = []
+    if 'Compounds ID' in intensity_df.columns:
+        metadata_cols.append('Compounds ID')
     if 'Feature' in intensity_df.columns:
         metadata_cols.append('Feature')
     if 'RT [min]' in intensity_df.columns:
@@ -58,6 +60,9 @@ def correct_drift_with_loess(
     # Work with sample data only
     intensity_df = intensity_df[sample_cols].copy()
     
+    # Use Compounds ID as index (unique identifier) instead of Feature
+    # This handles isomers with same Feature name but different RT
+    compounds_id_col = metadata_df['Compounds ID'] if 'Compounds ID' in metadata_cols else None
     feature_col = metadata_df['Feature'] if 'Feature' in metadata_cols else None
 
     if not sample_cols:
@@ -67,8 +72,11 @@ def correct_drift_with_loess(
     for col in sample_cols:
         intensity_df[col] = pd.to_numeric(intensity_df[col], errors='coerce')
 
-    # Set Feature column as index for processing
-    if feature_col is not None:
+    # Set Compounds ID column as index for processing (unique identifier)
+    # Fall back to Feature if Compounds ID is not available
+    if compounds_id_col is not None:
+        intensity_df = intensity_df.set_index(compounds_id_col)
+    elif feature_col is not None:
         intensity_df = intensity_df.set_index(feature_col)
 
     qc_samples = [
@@ -211,19 +219,17 @@ def correct_drift_with_loess(
         print("⚠️ Warning: No high-QC features found for LOESS correction")
 
     # Reattach metadata columns to corrected data
-    # Reset index to get Feature as a column
+    # Reset index to get Compounds ID or Feature as a column
     corrected_df_reset = corrected_df.reset_index()
     
     # Merge with metadata
-    if feature_col is not None:
-        # Drop the Feature column from corrected_df_reset to avoid duplicate
-        # (metadata_df already has Feature)
-        if 'Feature' in corrected_df_reset.columns:
-            corrected_df_reset = corrected_df_reset.drop(columns=['Feature'])
-        # Use the original metadata_df which has the correct Feature order
-        result_df = pd.concat([metadata_df.reset_index(drop=True), corrected_df_reset], axis=1)
-    else:
-        result_df = corrected_df_reset
+    # Drop the index column from corrected_df_reset to avoid duplicate with metadata
+    index_col_name = 'Compounds ID' if compounds_id_col is not None else 'Feature'
+    if index_col_name in corrected_df_reset.columns:
+        corrected_df_reset = corrected_df_reset.drop(columns=[index_col_name])
+    
+    # Use the original metadata_df which has the correct order
+    result_df = pd.concat([metadata_df.reset_index(drop=True), corrected_df_reset], axis=1)
     
     # Save corrected data (ALL features, including low-QC ones, with metadata)
     result_df.to_csv(f"{output_dir}/{batch}_{mode}_drift_corrected.csv", index=False)

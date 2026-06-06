@@ -205,9 +205,14 @@ def process_metabolomics_data(
     )
 
     # Initialize output DataFrame with a clean index
+    # Use Compounds ID as unique identifier if it exists (handles isomers)
     transformed_df = pd.DataFrame(columns=['Feature', 'RT [min]'] + ordered_base_ids)
     transformed_df['Feature'] = df['feature'].values
     transformed_df['RT [min]'] = df['RT [min]'].values
+    
+    # Add Compounds ID as unique identifier if it exists
+    if 'Compounds ID' in df.columns:
+        transformed_df.insert(0, 'Compounds ID', df['Compounds ID'].values)
 
    # Apply median normalization to each sample column before merging duplicates
     for base_id, cols in base_to_cols.items():
@@ -270,9 +275,10 @@ def process_metabolomics_data(
     else:
         print("⚠️ Warning: No biological samples found for global filtering\n")
 
-    # --- NEW STEP: FILTER COLUMNS TO KEEP ONLY 'Feature', 'RT [min]', AND 'posneg*' ---
-    print("[NEW STEP] Filtering columns to keep only 'Feature', 'RT [min]', and 'posneg*'...")
-    cols_to_keep = ['Feature', 'RT [min]'] + [col for col in transformed_df.columns if col.startswith('posneg')]
+    # --- NEW STEP: FILTER COLUMNS TO KEEP ONLY 'Feature', 'feature_id', 'RT [min]', AND 'posneg*' ---
+    print("[NEW STEP] Filtering columns to keep only metadata and sample columns...")
+    metadata_cols = ['Compounds ID'] if 'Compounds ID' in transformed_df.columns else []
+    cols_to_keep = metadata_cols + ['Feature', 'RT [min]'] + [col for col in transformed_df.columns if col.startswith('posneg')]
     if not cols_to_keep:
         raise ValueError("No columns starting with 'posneg' found. Check your sample names.")
     transformed_df = transformed_df[cols_to_keep]
@@ -288,7 +294,7 @@ def process_metabolomics_data(
                      2 if ('qc4' in base_id.lower() and 'expqc_4' not in base_id.lower()) else 0,
             'benchmark': 1 if 'blauw' in base_id.lower() else 0
         }
-        for base_id in [col for col in cols_to_keep if col != 'Feature']  # Only use filtered columns
+        for base_id in [col for col in cols_to_keep if col not in ['Compounds ID', 'Feature', 'RT [min]']]  # Only use sample columns
     ])
     print(f"✓ Created batch data for {len(batchdata_df)} samples\n")
 
