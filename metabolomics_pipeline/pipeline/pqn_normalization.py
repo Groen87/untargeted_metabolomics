@@ -50,12 +50,15 @@ def pqn_normalize(
 
     # Store metadata for later reattachment
     metadata_df = corrected_df[metadata_cols].copy()
+    logger.info(f"metadata_df columns: {list(metadata_df.columns)}")
     
     # Set Compounds ID as index if it exists (unique identifier), otherwise Feature
     if 'Compounds ID' in corrected_df.columns:
         corrected_df = corrected_df.set_index('Compounds ID')
+        logger.info("Set index to Compounds ID")
     elif 'Feature' in corrected_df.columns:
         corrected_df = corrected_df.set_index('Feature')
+        logger.info("Set index to Feature")
 
     # Identify expQC samples (case-insensitive)
     qc_cols = [col for col in sample_cols if 'expqc' in col.lower()]
@@ -91,8 +94,12 @@ def pqn_normalize(
     # metadata_df already has all metadata, normalized_df has the index column from reset_index
     # So we need to drop the index column from normalized_df to avoid duplication
     index_col_name = 'Compounds ID' if 'Compounds ID' in metadata_df.columns else 'Feature'
+    logger.info(f"index_col_name: {index_col_name}")
+    logger.info(f"normalized_df columns before drop: {list(normalized_df.columns)}")
     if index_col_name in normalized_df.columns:
         normalized_df = normalized_df.drop(columns=[index_col_name])
+    logger.info(f"normalized_df columns after drop: {list(normalized_df.columns)}")
+    logger.info(f"metadata_df columns: {list(metadata_df.columns)}")
     
     result_df = pd.concat([metadata_df.reset_index(drop=True), normalized_df], axis=1)
     
