@@ -39,12 +39,16 @@ def correct_drift_with_loess(
     os.makedirs(output_dir, exist_ok=True)
 
     # --- Input Setup ---
+    logger.info(f"LOESS input columns: {list(intensity_df.columns)}")
+    
     # Identify metadata columns (Feature, RT [min], etc.) vs sample columns
     metadata_cols = []
     if 'Feature' in intensity_df.columns:
         metadata_cols.append('Feature')
     if 'RT [min]' in intensity_df.columns:
         metadata_cols.append('RT [min]')
+    
+    logger.info(f"LOESS metadata columns: {metadata_cols}")
     
     sample_cols = [col for col in intensity_df.columns if col not in metadata_cols]
     
@@ -109,8 +113,10 @@ def correct_drift_with_loess(
             logger.warning(f"Feature {feature} not found in intensity_df.index, skipping")
             continue
         # Get QC values for this feature as a Series
-        # intensity_df has Feature as index, so loc[feature, qc_samples] gives a Series with qc_samples as index
-        feature_qc_series = intensity_df.loc[feature, qc_samples]
+        # intensity_df has Feature as index, so loc[feature] gives a Series with all sample columns
+        feature_all_samples = intensity_df.loc[feature]
+        # Select only QC samples
+        feature_qc_series = feature_all_samples[qc_samples]
         
         # Find QC samples with non-NaN values
         # Use dropna to get only valid QC samples
