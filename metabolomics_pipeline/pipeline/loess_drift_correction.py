@@ -105,16 +105,23 @@ def correct_drift_with_loess(
     qc_positions = np.array([i for i, col in enumerate(sample_cols) if col in qc_samples])
 
     for feature in high_qc_features:
-        qc_values = intensity_df.loc[feature, qc_samples].to_numpy().flatten()
-        # Debug: check lengths
-        if len(qc_values) != len(qc_positions):
-            logger.warning(f"Feature {feature}: qc_values length ({len(qc_values)}) != qc_positions length ({len(qc_positions)})")
-            logger.warning(f"  qc_samples: {qc_samples}")
-            logger.warning(f"  qc_positions: {qc_positions}")
-            logger.warning(f"  intensity_df.columns: {list(intensity_df.columns)}")
-            # Skip this feature if lengths don't match
+        # Get QC values for this feature, only for QC samples that have non-NaN values
+        feature_qc_data = intensity_df.loc[feature, qc_samples]
+        valid_qc_samples = feature_qc_data.dropna().index
+        
+        if len(valid_qc_samples) < 3:
+            # Not enough valid QC samples for this feature, skip LOESS
             continue
-        smoothed = lowess(qc_values, qc_positions, frac=frac, it=3)
+        
+        qc_values = feature_qc_data[valid_qc_samples].to_numpy().flatten()
+        # Recalculate qc_positions for valid QC samples only
+        valid_qc_positions = np.array([i for i, col in enumerate(sample_cols) if col in valid_qc_samples])
+        
+        if len(qc_values) != len(valid_qc_positions):
+            logger.warning(f"Feature {feature}: qc_values length ({len(qc_values)}) != qc_positions length ({len(valid_qc_positions)})")
+            continue
+        
+        smoothed = lowess(qc_values, valid_qc_positions, frac=frac, it=3)
         median_qc = np.median(qc_values)
         correction_factors = np.interp(
             injection_order,
