@@ -118,7 +118,7 @@ def filter_by_biological_quality(
     low_missing_mask = missing_rate <= missing_threshold
     if imd_metabolites:
         low_missing_mask = low_missing_mask | imd_mask  # IMD features always pass
-    df = df[low_missing_mask]
+    df = df.loc[low_missing_mask].copy()
 
     # Filter 2: Mean intensity ≥ quantile
     bio_mean = df[bio_samples].mean(axis=1)
@@ -126,7 +126,7 @@ def filter_by_biological_quality(
     high_intensity_mask = bio_mean >= intensity_threshold
     if imd_metabolites:
         high_intensity_mask = high_intensity_mask | imd_mask  # IMD features always pass
-    df = df[high_intensity_mask]
+    df = df.loc[high_intensity_mask].copy()
 
     return df
 
