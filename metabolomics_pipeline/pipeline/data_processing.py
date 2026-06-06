@@ -270,9 +270,9 @@ def process_metabolomics_data(
     else:
         print("⚠️ Warning: No biological samples found for global filtering\n")
 
-    # --- NEW STEP: FILTER COLUMNS TO KEEP ONLY 'Feature' AND 'posneg*' ---
-    print("[NEW STEP] Filtering columns to keep only 'Feature' and 'posneg*'...")
-    cols_to_keep = ['Feature'] + [col for col in transformed_df.columns if col.startswith('posneg')]
+    # --- NEW STEP: FILTER COLUMNS TO KEEP ONLY 'Feature', 'RT [min]', AND 'posneg*' ---
+    print("[NEW STEP] Filtering columns to keep only 'Feature', 'RT [min]', and 'posneg*'...")
+    cols_to_keep = ['Feature', 'RT [min]'] + [col for col in transformed_df.columns if col.startswith('posneg')]
     if not cols_to_keep:
         raise ValueError("No columns starting with 'posneg' found. Check your sample names.")
     transformed_df = transformed_df[cols_to_keep]

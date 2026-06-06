@@ -112,11 +112,11 @@ def correct_drift_with_loess(
         if feature not in intensity_df.index:
             logger.warning(f"Feature {feature} not found in intensity_df.index, skipping")
             continue
-        # Get QC values for this feature as a Series
-        # intensity_df has Feature as index, so loc[feature] gives a Series with all sample columns
-        feature_all_samples = intensity_df.loc[feature]
-        # Select only QC samples
-        feature_qc_series = feature_all_samples[qc_samples]
+        # Get all sample values for this feature
+        feature_row = intensity_df.loc[feature]
+        
+        # Get QC values for this feature - use reindex to ensure we get a Series with qc_samples as index
+        feature_qc_series = feature_row.reindex(qc_samples)
         
         # Find QC samples with non-NaN values
         # Use dropna to get only valid QC samples
