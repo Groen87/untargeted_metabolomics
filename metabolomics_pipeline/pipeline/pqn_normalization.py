@@ -25,12 +25,16 @@ def pqn_normalize(
     if corrected_df.empty:
         raise ValueError("Input DataFrame is empty")
 
+    logger.info(f"PQN input columns: {list(corrected_df.columns)}")
+
     # Identify metadata columns to preserve (Feature, RT [min])
     metadata_cols = []
     if 'Feature' in corrected_df.columns:
         metadata_cols.append('Feature')
     if 'RT [min]' in corrected_df.columns:
         metadata_cols.append('RT [min]')
+    
+    logger.info(f"Metadata columns: {metadata_cols}")
     
     # Exclude metadata columns and other metadata prefixes
     METADATA_PREFIXES = ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status']

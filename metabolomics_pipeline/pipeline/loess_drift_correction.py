@@ -118,11 +118,15 @@ def correct_drift_with_loess(
             continue
         
         qc_values = valid_feature_qc.values
-        # Recalculate qc_positions for valid QC samples only
-        valid_qc_positions = np.array([i for i, col in enumerate(sample_cols) if col in valid_qc_sample_names])
+        # Recalculate qc_positions: positions of valid QC samples in the injection order
+        # Use intensity_df.columns which has the actual sample columns after any filtering
+        all_sample_cols = list(intensity_df.columns)
+        valid_qc_positions = np.array([i for i, col in enumerate(all_sample_cols) if col in valid_qc_sample_names])
         
         if len(qc_values) != len(valid_qc_positions):
             logger.warning(f"Feature {feature}: qc_values length ({len(qc_values)}) != qc_positions length ({len(valid_qc_positions)})")
+            logger.warning(f"  valid_qc_sample_names: {valid_qc_sample_names}")
+            logger.warning(f"  all_sample_cols: {all_sample_cols}")
             continue
         
         smoothed = lowess(qc_values, valid_qc_positions, frac=frac, it=3)
