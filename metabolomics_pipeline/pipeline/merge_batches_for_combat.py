@@ -152,13 +152,17 @@ def merge_batches_for_combat(
     batch2 = pd.read_csv(batch_file_batch2)
 
     # Check if median normalization is needed (intrabatch scale differences)
+    # Only calculate median on numeric sample columns (exclude Feature, RT [min])
+    sample_cols_df1 = [col for col in df1.columns if col not in ['Feature', 'RT [min]']]
+    sample_cols_df2 = [col for col in df2.columns if col not in ['Feature', 'RT [min]']]
+    
     print("\n=== Batch 1 Sample Medians ===")
-    batch1_medians = df1.median(axis=0)
+    batch1_medians = df1[sample_cols_df1].median(axis=0)
     print(batch1_medians.describe())
     print(f"CV of medians: {batch1_medians.std() / batch1_medians.mean() * 100:.2f}%")
 
     print("\n=== Batch 2 Sample Medians ===")
-    batch2_medians = df2.median(axis=0)
+    batch2_medians = df2[sample_cols_df2].median(axis=0)
     print(batch2_medians.describe())
     print(f"CV of medians: {batch2_medians.std() / batch2_medians.mean() * 100:.2f}%")
 
