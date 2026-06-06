@@ -126,13 +126,21 @@ def merge_batches_for_combat(
     combat_output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Load data ---
-    df1 = pd.read_csv(drift_corrected_file_batch1, index_col='Feature')
-    df2 = pd.read_csv(drift_corrected_file_batch2, index_col='Feature')
+    # Use Compounds ID as index if available (handles isomers with duplicate Feature names)
+    # Otherwise fall back to Feature
+    df1_raw = pd.read_csv(drift_corrected_file_batch1)
+    df2_raw = pd.read_csv(drift_corrected_file_batch2)
+    
+    # Determine which column to use as index
+    index_col = 'Compounds ID' if 'Compounds ID' in df1_raw.columns else 'Feature'
+    
+    df1 = df1_raw.set_index(index_col)
+    df2 = df2_raw.set_index(index_col)
     
     # Load RT columns from the input files
     # RT is stored as a column, not in the index
-    rt1 = pd.read_csv(drift_corrected_file_batch1)[['Feature', 'RT [min]']].set_index('Feature')
-    rt2 = pd.read_csv(drift_corrected_file_batch2)[['Feature', 'RT [min]']].set_index('Feature')
+    rt1 = df1_raw[['Feature', 'RT [min]']].set_index(index_col)
+    rt2 = df2_raw[['Feature', 'RT [min]']].set_index(index_col)
     
     batch1 = pd.read_csv(batch_file_batch1)
     batch2 = pd.read_csv(batch_file_batch2)
@@ -224,33 +232,39 @@ def merge_batches_for_combat(
         other_rt_warped = other_rt.copy()
     
     # --- Feature Matching with Warped RTs ---
-    # Now match features by name + RT (within threshold)
-    # Build a dictionary of features with their RTs (warped for non-reference batch)
+    # Now match features by Feature name + RT (within threshold)
+    # We need to group by Feature name (not by Compounds ID/index)
     
-    # Reference batch features: use original RT
-    ref_features = {}
-    for feat in ref_df.index:
-        if feat in ref_rt.index:
-            ref_features[feat] = ref_rt.loc[feat, 'RT [min]']
+    # Build dictionaries mapping (Feature_name, index) -> RT for both batches
+    # Reference batch: index -> (Feature, RT)
+    ref_feature_data = {}
+    for idx in ref_df.index:
+        if idx in ref_rt.index:
+            feature_name = ref_rt.loc[idx, 'Feature']
+            rt_val = ref_rt.loc[idx, 'RT [min]']
+            ref_feature_data[idx] = (feature_name, rt_val)
     
-    # Other batch features: use warped RT
-    other_features = {}
-    for feat in other_df.index:
-        if feat in other_rt_warped.index:
-            other_features[feat] = other_rt_warped.loc[feat, 'RT [min]']
+    # Other batch: index -> (Feature, warped_RT)
+    other_feature_data = {}
+    for idx in other_df.index:
+        if idx in other_rt_warped.index:
+            feature_name = other_rt_warped.loc[idx, 'Feature']
+            rt_val = other_rt_warped.loc[idx, 'RT [min]']
+            other_feature_data[idx] = (feature_name, rt_val)
     
-    # Group features by name across both batches
+    # Group features by Feature name across both batches
     feature_groups = defaultdict(list)
     
-    for feat, rt in ref_features.items():
-        feature_groups[feat].append(('ref', feat, rt))
+    for idx, (feat_name, rt) in ref_feature_data.items():
+        feature_groups[feat_name].append(('ref', idx, rt))
     
-    for feat, rt in other_features.items():
-        feature_groups[feat].append(('other', feat, rt))
+    for idx, (feat_name, rt) in other_feature_data.items():
+        feature_groups[feat_name].append(('other', idx, rt))
     
     # For each feature name, find matches based on RT similarity
+    # We match by Feature name + RT, so isomers with same name but similar RT will be merged
     feature_to_match_key = {}
-    matched_features = set()
+    matched_indices = set()
     
     for feat_name, entries in feature_groups.items():
         # Sort by RT
@@ -272,29 +286,33 @@ def merge_batches_for_combat(
         groups.append(current_group)
         
         # For each RT group, create a match key
+        # The match key will be the Feature name (since we're matching isomers with same name)
         for group in groups:
-            # Use reference batch feature if available, otherwise first feature
-            ref_feature = next((f for source, f, _ in group if source == 'ref'), group[0][1])
-            match_key = ref_feature
+            # Use the Feature name as the match key (all entries in group have same feat_name)
+            match_key = feat_name
             
-            for source, f, _ in group:
-                feature_to_match_key[f] = match_key
-                matched_features.add(f)
+            for source, idx, _ in group:
+                feature_to_match_key[idx] = match_key
+                matched_indices.add(idx)
     
     # Features that weren't matched (no RT within threshold of any other)
-    # These will be kept as unique features
-    all_features = set(ref_features.keys()) | set(other_features.keys())
-    unmatched_features = all_features - matched_features
+    # These will be kept as unique features with their original Feature name
+    all_indices = set(ref_feature_data.keys()) | set(other_feature_data.keys())
+    unmatched_indices = all_indices - matched_indices
     
-    for feat in unmatched_features:
-        feature_to_match_key[feat] = feat  # Keep as unique
+    for idx in unmatched_indices:
+        # For unmatched features, use their Feature name as the match key
+        if idx in ref_feature_data:
+            feature_to_match_key[idx] = ref_feature_data[idx][0]  # Feature name
+        elif idx in other_feature_data:
+            feature_to_match_key[idx] = other_feature_data[idx][0]  # Feature name
     
     # --- Apply matching and merge ---
-    # Rename features in both batches according to match keys
+    # Rename features in both batches according to match keys (Feature names)
     df1_renamed = df1.rename(index=lambda x: feature_to_match_key.get(x, x))
     df2_renamed = df2.rename(index=lambda x: feature_to_match_key.get(x, x))
     
-    # Merge duplicates within each batch
+    # Merge duplicates within each batch (isomers with same Feature name and similar RT)
     df1_merged = df1_renamed.groupby(level=0).mean()
     df2_merged = df2_renamed.groupby(level=0).mean()
     
@@ -304,21 +322,27 @@ def merge_batches_for_combat(
     
     # --- Add RT column to merged data ---
     # Use the RT from the match key (which is from reference batch when available)
+    # Build a mapping from Feature name to RT using the first occurrence
     rt_values = {}
-    for feat in merged_data.index:
-        # The feature name in merged_data is the match key
-        # We need to find the original RT for this match key
-        if feat in ref_features:
-            rt_values[feat] = ref_features[feat]
-        elif feat in other_features:
-            rt_values[feat] = other_features[feat]
+    for feat_name in merged_data.index:
+        # Find the first index that maps to this Feature name
+        # and get its RT
+        for idx, (fn, rt) in ref_feature_data.items():
+            if feature_to_match_key.get(idx, None) == feat_name:
+                rt_values[feat_name] = rt
+                break
         else:
-            rt_values[feat] = None
+            for idx, (fn, rt) in other_feature_data.items():
+                if feature_to_match_key.get(idx, None) == feat_name:
+                    rt_values[feat_name] = rt
+                    break
+            else:
+                rt_values[feat_name] = None
     
     merged_data['RT [min]'] = pd.Series(rt_values)
     
-    print(f"✓ Matched {len(matched_features)} features by name + warped RT")
-    print(f"✓ Kept {len(unmatched_features)} unique features")
+    print(f"✓ Matched {len(matched_indices)} features by name + warped RT")
+    print(f"✓ Kept {len(unmatched_indices)} unique features")
 
     # --- Remove expQC samples from data and batch info ---
     # Find all columns containing 'expqc' (case-insensitive), excluding RT column
