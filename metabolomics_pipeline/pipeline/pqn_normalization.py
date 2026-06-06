@@ -95,6 +95,8 @@ def pqn_normalize(
         normalized_df = normalized_df.drop(columns=[index_col_name])
     
     result_df = pd.concat([metadata_df.reset_index(drop=True), normalized_df], axis=1)
+    
+    logger.info(f"PQN output columns: {list(result_df.columns)}")
 
     # Save normalized data
     result_df.to_csv(f"{output_dir}/{batch}_{mode}_pqn_normalized.csv", index=False)
