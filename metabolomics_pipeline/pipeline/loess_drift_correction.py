@@ -106,6 +106,14 @@ def correct_drift_with_loess(
 
     for feature in high_qc_features:
         qc_values = intensity_df.loc[feature, qc_samples].to_numpy().flatten()
+        # Debug: check lengths
+        if len(qc_values) != len(qc_positions):
+            logger.warning(f"Feature {feature}: qc_values length ({len(qc_values)}) != qc_positions length ({len(qc_positions)})")
+            logger.warning(f"  qc_samples: {qc_samples}")
+            logger.warning(f"  qc_positions: {qc_positions}")
+            logger.warning(f"  intensity_df.columns: {list(intensity_df.columns)}")
+            # Skip this feature if lengths don't match
+            continue
         smoothed = lowess(qc_values, qc_positions, frac=frac, it=3)
         median_qc = np.median(qc_values)
         correction_factors = np.interp(
