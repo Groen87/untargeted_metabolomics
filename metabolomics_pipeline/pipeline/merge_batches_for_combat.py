@@ -131,12 +131,8 @@ def merge_batches_for_combat(
     df1_raw = pd.read_csv(drift_corrected_file_batch1)
     df2_raw = pd.read_csv(drift_corrected_file_batch2)
     
-    print(f"DEBUG: df1_raw columns: {list(df1_raw.columns)}")
-    print(f"DEBUG: df2_raw columns: {list(df2_raw.columns)}")
-    
     # Determine which column to use as index
     index_col = 'Compounds ID' if 'Compounds ID' in df1_raw.columns else 'Feature'
-    print(f"DEBUG: Using index_col: {index_col}")
     
     df1 = df1_raw.set_index(index_col)
     df2 = df2_raw.set_index(index_col)
