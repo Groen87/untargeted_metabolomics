@@ -107,8 +107,6 @@ def correct_drift_with_loess(
     for feature in high_qc_features:
         # Get QC values for this feature as a Series
         feature_qc_series = intensity_df.loc[feature, qc_samples]
-        # Convert to DataFrame for easier handling
-        feature_qc_df = feature_qc_series.to_frame().T
         
         # Find QC samples with non-NaN values
         valid_qc_mask = feature_qc_series.notna()
@@ -118,7 +116,7 @@ def correct_drift_with_loess(
             # Not enough valid QC samples for this feature, skip LOESS
             continue
         
-        qc_values = feature_qc_series[valid_qc_mask].to_numpy().flatten()
+        qc_values = feature_qc_series[valid_qc_mask].to_numpy()
         # Recalculate qc_positions for valid QC samples only
         valid_qc_positions = np.array([i for i, col in enumerate(sample_cols) if col in valid_qc_sample_names])
         
