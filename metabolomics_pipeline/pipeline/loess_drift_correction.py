@@ -105,12 +105,17 @@ def correct_drift_with_loess(
     qc_positions = np.array([i for i, col in enumerate(sample_cols) if col in qc_samples])
 
     for feature in high_qc_features:
+        if feature not in intensity_df.index:
+            logger.warning(f"Feature {feature} not found in intensity_df.index, skipping")
+            continue
         # Get QC values for this feature as a Series
+        # intensity_df has Feature as index, so loc[feature, qc_samples] gives a Series with qc_samples as index
         feature_qc_series = intensity_df.loc[feature, qc_samples]
         
         # Find QC samples with non-NaN values
         # Use dropna to get only valid QC samples
         valid_feature_qc = feature_qc_series.dropna()
+        # The index of this Series is the QC sample names (columns)
         valid_qc_sample_names = list(valid_feature_qc.index)
         
         if len(valid_qc_sample_names) < 3:
@@ -205,6 +210,10 @@ def correct_drift_with_loess(
     
     # Merge with metadata
     if feature_col is not None:
+        # Drop the Feature column from corrected_df_reset to avoid duplicate
+        # (metadata_df already has Feature)
+        if 'Feature' in corrected_df_reset.columns:
+            corrected_df_reset = corrected_df_reset.drop(columns=['Feature'])
         # Use the original metadata_df which has the correct Feature order
         result_df = pd.concat([metadata_df.reset_index(drop=True), corrected_df_reset], axis=1)
     else:
