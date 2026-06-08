@@ -343,37 +343,50 @@ def merge_batches_for_combat(
     
     # For each feature name, find matches based on RT similarity
     # We match by Feature name + RT, so isomers with same name but similar RT will be merged
+    # IMPORTANT: Only match features ACROSS batches, not within the same batch
     feature_to_match_key = {}
     matched_indices = set()
     
+    # Ensure rt_threshold is not None
+    if rt_threshold is None:
+        rt_threshold = 0.05  # Default 5 seconds
+    
     for feat_name, entries in feature_groups.items():
-        # Sort by RT
-        entries_sorted = sorted(entries, key=lambda x: x[2])
+        # Separate entries by batch
+        ref_entries = [e for e in entries if e[0] == 'ref']
+        other_entries = [e for e in entries if e[0] == 'other']
         
-        # Group entries by RT similarity (within threshold)
-        groups = []
-        current_group = [entries_sorted[0]]
-        
-        for i in range(1, len(entries_sorted)):
-            prev_rt = current_group[-1][2]
-            curr_rt = entries_sorted[i][2]
+        # Only try to match if we have entries from both batches
+        if len(ref_entries) > 0 and len(other_entries) > 0:
+            # Sort all entries by RT
+            entries_sorted = sorted(entries, key=lambda x: x[2])
             
-            if abs(curr_rt - prev_rt) <= rt_threshold:
-                current_group.append(entries_sorted[i])
-            else:
-                groups.append(current_group)
-                current_group = [entries_sorted[i]]
-        groups.append(current_group)
-        
-        # For each RT group, create a match key
-        # The match key will be the Feature name (since we're matching isomers with same name)
-        for group in groups:
-            # Use the Feature name as the match key (all entries in group have same feat_name)
-            match_key = feat_name
+            # Group entries by RT similarity (within threshold)
+            groups = []
+            current_group = [entries_sorted[0]]
             
-            for source, idx, _ in group:
-                feature_to_match_key[idx] = match_key
-                matched_indices.add(idx)
+            for i in range(1, len(entries_sorted)):
+                prev_rt = current_group[-1][2]
+                curr_rt = entries_sorted[i][2]
+                
+                if abs(curr_rt - prev_rt) <= rt_threshold:
+                    current_group.append(entries_sorted[i])
+                else:
+                    groups.append(current_group)
+                    current_group = [entries_sorted[i]]
+            groups.append(current_group)
+            
+            # For each RT group, create a match key ONLY if it contains entries from both batches
+            for group in groups:
+                group_sources = [e[0] for e in group]
+                # Only match if group has both ref and other entries
+                if 'ref' in group_sources and 'other' in group_sources:
+                    # Use the Feature name as the match key
+                    match_key = feat_name
+                    
+                    for source, idx, _ in group:
+                        feature_to_match_key[idx] = match_key
+                        matched_indices.add(idx)
     
     # Features that weren't matched (no RT within threshold of any other)
     # These will be kept as unique features with their original Feature name
