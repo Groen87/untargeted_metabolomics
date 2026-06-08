@@ -415,15 +415,31 @@ def merge_batches_for_combat(
     print(f"✓ Matched {len(matched_indices)} features by name + warped RT")
     print(f"✓ Kept {len(unmatched_indices)} unique features")
 
-    # --- Note: expQC samples are KEEPED for ComBat correction ---
-    # They will be used by ComBat for batch effect estimation
-    # and for QC metrics calculation after correction
-    # If you want to remove them from the final output, do it after ComBat
-    expqc_cols = [col for col in merged_data.columns if col != 'RT [min]' and 'expqc' in col.lower()]
-    if expqc_cols:
-        print(f"ℹ️  Found {len(expqc_cols)} expQC samples in data (kept for ComBat): {expqc_cols}")
+    # --- Remove expQC samples (used for drift correction, not batch correction) ---
+    # Keep QC4 and blauw samples for ComBat
+    # expQC samples contain 'expqc' but NOT 'QC4' or 'blauw'
+    # QC4 and blauw samples should be kept for batch correction
     
-    # Note: expQC samples remain in merged_batch for batch correction
+    expqc_cols = [
+        col for col in merged_data.columns 
+        if col != 'RT [min]' and 
+           'expqc' in col.lower() and 
+           'qc4' not in col.lower() and 
+           'blauw' not in col.lower()
+    ]
+    
+    if expqc_cols:
+        print(f"✓ Removing {len(expqc_cols)} expQC (drift correction) columns from data: {expqc_cols}")
+        merged_data = merged_data.drop(columns=expqc_cols)
+        # Remove corresponding rows from merged_batch
+        merged_batch = merged_batch[~merged_batch['sample_id'].str.lower().str.contains('expqc')]
+        # Add back any QC4 or blauw samples that might have been removed
+        merged_batch = merged_batch[
+            ~merged_batch['sample_id'].str.lower().str.contains('expqc') |
+            merged_batch['sample_id'].str.lower().str.contains('qc4') |
+            merged_batch['sample_id'].str.lower().str.contains('blauw')
+        ]
+        print(f"✓ Removed expQC samples from batch metadata (kept QC4/blauw for ComBat)")
 
     # --- Identify batch-specific features (keep them as unique) ---
     # Use filtered batch metadata to get sample IDs
