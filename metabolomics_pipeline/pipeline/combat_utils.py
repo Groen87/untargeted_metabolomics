@@ -487,7 +487,7 @@ def run_combat_and_visualize(
             
             # Calculate feature presence across ALL QC samples (QC4 + blauw) before gap-filling
             # Use the pre-computed presence from the original data
-            if qc4_samples and qc4_samples in qc_feature_presence:
+            if qc4_samples and "QC4" in qc_feature_presence:
                 presence_qc4 = qc_feature_presence["QC4"].reindex(df.index, fill_value=0.0)
             else:
                 presence_qc4 = pd.Series(0.0, index=df.index)
