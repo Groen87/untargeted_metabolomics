@@ -211,10 +211,46 @@ def merge_batches_for_combat(
         other_rt_sorted = other_rt_values[sort_idx]
         
         # Create warping function: other_RT -> reference_RT
+        # FIX: Ensure other_rt_sorted is strictly increasing for UnivariateSpline with s > 0
         if use_spline:
             # Use spline interpolation
-            warp_func = UnivariateSpline(other_rt_sorted, ref_rt_sorted, s=0.1)
-            print("✓ Using spline interpolation for RT warping")
+            # Check if other_rt_sorted is strictly increasing
+            if len(other_rt_sorted) > 1 and not np.all(np.diff(other_rt_sorted) > 0):
+                # Remove duplicates while maintaining correspondence
+                _, unique_indices = np.unique(other_rt_sorted, return_index=True)
+                other_rt_sorted = other_rt_sorted[np.sort(unique_indices)]
+                ref_rt_sorted = ref_rt_sorted[np.sort(unique_indices)]
+                
+                # Check again after deduplication
+                if len(other_rt_sorted) > 1 and not np.all(np.diff(other_rt_sorted) > 0):
+                    print("⚠️  RT values not strictly increasing after deduplication. Using s=0 for spline.")
+                    try:
+                        warp_func = UnivariateSpline(other_rt_sorted, ref_rt_sorted, s=0)
+                    except Exception as e:
+                        print(f"⚠️  Spline failed: {e}. Falling back to cubic interpolation.")
+                        warp_func = interp1d(other_rt_sorted, ref_rt_sorted, kind='cubic', fill_value='extrapolate')
+                        print("✓ Using cubic interpolation for RT warping (fallback)")
+                else:
+                    try:
+                        warp_func = UnivariateSpline(other_rt_sorted, ref_rt_sorted, s=0.1)
+                        print("✓ Using spline interpolation for RT warping")
+                    except Exception as e:
+                        print(f"⚠️  Spline failed: {e}. Falling back to cubic interpolation.")
+                        warp_func = interp1d(other_rt_sorted, ref_rt_sorted, kind='cubic', fill_value='extrapolate')
+                        print("✓ Using cubic interpolation for RT warping (fallback)")
+            else:
+                try:
+                    warp_func = UnivariateSpline(other_rt_sorted, ref_rt_sorted, s=0.1)
+                    print("✓ Using spline interpolation for RT warping")
+                except ValueError as e:
+                    if "x must be increasing" in str(e):
+                        print("⚠️  RT values not strictly increasing. Using s=0 for spline.")
+                        warp_func = UnivariateSpline(other_rt_sorted, ref_rt_sorted, s=0)
+                        print("✓ Using spline interpolation for RT warping (s=0)")
+                    else:
+                        print(f"⚠️  Spline failed: {e}. Falling back to cubic interpolation.")
+                        warp_func = interp1d(other_rt_sorted, ref_rt_sorted, kind='cubic', fill_value='extrapolate')
+                        print("✓ Using cubic interpolation for RT warping (fallback)")
         else:
             # Use LOESS-like interpolation (linear for simplicity, or cubic)
             warp_func = interp1d(other_rt_sorted, ref_rt_sorted, kind='cubic', fill_value='extrapolate')
