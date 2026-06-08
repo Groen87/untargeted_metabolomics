@@ -342,6 +342,16 @@ def merge_batches_for_combat(
     for idx, (feat_name, rt) in other_feature_data.items():
         feature_groups[feat_name].append(('other', idx, rt))
     
+    # Debug: Count features by batch
+    ref_features = set(ref_feature_data.values())
+    other_features = set(other_feature_data.values())
+    common_feature_names = set([f[0] for f in ref_features]) & set([f[0] for f in other_features])
+    print(f"\n=== Feature Matching Debug ===")
+    print(f"Reference batch: {len(ref_feature_data)} features, {len(set([f[0] for f in ref_feature_data.values()]))} unique Feature names")
+    print(f"Other batch: {len(other_feature_data)} features, {len(set([f[0] for f in other_feature_data.values()]))} unique Feature names")
+    print(f"Common Feature names between batches: {len(common_feature_names)}")
+    print(f"RT threshold: {rt_threshold} minutes")
+    
     # For each feature name, find matches based on RT similarity
     # We match by Feature name + RT, so isomers with same name but similar RT will be merged
     # IMPORTANT: Only match features ACROSS batches, not within the same batch
@@ -455,6 +465,15 @@ def merge_batches_for_combat(
     
     print(f"✓ Matched {len(matched_indices)} features by name + warped RT")
     print(f"✓ Kept {len(unmatched_indices)} unique features")
+    
+    # Debug: Count how many Feature names have matches
+    matched_feature_names = set()
+    for idx in matched_indices:
+        if idx in ref_feature_data:
+            matched_feature_names.add(ref_feature_data[idx][0])
+        elif idx in other_feature_data:
+            matched_feature_names.add(other_feature_data[idx][0])
+    print(f"Unique Feature names with matches: {len(matched_feature_names)}")
 
     # --- Remove expQC samples (used for drift correction, not batch correction) ---
     # Keep QC4 and blauw samples for ComBat
