@@ -355,8 +355,19 @@ def merge_batches_for_combat(
     df2_renamed = df2.rename(index=lambda x: feature_to_match_key.get(x, x))
     
     # Merge duplicates within each batch (isomers with same Feature name and similar RT)
-    df1_merged = df1_renamed.groupby(level=0).mean()
-    df2_merged = df2_renamed.groupby(level=0).mean()
+    # Select only numeric columns (sample intensities) for mean calculation
+    # Exclude non-numeric columns like 'Feature', 'RT [min]', etc.
+    numeric_cols_df1 = df1_renamed.select_dtypes(include=[np.number]).columns
+    numeric_cols_df2 = df2_renamed.select_dtypes(include=[np.number]).columns
+    
+    if len(numeric_cols_df1) == 0:
+        # If no numeric columns found, try all columns except known non-numeric ones
+        exclude_cols = ['Feature', 'RT [min]', 'Compounds ID', 'Name', 'Formula']
+        numeric_cols_df1 = [col for col in df1_renamed.columns if col not in exclude_cols]
+        numeric_cols_df2 = [col for col in df2_renamed.columns if col not in exclude_cols]
+    
+    df1_merged = df1_renamed[numeric_cols_df1].groupby(level=0).mean()
+    df2_merged = df2_renamed[numeric_cols_df2].groupby(level=0).mean()
     
     # Concatenate (keep ALL features, including unmatched ones)
     merged_data = pd.concat([df1_merged, df2_merged], axis=1, join='outer')
