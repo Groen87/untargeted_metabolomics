@@ -58,16 +58,20 @@ def median_normalize(
     elif 'Feature' in corrected_df.columns:
         corrected_df = corrected_df.set_index('Feature')
 
-    # Identify expQC samples (case-insensitive)
-    qc_cols = [col for col in sample_cols if 'expqc' in col.lower()]
+    # Identify QC samples (case-insensitive) - try multiple patterns
+    qc_patterns = ['expqc', 'qc3', 'qc4', 'qc']
+    qc_cols = []
+    for pattern in qc_patterns:
+        qc_cols = [col for col in sample_cols if pattern in col.lower()]
+        if qc_cols:
+            logger.info(f"Found QC samples with pattern '{pattern}': {qc_cols}")
+            break
 
     if not qc_cols:
         raise ValueError(
-            "No 'expQC' samples found in DataFrame columns. "
+            f"No QC samples found with any pattern. Tried: {qc_patterns}. "
             f"Available columns: {sample_cols}"
         )
-    else:
-        logger.info(f"Found expQC samples: {qc_cols}")
 
     # Calculate median of QC samples (reference)
     qc_data = corrected_df[qc_cols].replace('', np.nan).astype(float)

@@ -79,18 +79,23 @@ def correct_drift_with_loess(
     elif feature_col is not None:
         intensity_df = intensity_df.set_index(feature_col)
 
-    qc_samples = [
-        col for col in intensity_df.columns
-        if qc_pattern.lower() in col.lower() and
-           not any(col.startswith(prefix) for prefix in ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status'])
-    ]
+    # Try multiple QC patterns: first the specified pattern, then common alternatives
+    qc_patterns = [qc_pattern, "QC3", "QC4", "expQC", "qc"]
+    qc_samples = []
+    for pattern in qc_patterns:
+        qc_samples = [
+            col for col in intensity_df.columns
+            if pattern.lower() in col.lower() and
+               not any(col.startswith(prefix) for prefix in ['Area:', 'PQF:', 'Gap', 'Peak', 'Number', 'Status'])
+        ]
+        if qc_samples:
+            logger.info(f"Found QC samples with pattern '{pattern}': {qc_samples}")
+            break
 
     if not qc_samples:
         logger.error(
-            f"No QC samples found with pattern '{qc_pattern}'. Available columns: {list(intensity_df.columns)}")
-        raise ValueError(f"No QC samples found with pattern '{qc_pattern}'")
-    else:
-        logger.info(f"Found QC samples: {qc_samples}")
+            f"No QC samples found with any pattern. Tried: {qc_patterns}. Available columns: {list(intensity_df.columns)}")
+        raise ValueError(f"No QC samples found with any pattern. Tried: {qc_patterns}")
 
     # Initialize corrected DataFrame (with same index as intensity_df)
     corrected_df = intensity_df.copy()
