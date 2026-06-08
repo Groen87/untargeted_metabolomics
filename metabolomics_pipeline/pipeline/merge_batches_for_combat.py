@@ -366,8 +366,14 @@ def merge_batches_for_combat(
         numeric_cols_df1 = [col for col in df1_renamed.columns if col not in exclude_cols]
         numeric_cols_df2 = [col for col in df2_renamed.columns if col not in exclude_cols]
     
+    # Group by index and compute mean of numeric columns only
     df1_merged = df1_renamed[numeric_cols_df1].groupby(level=0).mean()
     df2_merged = df2_renamed[numeric_cols_df2].groupby(level=0).mean()
+    
+    # Preserve metadata columns (Feature, RT [min]) from the first occurrence
+    # Get unique metadata for each matched feature
+    metadata_df1 = df1_renamed[['Feature', 'RT [min]']].drop_duplicates()
+    metadata_df2 = df2_renamed[['Feature', 'RT [min]']].drop_duplicates()
     
     # Concatenate (keep ALL features, including unmatched ones)
     merged_data = pd.concat([df1_merged, df2_merged], axis=1, join='outer')
@@ -446,8 +452,15 @@ def merge_batches_for_combat(
     
     # Reset index to include Feature as a column, with RT [min] as second column
     merged_data_reset = merged_data.reset_index()
+    # Rename the index column to 'Feature' if it's not already named that
+    if merged_data_reset.columns[0] != 'Feature':
+        # The index column (Compounds ID) should be renamed to Feature for COMBAT
+        merged_data_reset = merged_data_reset.rename(columns={merged_data_reset.columns[0]: 'Feature'})
+    
     # Reorder columns: Feature, RT [min], then samples
     cols = ['Feature', 'RT [min]'] + [c for c in merged_data_reset.columns if c not in ['Feature', 'RT [min]']]
+    # Only include columns that actually exist
+    cols = [c for c in cols if c in merged_data_reset.columns]
     merged_data_reset = merged_data_reset[cols]
     merged_data_reset.to_csv(merged_data_path, index=False)
     merged_batch.to_csv(merged_batch_path, index=False)
