@@ -126,21 +126,21 @@ def merge_batches_for_combat(
     combat_output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Load data ---
-    # Use Compounds ID as index if available (handles isomers with duplicate Feature names)
-    # Otherwise fall back to Feature
+    # IMPORTANT: Always use 'Feature' as index for matching, NOT 'Compounds ID'
+    # Compound ID is only for tracking isomers, not for feature matching
     df1_raw = pd.read_csv(drift_corrected_file_batch1)
     df2_raw = pd.read_csv(drift_corrected_file_batch2)
     
-    # Determine which column to use as index
-    index_col = 'Compounds ID' if 'Compounds ID' in df1_raw.columns else 'Feature'
+    # Always use 'Feature' as the index for matching
+    # Compound ID should remain as a column for tracking isomers
+    index_col = 'Feature'
     
     df1 = df1_raw.set_index(index_col)
     df2 = df2_raw.set_index(index_col)
     
     # Load RT columns from the input files
     # RT is stored as a column, not in the index
-    # Include index_col (Compounds ID or Feature) in the selection so we can set it as index
-    rt_cols = [index_col, 'Feature', 'RT [min]']
+    rt_cols = [index_col, 'Compounds ID', 'RT [min]'] if 'Compounds ID' in df1_raw.columns else [index_col, 'RT [min]']
     rt1 = df1_raw[rt_cols].set_index(index_col)
     rt2 = df2_raw[rt_cols].set_index(index_col)
     
