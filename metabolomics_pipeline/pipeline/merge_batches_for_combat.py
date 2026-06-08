@@ -126,28 +126,29 @@ def merge_batches_for_combat(
     combat_output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Load data ---
-    # IMPORTANT: Always use 'Feature' as index for matching, NOT 'Compounds ID'
-    # Compound ID is only for tracking isomers, not for feature matching
+    # IMPORTANT: Use Compounds ID as index for unique identification
+    # Features are matched by Feature name + RT, NOT by Compounds ID
+    # Compound ID is only for tracking isomers within a batch
     df1_raw = pd.read_csv(drift_corrected_file_batch1)
     df2_raw = pd.read_csv(drift_corrected_file_batch2)
     
-    # Always use 'Feature' as the index for matching
-    # Compound ID should remain as a column for tracking isomers
-    index_col = 'Feature'
-    
-    df1 = df1_raw.set_index(index_col)
-    df2 = df2_raw.set_index(index_col)
+    # Use Compounds ID as index for unique row identification
+    # This handles isomers (same Feature name, different Compounds ID, different RT)
+    if 'Compounds ID' in df1_raw.columns:
+        index_col = 'Compounds ID'
+        df1 = df1_raw.set_index(index_col)
+        df2 = df2_raw.set_index(index_col)
+    else:
+        # Fallback to Feature if Compounds ID not available
+        index_col = 'Feature'
+        df1 = df1_raw.set_index(index_col)
+        df2 = df2_raw.set_index(index_col)
     
     # Load RT columns from the input files
-    # RT is stored as a column, not in the index
-    rt_cols = [index_col, 'Compounds ID', 'RT [min]'] if 'Compounds ID' in df1_raw.columns else [index_col, 'RT [min]']
-    rt1 = df1_raw[rt_cols].set_index(index_col)
-    rt2 = df2_raw[rt_cols].set_index(index_col)
-    
-    # Ensure Feature is available as a column for lookups
-    # (it's in the index, but we need it as a column too)
-    rt1['Feature'] = rt1.index
-    rt2['Feature'] = rt2.index
+    # Keep Feature, Compounds ID, and RT as columns for matching
+    rt_cols = ['Feature', 'Compounds ID', 'RT [min]'] if 'Compounds ID' in df1_raw.columns else ['Feature', 'RT [min]']
+    rt1 = df1_raw[rt_cols].copy()
+    rt2 = df2_raw[rt_cols].copy()
     
     batch1 = pd.read_csv(batch_file_batch1)
     batch2 = pd.read_csv(batch_file_batch2)
@@ -214,22 +215,22 @@ def merge_batches_for_combat(
         other_df = df1
     
     # For RT warping, we need common features between reference and other batch
-    # to build the warping function
-    common_features_ref = set(ref_rt.index) & set(other_rt.index)
+    # Match by Feature name to find common features
+    # For each Feature, use the median RT across all occurrences
+    ref_features = ref_rt.groupby('Feature')['RT [min]'].median().reset_index()
+    other_features = other_rt.groupby('Feature')['RT [min]'].median().reset_index()
     
-    if len(common_features_ref) >= 3:
+    # Find common Feature names
+    common_features = set(ref_features['Feature']) & set(other_features['Feature'])
+    
+    if len(common_features) >= 3:
         # We have enough common features to build a warping function
-        # Handle case where Feature has multiple RT values (isomers) by taking the first
         ref_rt_values = []
         other_rt_values = []
-        for feat in common_features_ref:
-            ref_rt_val = ref_rt.loc[feat, 'RT [min]']
-            other_rt_val = other_rt.loc[feat, 'RT [min]']
-            # If loc returns a Series (multiple values), take the first
-            if isinstance(ref_rt_val, pd.Series):
-                ref_rt_val = ref_rt_val.iloc[0]
-            if isinstance(other_rt_val, pd.Series):
-                other_rt_val = other_rt_val.iloc[0]
+        
+        for feat in common_features:
+            ref_rt_val = ref_features[ref_features['Feature'] == feat]['RT [min]'].iloc[0]
+            other_rt_val = other_features[other_features['Feature'] == feat]['RT [min]'].iloc[0]
             ref_rt_values.append(float(ref_rt_val))
             other_rt_values.append(float(other_rt_val))
         
@@ -302,22 +303,22 @@ def merge_batches_for_combat(
         print(f"✓ Warped {len(other_rt)} RTs from {other_label} to align with {ref_label}")
     else:
         # Not enough common features for warping, use original RTs
-        print(f"⚠️ Only {len(common_features_ref)} common features, skipping RT warping")
+        print(f"⚠️ Only {len(common_features)} common features, skipping RT warping")
         other_rt_warped = other_rt.copy()
     
     # --- Feature Matching with Warped RTs ---
     # Now match features by Feature name + RT (within threshold)
     # We need to group by Feature name (not by Compounds ID/index)
     
-    # Build dictionaries mapping (Feature_name, index) -> RT for both batches
-    # Reference batch: index -> (Feature, RT)
-    # Note: idx is the Feature name (index of df1/df2), which may have duplicates in rt dataframes
-    # We need to match by position in the original dataframe
+    # Build dictionaries mapping index -> (Feature, RT) for both batches
+    # Index is Compounds ID (or Feature if Compounds ID not available)
+    # Get the matching key column name (Compounds ID or Feature)
+    match_key_col = 'Compounds ID' if 'Compounds ID' in ref_rt.columns else 'Feature'
+    
     ref_feature_data = {}
     for idx in ref_df.index:
-        # Get the row from ref_rt that corresponds to this Feature
-        # Since rt1/rt2 may have duplicates, we need to find the matching row
-        matching_rows = ref_rt[ref_rt.index == idx]
+        # Get the row from ref_rt that corresponds to this index
+        matching_rows = ref_rt[ref_rt[match_key_col] == idx]
         if len(matching_rows) > 0:
             feature_name = matching_rows.iloc[0]['Feature']
             rt_val = matching_rows.iloc[0]['RT [min]']
@@ -326,7 +327,7 @@ def merge_batches_for_combat(
     # Other batch: index -> (Feature, warped_RT)
     other_feature_data = {}
     for idx in other_df.index:
-        matching_rows = other_rt_warped[other_rt_warped.index == idx]
+        matching_rows = other_rt_warped[other_rt_warped[match_key_col] == idx]
         if len(matching_rows) > 0:
             feature_name = matching_rows.iloc[0]['Feature']
             rt_val = matching_rows.iloc[0]['RT [min]']
