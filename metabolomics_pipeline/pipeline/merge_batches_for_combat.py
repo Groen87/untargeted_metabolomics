@@ -415,15 +415,15 @@ def merge_batches_for_combat(
     print(f"✓ Matched {len(matched_indices)} features by name + warped RT")
     print(f"✓ Kept {len(unmatched_indices)} unique features")
 
-    # --- Remove expQC samples from data and batch info ---
-    # Find all columns containing 'expqc' (case-insensitive), excluding RT column
+    # --- Note: expQC samples are KEEPED for ComBat correction ---
+    # They will be used by ComBat for batch effect estimation
+    # and for QC metrics calculation after correction
+    # If you want to remove them from the final output, do it after ComBat
     expqc_cols = [col for col in merged_data.columns if col != 'RT [min]' and 'expqc' in col.lower()]
     if expqc_cols:
-        print(f"✓ Removing {len(expqc_cols)} expQC columns from data: {expqc_cols}")
-        merged_data = merged_data.drop(columns=expqc_cols)
-        # Remove corresponding rows from merged_batch
-        merged_batch = merged_batch[~merged_batch['sample_id'].str.lower().str.contains('expqc')]
-        print(f"✓ Removed expQC samples from batch metadata")
+        print(f"ℹ️  Found {len(expqc_cols)} expQC samples in data (kept for ComBat): {expqc_cols}")
+    
+    # Note: expQC samples remain in merged_batch for batch correction
 
     # --- Identify batch-specific features (keep them as unique) ---
     # Use filtered batch metadata to get sample IDs
