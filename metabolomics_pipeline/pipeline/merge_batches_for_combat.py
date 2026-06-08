@@ -502,14 +502,14 @@ def merge_batches_for_combat(
     if expqc_cols:
         print(f"✓ Removing {len(expqc_cols)} expQC (drift correction) columns from data: {expqc_cols}")
         merged_data = merged_data.drop(columns=expqc_cols)
-        # Remove corresponding rows from merged_batch
-        merged_batch = merged_batch[~merged_batch['sample_id'].str.lower().str.contains('expqc')]
-        # Add back any QC4 or blauw samples that might have been removed
-        merged_batch = merged_batch[
+        # Remove corresponding rows from merged_batch, but KEEP QC4 and blauw
+        # Use a mask that keeps samples that DON'T contain 'expqc', OR DO contain 'qc4' or 'blauw'
+        keep_mask = (
             ~merged_batch['sample_id'].str.lower().str.contains('expqc') |
             merged_batch['sample_id'].str.lower().str.contains('qc4') |
             merged_batch['sample_id'].str.lower().str.contains('blauw')
-        ]
+        )
+        merged_batch = merged_batch[keep_mask]
         print(f"✓ Removed expQC samples from batch metadata (kept QC4/blauw for ComBat)")
 
     # --- Identify batch-specific features (keep them as unique) ---
