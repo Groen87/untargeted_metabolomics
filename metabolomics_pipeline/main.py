@@ -128,12 +128,16 @@ def main():
                     logger.info(f"[{mode}] Running ComBat batch correction...")
                     combat_output_dir.mkdir(parents=True, exist_ok=True)
 
+                    # Determine ref_batch for ComBat: batch2 is the reference batch
+                    # In merge_batches_for_combat, batch1=current, batch2=reference
+                    # So ref_batch should be 2 to use the reference batch
                     combat_corrected_df, combat_metrics = run_combat_and_visualize(
                         merged_data_path=str(combat_input_dir / "merged_data_for_combat.csv"),
                         merged_batch_path=str(combat_input_dir / "merged_batch_for_combat.csv"),
                         output_dir=str(combat_output_dir),
                         show_plots=False,
                         save_plots=True,
+                        ref_batch=2,  # Use batch 2 (reference batch) as ref_batch for ComBat
                     )
                     logger.info(f"[{mode}] ComBat correction saved to {combat_output_dir}/")
                     logger.info(f"[{mode}] ComBat metrics: {combat_metrics}")
@@ -156,7 +160,6 @@ def main():
                     logger.warning(f"[{mode}] Reference files not found. Skipping ComBat and QC.")
             else:
                 logger.warning(f"[{mode}] No reference_batch in config. Skipping ComBat and QC.")
-            '''
             logger.info(f"[{mode}] Pipeline completed! Output saved to {output_dir}/")
 
         logger.info("\nAll ion modes processed successfully!")

@@ -170,15 +170,27 @@ def merge_batches_for_combat(
         batch2 = batch2.drop(columns=[col], errors='ignore')
 
     # --- RT Warping: Align RTs to reference batch ---
-    # Determine which batch is the reference batch (MZ26_10_QC3)
-    # We need to check which batch label contains the reference_batch_label
+    # Determine which batch is the reference batch by checking sample IDs
+    # The reference_batch_label should match the batch folder name in sample IDs
     
-    is_batch1_reference = reference_batch_label in batch1_label
-    is_batch2_reference = reference_batch_label in batch2_label
+    # Check if any sample in batch1 contains the reference_batch_label
+    batch1_samples = set(batch1['sample_id'].astype(str))
+    batch2_samples = set(batch2['sample_id'].astype(str))
     
-    if not is_batch1_reference and not is_batch2_reference:
+    # Check if reference_batch_label appears in any sample ID
+    batch1_has_ref = any(reference_batch_label in s for s in batch1_samples)
+    batch2_has_ref = any(reference_batch_label in s for s in batch2_samples)
+    
+    if batch2_has_ref:
+        is_batch1_reference = False
+        is_batch2_reference = True
+    elif batch1_has_ref:
+        is_batch1_reference = True
+        is_batch2_reference = False
+    else:
         print(f"⚠️ Warning: Reference batch '{reference_batch_label}' not found in batch labels. Using batch1 as reference.")
         is_batch1_reference = True
+        is_batch2_reference = False
     
     # Get reference batch RT data
     if is_batch1_reference:
