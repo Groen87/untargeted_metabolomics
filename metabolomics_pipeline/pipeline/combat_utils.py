@@ -245,6 +245,10 @@ def run_combat_and_visualize(
             # Filter batch_vector to match df columns
             df_samples = df.columns.tolist()
             batch_vector_filtered = np.array([batch_dict[col] for col in df_samples])
+            
+            # Ensure sample names are strings, not numeric
+            # This prevents UMAP from treating them as numeric values
+            df.columns = df.columns.astype(str)
 
             # UMAP
             emb = umap.UMAP(random_state=random_state, n_jobs=1).fit_transform(df.T)
@@ -363,7 +367,10 @@ def run_combat_and_visualize(
             print(f"    QC Max Distance: {qc_metrics['qc_max_distance']:.4f}")
 
             # PCA - Plot all samples with batch colors and QC markers
-            emb = PCA(n_components=2, random_state=random_state).fit_transform(df.T)
+            # Ensure sample names are strings for consistent handling
+            df_pca = df.copy()
+            df_pca.columns = df_pca.columns.astype(str)
+            emb = PCA(n_components=2, random_state=random_state).fit_transform(df_pca.T)
 
             fig, ax = plt.subplots(figsize=(12, 10))
 
