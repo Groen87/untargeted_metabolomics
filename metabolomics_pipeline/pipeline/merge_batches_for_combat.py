@@ -144,6 +144,11 @@ def merge_batches_for_combat(
     rt1 = df1_raw[rt_cols].set_index(index_col)
     rt2 = df2_raw[rt_cols].set_index(index_col)
     
+    # Ensure Feature is available as a column for lookups
+    # (it's in the index, but we need it as a column too)
+    rt1['Feature'] = rt1.index
+    rt2['Feature'] = rt2.index
+    
     batch1 = pd.read_csv(batch_file_batch1)
     batch2 = pd.read_csv(batch_file_batch2)
 
