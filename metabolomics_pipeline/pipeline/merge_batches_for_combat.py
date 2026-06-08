@@ -506,6 +506,12 @@ def merge_batches_for_combat(
         # The index column (Compounds ID) should be renamed to Feature for COMBAT
         merged_data_reset = merged_data_reset.rename(columns={merged_data_reset.columns[0]: 'Feature'})
     
+    # Remove Compound ID column if present - it's only for tracking isomers within a batch
+    # and has no meaning after merging features by Feature name + RT
+    if 'Compounds ID' in merged_data_reset.columns:
+        merged_data_reset = merged_data_reset.drop(columns=['Compounds ID'])
+        print("✓ Removed Compound ID column (batch-specific, not meaningful after merging)")
+    
     # Reorder columns: Feature, RT [min], then samples
     cols = ['Feature', 'RT [min]'] + [c for c in merged_data_reset.columns if c not in ['Feature', 'RT [min]']]
     # Only include columns that actually exist
