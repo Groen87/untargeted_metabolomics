@@ -444,9 +444,10 @@ def merge_batches_for_combat(
     
     # Preserve metadata columns (Feature, RT [min]) from the first occurrence
     # Get unique metadata for each matched feature
-    # Note: df1_renamed/df2_renamed have Feature as index, so reset to get as column
-    metadata_df1 = df1_renamed.reset_index()[['Feature', 'RT [min]']].drop_duplicates()
-    metadata_df2 = df2_renamed.reset_index()[['Feature', 'RT [min]']].drop_duplicates()
+    # Note: df1_renamed/df2_renamed have Compounds ID (or Feature) as index
+    # We need to get Feature and RT from the rt dataframes
+    metadata_df1 = rt1[['Feature', 'RT [min]']].drop_duplicates()
+    metadata_df2 = rt2[['Feature', 'RT [min]']].drop_duplicates()
     
     # Concatenate (keep ALL features, including unmatched ones)
     merged_data = pd.concat([df1_merged, df2_merged], axis=1, join='outer')
