@@ -8,6 +8,9 @@ qc_pattern: "expQC"
 qc_intensity_threshold: 1
 frac: 0.5
 
+# Normalization method
+normalization_method: "median"  # "pqn" or "median"
+
 # Feature matching parameters
 rt_threshold: 0.05  # RT difference threshold in minutes for feature matching
 use_spline: true    # Use spline (true) or cubic interpolation (false) for RT warping

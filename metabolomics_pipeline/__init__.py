@@ -7,6 +7,7 @@ from .pipeline import (
     correct_drift_with_loess,
     pqn_normalize,
 )
+from .pipeline.median_normalization import median_normalize
 
 __version__ = "1.0.0"
 __all__ = [
