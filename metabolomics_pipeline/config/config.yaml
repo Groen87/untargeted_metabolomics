@@ -1,18 +1,18 @@
 # Metabolomics Pipeline Configuration
 
 # File paths (relative to project root or absolute)
-batch_folder: "MZ26_21"
+batch_folder: "MZ25_36"
 reference_batch: "MZ26_10"
 intensity_threshold: 10000
 qc_pattern: "expQC"
-qc_intensity_threshold: 1
-frac: 0.5
+qc_intensity_threshold: 0.2
+frac: 0.4
 
 # Normalization method
 normalization_method: "median"  # "pqn" or "median"
 
 # Feature matching parameters
-rt_threshold: 0.05  # RT difference threshold in minutes for feature matching
+rt_threshold: 0.5  # RT difference threshold in minutes for feature matching
 use_spline: true    # Use spline (true) or cubic interpolation (false) for RT warping
 reference_batch_label: "MZ26_10"  # Label of reference batch for RT alignment
 
