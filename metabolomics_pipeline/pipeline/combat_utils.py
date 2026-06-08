@@ -124,6 +124,13 @@ def run_combat_and_visualize(
     # Standardize to strings
     data.columns = data.columns.astype(str)
     batch_info['sample_id'] = batch_info['sample_id'].astype(str)
+    
+    # Remove non-sample columns (like 'RT [min]') from data
+    # These metadata columns should not be included in ComBat or PCA
+    sample_columns = [col for col in data.columns if col not in ['RT [min]', 'Feature', 'Compounds ID', 'Name', 'Formula']]
+    if len(sample_columns) < len(data.columns):
+        print(f"⚠️  Removing {len(data.columns) - len(sample_columns)} non-sample columns from data: {set(data.columns) - set(sample_columns)}")
+        data = data[sample_columns]
 
     # --- Identify QC samples and track feature presence BEFORE gap-filling ---
     # Track presence percentages for reporting (not for filtering)
