@@ -16,6 +16,9 @@ rt_threshold: 0.5  # RT difference threshold in minutes for feature matching
 use_spline: true    # Use spline (true) or cubic interpolation (false) for RT warping
 reference_batch_label: "MZ26_10"  # Label of reference batch for RT alignment
 
+# Batch correction method
+batch_correction_method: "combat"  # "combat" or "ralps"
+
 # Logging
 log_level: "INFO"
 log_file: "logs/pipeline.log"

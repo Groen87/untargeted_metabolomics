@@ -17,7 +17,7 @@ from metabolomics_pipeline.pipeline import (
     pqn_normalize,
     median_normalize,
     merge_batches_for_combat,
-    run_combat_and_visualize,
+    run_batch_correction,
     run_final_qc
 )
 
@@ -136,23 +136,25 @@ def main():
                     logger.info(f"Merged data shape: {merged_data.shape} (features x samples)")
                     logger.info(f"Merged batch shape: {merged_batch.shape} (samples x metadata)")
 
-                    # --- STEP 5: RUN COMBAT ---
-                    logger.info(f"[{mode}] Running ComBat batch correction...")
+                    # --- STEP 5: RUN BATCH CORRECTION (ComBat or RALPS) ---
+                    batch_correction_method = config.get('batch_correction_method', 'combat').lower()
+                    logger.info(f"[{mode}] Running {batch_correction_method.upper()} batch correction...")
                     combat_output_dir.mkdir(parents=True, exist_ok=True)
 
                     # Determine ref_batch for ComBat: batch2 is the reference batch
                     # In merge_batches_for_combat, batch1=current, batch2=reference
                     # So ref_batch should be 2 to use the reference batch
-                    combat_corrected_df, combat_metrics = run_combat_and_visualize(
+                    combat_corrected_df, combat_metrics = run_batch_correction(
                         merged_data_path=str(combat_input_dir / "merged_data_for_combat.csv"),
                         merged_batch_path=str(combat_input_dir / "merged_batch_for_combat.csv"),
                         output_dir=str(combat_output_dir),
+                        method=batch_correction_method,
                         show_plots=False,
                         save_plots=True,
                         ref_batch=2,  # Use batch 2 (reference batch) as ref_batch for ComBat
                     )
-                    logger.info(f"[{mode}] ComBat correction saved to {combat_output_dir}/")
-                    logger.info(f"[{mode}] ComBat metrics: {combat_metrics}")
+                    logger.info(f"[{mode}] {batch_correction_method.upper()} correction saved to {combat_output_dir}/")
+                    logger.info(f"[{mode}] {batch_correction_method.upper()} metrics: {combat_metrics}")
 
                     # --- STEP 6: FINAL QUALITY CONTROL ---
                     logger.info(f"[{mode}] Running final quality control...")

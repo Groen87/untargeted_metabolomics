@@ -99,7 +99,55 @@ def calculate_qc_clustering_metrics(embedding: np.ndarray, qc_labels: np.ndarray
     }
 
 
-def run_combat_and_visualize(
+def run_batch_correction(
+    merged_data_path: str,
+    merged_batch_path: str,
+    output_dir: str = "combat_output",
+    method: str = "combat",  # "combat" or "ralps"
+    random_state: int = 42,
+    show_plots: bool = False,  # Set to False to avoid interactive display
+    save_plots: bool = True,
+    ref_batch: Optional[int] = None,
+) -> Tuple[pd.DataFrame, dict]:
+    """
+    Run batch correction (ComBat or RALPS) with NaN handling (metabolomics: half min positive value).
+    Saves all plots to output_dir instead of showing them interactively.
+    
+    Args:
+        merged_data_path: Path to merged data CSV file
+        merged_batch_path: Path to batch metadata CSV file
+        output_dir: Directory to save corrected data and plots
+        method: Batch correction method - "combat" (default) or "ralps"
+        random_state: Random seed for reproducibility
+        show_plots: Whether to display plots interactively
+        save_plots: Whether to save plots to files
+        ref_batch: Reference batch for ComBat (optional)
+        
+    Returns:
+        Tuple of (corrected_data, metrics_dict)
+    """
+    if method.lower() == "ralps":
+        return run_ralps_and_visualize(
+            merged_data_path=merged_data_path,
+            merged_batch_path=merged_batch_path,
+            output_dir=output_dir,
+            random_state=random_state,
+            save_plots=save_plots,
+        )
+    else:
+        # Default to ComBat
+        return run_combat_and_visualize_internal(
+            merged_data_path=merged_data_path,
+            merged_batch_path=merged_batch_path,
+            output_dir=output_dir,
+            random_state=random_state,
+            show_plots=show_plots,
+            save_plots=save_plots,
+            ref_batch=ref_batch,
+        )
+
+
+def run_combat_and_visualize_internal(
     merged_data_path: str,
     merged_batch_path: str,
     output_dir: str = "combat_output",
@@ -699,4 +747,203 @@ def run_combat_and_visualize(
                 plt.savefig(output_dir / f"{suffix}_{group_name}_rsd_distribution.png", dpi=300, bbox_inches='tight')
                 plt.close()
 
+    return corrected_data, metrics
+
+
+def run_ralps_and_visualize(
+    merged_data_path: str,
+    merged_batch_path: str,
+    output_dir: str = "combat_output",
+    random_state: int = 42,
+    save_plots: bool = True,
+) -> Tuple[pd.DataFrame, dict]:
+    """
+    Run RALPS batch correction with visualization.
+    
+    Args:
+        merged_data_path: Path to merged data CSV file
+        merged_batch_path: Path to batch metadata CSV file
+        output_dir: Directory to save corrected data and plots
+        random_state: Random seed for reproducibility
+        save_plots: Whether to save plots to files
+        
+    Returns:
+        Tuple of (corrected_data, metrics_dict)
+    """
+    try:
+        from .ralps_batch_correction import run_ralps
+    except ImportError:
+        raise ImportError(
+            "RALPS module not found. Please ensure ralps_batch_correction.py exists."
+        )
+    
+    # Run RALPS correction
+    corrected_data, batch_info = run_ralps(
+        merged_data_path=merged_data_path,
+        merged_batch_path=merged_batch_path,
+        output_dir=output_dir,
+        random_state=random_state,
+    )
+    
+    # Load the corrected data for visualization
+    data = corrected_data
+    batch_info = pd.read_csv(merged_batch_path)
+    
+    # Standardize to strings
+    data.columns = data.columns.astype(str)
+    batch_info['sample_id'] = batch_info['sample_id'].astype(str)
+    
+    # Remove non-sample columns
+    sample_columns = [col for col in data.columns if col not in ['RT [min]', 'Feature', 'Compounds ID', 'Name', 'Formula']]
+    if len(sample_columns) < len(data.columns):
+        print(f"⚠️  Removing {len(data.columns) - len(sample_columns)} non-sample columns from data")
+        data = data[sample_columns]
+    
+    # Create batch vector
+    batch_dict = dict(zip(batch_info['sample_id'], batch_info['batch']))
+    batch_vector = pd.Series(
+        [batch_dict[col] for col in data.columns],
+        index=data.columns,
+        dtype="category"
+    )
+    
+    # Fill NaN with small value (metabolomics best practice)
+    min_positive = data[data > 0].min().min()
+    small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
+    data_filled = data.fillna(small_value)
+    
+    # Calculate metrics before correction (not applicable for RALPS as it's the only correction)
+    # For RALPS, we just return the corrected data and basic metrics
+    metrics = {
+        'method': 'ralps',
+        'samples': len(data.columns),
+        'features': len(data.index),
+    }
+    
+    # Generate visualization plots (same as ComBat)
+    if save_plots:
+        random_state = random_state if random_state is not None else 42
+        
+        # UMAP
+        try:
+            reducer = umap.UMAP(random_state=random_state, n_neighbors=15, min_dist=0.1)
+            emb = reducer.fit_transform(data_filled.T)
+            
+            fig, ax = plt.subplots(figsize=(12, 10))
+            
+            # Get batch labels and colors
+            all_batch_labels = [batch_dict.get(col, 'Unknown') for col in data.columns]
+            unique_batches_all = sorted(set(all_batch_labels))
+            palette_all = sns.color_palette('viridis', n_colors=len(unique_batches_all))
+            batch_to_color_all = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
+            colors_all = [batch_to_color_all.get(b, 'gray') for b in all_batch_labels]
+            
+            # Identify QC samples
+            qc4_samples = [col for col in data.columns if 'QC4' in col]
+            blauw_samples = [col for col in data.columns if 'blauw' in col]
+            qc4_indices = [list(data.columns).index(col) for col in qc4_samples] if qc4_samples else []
+            blauw_indices = [list(data.columns).index(col) for col in blauw_samples] if blauw_samples else []
+            all_qc_indices = qc4_indices + blauw_indices
+            non_qc_indices = [i for i in range(len(data.columns)) if i not in all_qc_indices]
+            
+            # Scatter plot for all NON-QC samples
+            if non_qc_indices:
+                ax.scatter(
+                    emb[non_qc_indices, 0],
+                    emb[non_qc_indices, 1],
+                    c=[colors_all[i] for i in non_qc_indices],
+                    s=50,
+                    alpha=0.7,
+                    edgecolors='w',
+                    linewidth=0.5,
+                )
+            
+            # QC4 samples (triangles)
+            if qc4_indices:
+                ax.scatter(
+                    emb[qc4_indices, 0],
+                    emb[qc4_indices, 1],
+                    c=[colors_all[i] for i in qc4_indices],
+                    s=100,
+                    marker='^',
+                    edgecolors='k',
+                    linewidth=1,
+                    label='QC4',
+                )
+            
+            # blauw samples (squares)
+            if blauw_indices:
+                ax.scatter(
+                    emb[blauw_indices, 0],
+                    emb[blauw_indices, 1],
+                    c=[colors_all[i] for i in blauw_indices],
+                    s=100,
+                    marker='s',
+                    edgecolors='k',
+                    linewidth=1,
+                    label='blauw',
+                )
+            
+            # Add legend and labels
+            if qc4_indices or blauw_indices:
+                ax.legend(loc='best')
+            ax.set_title(f"RALPS Corrected Data (UMAP)")
+            ax.set_xlabel('UMAP 1')
+            ax.set_ylabel('UMAP 2')
+            fig.savefig(output_dir / "ralps_umap.png", dpi=300, bbox_inches="tight")
+            plt.close(fig)
+            
+            # PCA
+            emb_pca = PCA(n_components=2, random_state=random_state).fit_transform(data_filled.T)
+            
+            fig, ax = plt.subplots(figsize=(12, 10))
+            
+            if non_qc_indices:
+                ax.scatter(
+                    emb_pca[non_qc_indices, 0],
+                    emb_pca[non_qc_indices, 1],
+                    c=[colors_all[i] for i in non_qc_indices],
+                    s=50,
+                    alpha=0.7,
+                    edgecolors='w',
+                    linewidth=0.5,
+                )
+            
+            if qc4_indices:
+                ax.scatter(
+                    emb_pca[qc4_indices, 0],
+                    emb_pca[qc4_indices, 1],
+                    c=[colors_all[i] for i in qc4_indices],
+                    s=100,
+                    marker='^',
+                    edgecolors='k',
+                    linewidth=1,
+                    label='QC4',
+                )
+            
+            if blauw_indices:
+                ax.scatter(
+                    emb_pca[blauw_indices, 0],
+                    emb_pca[blauw_indices, 1],
+                    c=[colors_all[i] for i in blauw_indices],
+                    s=100,
+                    marker='s',
+                    edgecolors='k',
+                    linewidth=1,
+                    label='blauw',
+                )
+            
+            if qc4_indices or blauw_indices:
+                ax.legend(loc='best')
+            
+            explained_variance = PCA(n_components=2, random_state=random_state).fit(data_filled.T).explained_variance_ratio_
+            ax.set_title(f"RALPS Corrected Data (PCA)\nExplained Variance: PC1={explained_variance[0]:.2%}, PC2={explained_variance[1]:.2%}")
+            ax.set_xlabel('PC1')
+            ax.set_ylabel('PC2')
+            fig.savefig(output_dir / "ralps_pca.png", dpi=300, bbox_inches="tight")
+            plt.close(fig)
+            
+        except Exception as e:
+            print(f"⚠️  Visualization failed: {e}")
+    
     return corrected_data, metrics
