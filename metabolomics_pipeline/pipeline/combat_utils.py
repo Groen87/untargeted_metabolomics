@@ -136,13 +136,14 @@ def run_combat_and_visualize(
     # Track presence percentages for reporting (not for filtering)
     qc4_samples = [col for col in data.columns if 'QC4' in col]
     blauw_samples = [col for col in data.columns if 'blauw' in col]
+    all_qc_samples = qc4_samples + blauw_samples
     
     # Track feature presence percentage in each QC group (before gap-filling)
     # Used only for reporting, NOT for filtering RSD calculation
     qc_feature_presence = {}
     qc_feature_detected = {}  # Boolean mask: True if feature was detected (non-NaN) in ALL QC samples of group
     
-    for group_name, group_samples in [("QC4", qc4_samples), ("blauw", blauw_samples)]:
+    for group_name, group_samples in [("QC4", qc4_samples), ("blauw", blauw_samples), ("ALL_QC", all_qc_samples)]:
         if group_samples:
             group_data_raw = data[group_samples]
             # Calculate percentage of QC samples where each feature is present (non-NaN)
@@ -621,6 +622,7 @@ def run_combat_and_visualize(
 
             # RSD for QC groups
             qc_groups = {
+                "ALL_QC": [col for col in df.columns if "QC4" in col or "blauw" in col],
                 "QC4": [col for col in df.columns if "QC4" in col],
                 "blauw": [col for col in df.columns if "blauw" in col],
             }
