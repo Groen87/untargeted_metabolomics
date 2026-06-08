@@ -214,8 +214,22 @@ def merge_batches_for_combat(
     
     if len(common_features_ref) >= 3:
         # We have enough common features to build a warping function
-        ref_rt_values = np.array([ref_rt.loc[feat, 'RT [min]'] for feat in common_features_ref])
-        other_rt_values = np.array([other_rt.loc[feat, 'RT [min]'] for feat in common_features_ref])
+        # Handle case where Feature has multiple RT values (isomers) by taking the first
+        ref_rt_values = []
+        other_rt_values = []
+        for feat in common_features_ref:
+            ref_rt_val = ref_rt.loc[feat, 'RT [min]']
+            other_rt_val = other_rt.loc[feat, 'RT [min]']
+            # If loc returns a Series (multiple values), take the first
+            if isinstance(ref_rt_val, pd.Series):
+                ref_rt_val = ref_rt_val.iloc[0]
+            if isinstance(other_rt_val, pd.Series):
+                other_rt_val = other_rt_val.iloc[0]
+            ref_rt_values.append(float(ref_rt_val))
+            other_rt_values.append(float(other_rt_val))
+        
+        ref_rt_values = np.array(ref_rt_values)
+        other_rt_values = np.array(other_rt_values)
         
         # Sort by reference RT
         sort_idx = np.argsort(ref_rt_values)
@@ -269,15 +283,16 @@ def merge_batches_for_combat(
             print("✓ Using cubic interpolation for RT warping")
         
         # Warp all RTs in the other batch
-        warped_rt_values = {}
-        for feat in other_rt.index:
-            original_rt = other_rt.loc[feat, 'RT [min]']
-            warped_rt = warp_func(original_rt)
-            warped_rt_values[feat] = float(warped_rt)
+        # Handle duplicate Feature names by iterating through all rows
+        warped_rt_list = []
+        for idx, row in other_rt.iterrows():
+            original_rt = row['RT [min]']
+            warped_rt = warp_func(float(original_rt))
+            warped_rt_list.append(float(warped_rt))
         
         # Create warped RT series for other batch
         other_rt_warped = other_rt.copy()
-        other_rt_warped['RT [min]'] = other_rt_warped.index.map(warped_rt_values)
+        other_rt_warped['RT [min]'] = warped_rt_list
         
         print(f"✓ Warped {len(other_rt)} RTs from {other_label} to align with {ref_label}")
     else:
@@ -291,20 +306,26 @@ def merge_batches_for_combat(
     
     # Build dictionaries mapping (Feature_name, index) -> RT for both batches
     # Reference batch: index -> (Feature, RT)
+    # Note: idx is the Feature name (index of df1/df2), which may have duplicates in rt dataframes
+    # We need to match by position in the original dataframe
     ref_feature_data = {}
     for idx in ref_df.index:
-        if idx in ref_rt.index:
-            feature_name = ref_rt.loc[idx, 'Feature']
-            rt_val = ref_rt.loc[idx, 'RT [min]']
-            ref_feature_data[idx] = (feature_name, rt_val)
+        # Get the row from ref_rt that corresponds to this Feature
+        # Since rt1/rt2 may have duplicates, we need to find the matching row
+        matching_rows = ref_rt[ref_rt.index == idx]
+        if len(matching_rows) > 0:
+            feature_name = matching_rows.iloc[0]['Feature']
+            rt_val = matching_rows.iloc[0]['RT [min]']
+            ref_feature_data[idx] = (feature_name, float(rt_val))
     
     # Other batch: index -> (Feature, warped_RT)
     other_feature_data = {}
     for idx in other_df.index:
-        if idx in other_rt_warped.index:
-            feature_name = other_rt_warped.loc[idx, 'Feature']
-            rt_val = other_rt_warped.loc[idx, 'RT [min]']
-            other_feature_data[idx] = (feature_name, rt_val)
+        matching_rows = other_rt_warped[other_rt_warped.index == idx]
+        if len(matching_rows) > 0:
+            feature_name = matching_rows.iloc[0]['Feature']
+            rt_val = matching_rows.iloc[0]['RT [min]']
+            other_feature_data[idx] = (feature_name, float(rt_val))
     
     # Group features by Feature name across both batches
     feature_groups = defaultdict(list)
