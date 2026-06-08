@@ -9,13 +9,18 @@ from scipy.interpolate import UnivariateSpline, interp1d
 
 def parse_feature(feature_name: str) -> str:
     """
-    Parse a feature name to get the base name (without RT and digit).
-    Example: "C6H12O6 1" -> "C6H12O6"
-    Now just returns the base name since RT is in a separate column.
+    Parse a feature name to get the base name (without isomer suffixes).
+    Removes trailing _N or space+N patterns where N is a digit.
+    Examples:
+        "C6H12O6_1" -> "C6H12O6"
+        "C6H12O6 1" -> "C6H12O6"
+        "C6H12O6" -> "C6H12O6"
     """
-    parts = feature_name.rsplit(' ', 1)
-    name_part = parts[0] if len(parts) > 1 else feature_name
-    return name_part
+    import re
+    # Remove trailing _N or space+N where N is a digit
+    # This handles isomer suffixes like _1, _2 or " 1", " 2"
+    base_name = re.sub(r'[ _](\d+)$', '', feature_name)
+    return base_name
 
 def merge_batches_for_combat(
     drift_corrected_file_batch1: str,
@@ -333,23 +338,28 @@ def merge_batches_for_combat(
             rt_val = matching_rows.iloc[0]['RT [min]']
             other_feature_data[idx] = (feature_name, float(rt_val))
     
-    # Group features by Feature name across both batches
+    # Group features by normalized Feature name across both batches
+    # Normalize by removing isomer suffixes (_1, _2, " 1", " 2", etc.)
     feature_groups = defaultdict(list)
     
     for idx, (feat_name, rt) in ref_feature_data.items():
-        feature_groups[feat_name].append(('ref', idx, rt))
+        normalized_name = parse_feature(feat_name)
+        feature_groups[normalized_name].append(('ref', idx, rt, feat_name))
     
     for idx, (feat_name, rt) in other_feature_data.items():
-        feature_groups[feat_name].append(('other', idx, rt))
+        normalized_name = parse_feature(feat_name)
+        feature_groups[normalized_name].append(('other', idx, rt, feat_name))
     
     # Debug: Count features by batch
     ref_features = set(ref_feature_data.values())
     other_features = set(other_feature_data.values())
-    common_feature_names = set([f[0] for f in ref_features]) & set([f[0] for f in other_features])
+    ref_normalized = set([parse_feature(f[0]) for f in ref_features])
+    other_normalized = set([parse_feature(f[0]) for f in other_features])
+    common_feature_names = ref_normalized & other_normalized
     print(f"\n=== Feature Matching Debug ===")
     print(f"Reference batch: {len(ref_feature_data)} features, {len(set([f[0] for f in ref_feature_data.values()]))} unique Feature names")
     print(f"Other batch: {len(other_feature_data)} features, {len(set([f[0] for f in other_feature_data.values()]))} unique Feature names")
-    print(f"Common Feature names between batches: {len(common_feature_names)}")
+    print(f"Common normalized Feature names between batches: {len(common_feature_names)}")
     print(f"RT threshold: {rt_threshold} minutes")
     
     # For each feature name, find matches based on RT similarity
@@ -362,7 +372,7 @@ def merge_batches_for_combat(
     if rt_threshold is None:
         rt_threshold = 0.05  # Default 5 seconds
     
-    for feat_name, entries in feature_groups.items():
+    for normalized_name, entries in feature_groups.items():
         # Separate entries by batch
         ref_entries = [e for e in entries if e[0] == 'ref']
         other_entries = [e for e in entries if e[0] == 'other']
@@ -392,10 +402,10 @@ def merge_batches_for_combat(
                 group_sources = [e[0] for e in group]
                 # Only match if group has both ref and other entries
                 if 'ref' in group_sources and 'other' in group_sources:
-                    # Use the Feature name as the match key
-                    match_key = feat_name
+                    # Use the normalized Feature name as the match key
+                    match_key = normalized_name
                     
-                    for source, idx, _ in group:
+                    for source, idx, _, _ in group:
                         feature_to_match_key[idx] = match_key
                         matched_indices.add(idx)
     
