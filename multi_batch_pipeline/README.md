@@ -5,8 +5,8 @@ This pipeline processes multiple batch folders (e.g., "MZ25_36", "MZ26_10") simu
 ## Overview
 
 The multi-batch pipeline:
-1. Processes each batch folder through the full single-batch pipeline (data processing → drift correction → PQN normalization)
-2. Merges all PQN-normalized files from all batches
+1. Processes each batch folder through the full single-batch pipeline (data processing → drift correction → median normalization)
+2. Merges all median-normalized files from all batches
 3. Performs ComBat batch correction on the merged data
 4. Optionally generates QC reports
 
@@ -27,7 +27,7 @@ multi_batch_pipeline/
     ├── loess_drift_correction.py
     ├── merge_batches_for_combat.py
     ├── multi_batch_combat.py  # Multi-batch merging and ComBat
-    ├── pqn_normalization.py
+    ├── median_normalization.py
     ├── combat_utils.py
     └── quality_control.py
 ```

@@ -10,8 +10,8 @@ Workflow:
 1. Process each batch folder independently for specified ion modes (NEG/POS)
    - Data loading and filtering
    - Drift correction with LOESS
-   - PQN normalization
-2. Merge all PQN-normalized files using RT-based feature matching
+   - Median normalization
+2. Merge all median-normalized files using RT-based feature matching
 3. Perform ComBat batch correction across all batches simultaneously
 4. Generate QC reports (optional)
 
@@ -42,10 +42,10 @@ from multi_batch_pipeline.config.config import Config
 from multi_batch_pipeline.pipeline import (
     process_metabolomics_data,
     correct_drift_with_loess,
-    pqn_normalize,
+    median_normalize,
 )
 from multi_batch_pipeline.pipeline.multi_batch_combat import (
-    find_pqn_files,
+    find_median_files,
     merge_multiple_batches,
     run_multi_batch_combat,
 )
@@ -123,7 +123,7 @@ def process_single_batch(
         
     Returns:
         Tuple of:
-        - pqn_normalized_path: Path to the PQN-normalized output file
+        - median_normalized_path: Path to the median-normalized output file
         - batch_data_path: Path to the batch metadata output file
         - success: Boolean indicating if processing succeeded
     """
@@ -136,12 +136,12 @@ def process_single_batch(
         logger.info(f"  Processing {batch_folder}/{mode}...")
         
         # Check if already processed
-        pqn_path = output_dir / "pqn_normalized.csv"
+        median_path = output_dir / "median_normalized.csv"
         batch_data_path = output_dir / "batch_data.csv"
         
-        if pqn_path.exists() and batch_data_path.exists():
+        if median_path.exists() and batch_data_path.exists():
             logger.info(f"  ✓ {batch_folder}/{mode} already processed. Skipping.")
-            return pqn_path, batch_data_path, True
+            return median_path, batch_data_path, True
         
         # Validate input files
         if not input_file.exists():
@@ -173,9 +173,9 @@ def process_single_batch(
             fallback_qc_pattern=config.get("fallback_qc_pattern", "QC3"),
         )
         
-        # --- Step 3: PQN Normalization ---
-        logger.info(f"  [{mode}] Applying PQN normalization...")
-        normalized_df = pqn_normalize(
+        # --- Step 3: Median Normalization ---
+        logger.info(f"  [{mode}] Applying median normalization...")
+        normalized_df = median_normalize(
             corrected_df,
             output_dir=str(output_dir),
             qc_pattern=config["qc_pattern"],
@@ -183,7 +183,7 @@ def process_single_batch(
         )
         
         logger.info(f"  ✓ {batch_folder}/{mode} processed successfully!")
-        return pqn_path, batch_data_path, True
+        return median_path, batch_data_path, True
         
     except Exception as e:
         logger.error(f"  ✗ Failed to process {batch_folder}/{mode}: {e}")
@@ -207,21 +207,21 @@ def process_all_batches(
         data_dir: Base data directory (default: "data")
         
     Returns:
-        Dictionary mapping mode to list of (batch_folder, pqn_path, batch_data_path) tuples
+        Dictionary mapping mode to list of (batch_folder, median_path, batch_data_path) tuples
     """
     results = {mode: [] for mode in modes}
     
     for mode in modes:
         logger.info(f"\nProcessing {mode} mode for all batches...")
         for batch_folder in batch_folders:
-            pqn_path, batch_data_path, success = process_single_batch(
+            median_path, batch_data_path, success = process_single_batch(
                 batch_folder=batch_folder,
                 mode=mode,
                 config=config,
                 data_dir=data_dir,
             )
             if success:
-                results[mode].append((batch_folder, pqn_path, batch_data_path))
+                results[mode].append((batch_folder, median_path, batch_data_path))
         
         logger.info(f"  ✓ Processed {len(results[mode])}/{len(batch_folders)} batches for {mode}")
     

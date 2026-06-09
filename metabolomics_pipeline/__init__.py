@@ -5,7 +5,7 @@ from .pipeline import (
     get_injection_order,
     process_metabolomics_data,
     correct_drift_with_loess,
-    pqn_normalize,
+    median_normalize,
 )
 
 __version__ = "1.0.0"

@@ -1,7 +1,7 @@
 """
-PQN (Probabilistic Quotient Normalization) module for metabolomics data.
+Median normalization module for metabolomics data.
 
-This module provides functionality to apply PQN normalization, which is a
+This module provides functionality to apply median normalization, which is a
 widely used method in metabolomics for correcting systematic biases between
 samples while preserving the relative scale of features.
 
@@ -11,7 +11,7 @@ Key Features:
 - Handles metadata columns appropriately
 - Maintains Feature column as the first column
 
-PQN Normalization:
+Median Normalization:
     For each sample i:
         scaling_factor_i = median(sample_i) / reference_median
         normalized_sample_i = sample_i / scaling_factor_i
@@ -84,13 +84,13 @@ def identify_qc_samples(
     return qc_cols
 
 
-def calculate_pqn_scaling_factors(
+def calculate_median_scaling_factors(
     data: pd.DataFrame,
     qc_cols: List[str],
     sample_cols: List[str],
 ) -> pd.Series:
     """
-    Calculate PQN scaling factors for each sample.
+    Calculate median scaling factors for each sample.
     
     The scaling factor for each sample is:
         sample_median / reference_median
@@ -121,16 +121,16 @@ def calculate_pqn_scaling_factors(
     return scaling_factors
 
 
-def pqn_normalize(
+def median_normalize(
     corrected_df: pd.DataFrame,
     output_dir: str = "output",
     qc_pattern: str = "expQC",
     fallback_qc_pattern: Optional[str] = "QC3",
 ) -> pd.DataFrame:
     """
-    Apply PQN (Probabilistic Quotient Normalization) to metabolomics data.
+    Apply median normalization to metabolomics data.
     
-    PQN normalization corrects for systematic biases between samples by scaling
+    Median normalization corrects for systematic biases between samples by scaling
     each sample so that the median intensity of that sample matches a reference median
     calculated from QC samples. This preserves the relative scale of features while
     correcting for overall sample-to-sample differences.
@@ -141,7 +141,7 @@ def pqn_normalize(
     3. Calculate reference median from QC sample medians
     4. Calculate scaling factor for each sample: sample_median / reference_median
     5. Divide each sample by its scaling factor
-    6. Save normalized data to pqn_normalized.csv
+    6. Save normalized data to median_normalized.csv
     
     Args:
         corrected_df: Input DataFrame with drift-corrected data.
@@ -153,7 +153,7 @@ def pqn_normalize(
             (default: "QC3")
         
     Returns:
-        DataFrame with PQN-normalized data.
+        DataFrame with median-normalized data.
         The 'Feature' column is the first column, followed by normalized sample columns.
         If no QC samples are found, returns the original data unchanged.
         
@@ -190,7 +190,7 @@ def pqn_normalize(
     if not qc_cols:
         logger.warning(
             f"No QC samples found matching patterns '{qc_pattern}' or '{fallback_qc_pattern}'. "
-            f"Skipping PQN normalization and returning original data."
+            f"Skipping median normalization and returning original data."
         )
         # Return original data with Feature as first column
         if 'Feature' in corrected_df.index.name:
@@ -199,26 +199,26 @@ def pqn_normalize(
     
     # Log which QC pattern was used
     if qc_pattern.lower() in qc_cols[0].lower():
-        logger.info(f"Using {qc_pattern} QC samples for PQN normalization")
+        logger.info(f"Using {qc_pattern} QC samples for median normalization")
     else:
-        logger.info(f"Using fallback {fallback_qc_pattern} QC samples for PQN normalization")
+        logger.info(f"Using fallback {fallback_qc_pattern} QC samples for median normalization")
     
     logger.info(f"Found {len(qc_cols)} QC samples: {qc_cols}")
     
-    # Calculate PQN scaling factors
-    scaling_factors = calculate_pqn_scaling_factors(
+    # Calculate median scaling factors
+    scaling_factors = calculate_median_scaling_factors(
         corrected_df, qc_cols, sample_cols
     )
     
-    # Apply PQN: divide each sample by its scaling factor
+    # Apply median normalization: divide each sample by its scaling factor
     normalized_df = corrected_df[sample_cols].div(scaling_factors, axis=1)
     
     # Reattach Feature index as the FIRST column
     normalized_df.insert(0, 'Feature', corrected_df.index)
     
     # Save normalized data
-    output_path = os.path.join(output_dir, "pqn_normalized.csv")
+    output_path = os.path.join(output_dir, "median_normalized.csv")
     normalized_df.to_csv(output_path, index=False)
-    logger.info(f"Saved PQN-normalized data to {output_path}")
+    logger.info(f"Saved median-normalized data to {output_path}")
     
     return normalized_df

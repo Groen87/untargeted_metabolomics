@@ -3,13 +3,13 @@
 Multi-batch ComBat correction module for metabolomics data.
 
 This module provides functionality to:
-1. Gather PQN-normalized files from multiple batches
+1. Gather median-normalized files from multiple batches
 2. Merge them into a single dataset using RT-based feature matching
 3. Perform ComBat batch correction across all batches simultaneously
 4. Run quality control (QC) on the corrected data using inmoose (optional)
 
 Key Features:
-- Automatic detection of PQN-normalized files in batch folders
+- Automatic detection of median-normalized files in batch folders
 - RT-based feature matching to align features across batches
 - Identification and removal of batch-specific features
 - ComBat batch correction with visualization
@@ -17,13 +17,13 @@ Key Features:
 
 Usage:
     from multi_batch_pipeline.pipeline.multi_batch_combat import (
-        find_pqn_files,
+        find_median_files,
         merge_multiple_batches,
         run_multi_batch_combat,
     )
 
     # Find and merge batches
-    batch_files = find_pqn_files(['batch1', 'batch2'], 'NEG', 'data')
+    batch_files = find_median_files(['batch1', 'batch2'], 'NEG', 'data')
     merged_data, merged_batch = merge_multiple_batches(batch_files, output_dir)
     
     # Run full pipeline
@@ -225,15 +225,15 @@ def run_final_qc(
 # File Discovery Functions
 # =============================================================================
 
-def find_pqn_files(
+def find_median_files(
     batch_folders: List[str],
     mode: str,
     data_dir: str = "data",
 ) -> List[Tuple[str, Path, Path]]:
     """
-    Find all PQN-normalized files for the given batches and ion mode.
+    Find all median-normalized files for the given batches and ion mode.
     
-    Searches for pqn_normalized.csv and batch_data.csv files in each batch folder's
+    Searches for median_normalized.csv and batch_data.csv files in each batch folder's
     output/{mode}/ directory.
     
     Args:
@@ -244,7 +244,7 @@ def find_pqn_files(
     Returns:
         List of tuples, each containing:
         - batch_label: The batch folder name
-        - pqn_normalized_path: Path to the PQN-normalized data CSV file
+        - median_normalized_path: Path to the median-normalized data CSV file
         - batch_data_path: Path to the batch metadata CSV file
         
         Only batches with both files present are included in the results.
@@ -252,15 +252,15 @@ def find_pqn_files(
     results = []
     
     for batch_folder in batch_folders:
-        pqn_path = Path(f"{data_dir}/{batch_folder}/output/{mode}/pqn_normalized.csv")
+        median_path = Path(f"{data_dir}/{batch_folder}/output/{mode}/median_normalized.csv")
         batch_data_path = Path(f"{data_dir}/{batch_folder}/output/{mode}/batch_data.csv")
         
-        if pqn_path.exists() and batch_data_path.exists():
-            results.append((batch_folder, pqn_path, batch_data_path))
-            logger.info(f"Found PQN files for batch {batch_folder}: {pqn_path}")
+        if median_path.exists() and batch_data_path.exists():
+            results.append((batch_folder, median_path, batch_data_path))
+            logger.info(f"Found median files for batch {batch_folder}: {median_path}")
         else:
-            logger.warning(f"PQN files not found for batch {batch_folder} mode {mode}")
-            logger.warning(f"  Expected: {pqn_path}")
+            logger.warning(f"Median files not found for batch {batch_folder} mode {mode}")
+            logger.warning(f"  Expected: {median_path}")
             logger.warning(f"  Expected: {batch_data_path}")
     
     return results
@@ -277,20 +277,20 @@ def merge_multiple_batches(
     rt_threshold: float = 0.02,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Merge multiple PQN-normalized batches into a single dataset for ComBat correction.
+    Merge multiple median-normalized batches into a single dataset for ComBat correction.
     
     This function extends the two-batch merging logic to handle N batches.
     It performs:
     1. Loading all batch data and metadata
     2. Feature matching across batches using base name and RT
     3. Feature renaming to create consistent identifiers
-    4. Removal of expQC and QC3 samples (used for drift/PQN normalization)
+    4. Removal of expQC and QC3 samples (used for drift/median normalization)
     5. Identification and removal of batch-specific features
     6. Sample alignment between data and metadata
     
     Args:
-        batch_files: List of tuples from find_pqn_files() containing
-            (batch_label, pqn_normalized_path, batch_data_path)
+        batch_files: List of tuples from find_median_files() containing
+            (batch_label, median_normalized_path, batch_data_path)
         output_dir: Directory to save merged files
         mode: Ion mode (used for logging/naming)
         rt_threshold: RT (retention time) threshold for feature matching in minutes
@@ -316,8 +316,8 @@ def merge_multiple_batches(
     batch_dfs = []
     batch_labels = []
     
-    for batch_label, pqn_path, batch_data_path in batch_files:
-        df = pd.read_csv(pqn_path, index_col='Feature')
+    for batch_label, median_path, batch_data_path in batch_files:
+        df = pd.read_csv(median_path, index_col='Feature')
         df = df.apply(pd.to_numeric, errors='coerce')
         batch_df = pd.read_csv(batch_data_path)
         
@@ -520,7 +520,7 @@ def run_multi_batch_combat(
     Run the complete multi-batch ComBat correction pipeline.
     
     This is the main entry point for multi-batch processing. It:
-    1. Finds all PQN-normalized files for the specified batches
+    1. Finds all median-normalized files for the specified batches
     2. Merges them into a single dataset
     3. Runs ComBat batch correction
     4. Optionally runs QC on the corrected data
@@ -544,7 +544,7 @@ def run_multi_batch_combat(
         - combat_metrics: Dictionary with pre/post correction metrics
         
     Raises:
-        ValueError: If fewer than 2 batches have PQN files
+        ValueError: If fewer than 2 batches have median files
     """
     if output_dir is None:
         output_dir = Path(f"{data_dir}/multi_batch_combat/{mode}/")
@@ -553,14 +553,14 @@ def run_multi_batch_combat(
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # --- Step 1: Find all PQN files ---
-    logger.info(f"Searching for PQN-normalized files in batches: {batch_folders}")
-    batch_files = find_pqn_files(batch_folders, mode, data_dir)
+    # --- Step 1: Find all median files ---
+    logger.info(f"Searching for median-normalized files in batches: {batch_folders}")
+    batch_files = find_median_files(batch_folders, mode, data_dir)
     
     if len(batch_files) < 2:
-        raise ValueError(f"Need at least 2 batches with PQN files. Found {len(batch_files)}")
+        raise ValueError(f"Need at least 2 batches with median files. Found {len(batch_files)}")
     
-    logger.info(f"Found {len(batch_files)} batches with PQN files")
+    logger.info(f"Found {len(batch_files)} batches with median files")
     
     # --- Step 2: Merge all batches ---
     logger.info(f"Merging {len(batch_files)} batches...")

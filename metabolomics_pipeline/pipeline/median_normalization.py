@@ -6,7 +6,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-def pqn_normalize(
+def median_normalize(
     batch: str,
     mode: str,
     corrected_df: pd.DataFrame,
@@ -14,7 +14,7 @@ def pqn_normalize(
 
 ) -> pd.DataFrame:
     """
-    Apply PQN (Probabilistic Quotient Normalization) to metabolomics data.
+    Apply median normalization to metabolomics data.
     - Uses 'expQC' samples (case-insensitive) as reference.
     - Normalizes ONLY sample columns (excludes metadata like 'Area:', 'PQF:', etc.).
     - Preserves relative scale and rare metabolites (ideal for IMD workflows).
@@ -63,18 +63,18 @@ def pqn_normalize(
     # Calculate scaling factors: sample_median / reference_median
     scaling_factors = sample_medians / reference_median
 
-    # Apply PQN: divide each sample by its scaling factor
+    # Apply median normalization: divide each sample by its scaling factor
     normalized_df = corrected_df[sample_cols].div(scaling_factors, axis=1)
 
     # Reattach Feature index as the FIRST column
     normalized_df.insert(0, 'Feature', corrected_df.index)
 
     # Save normalized data
-    normalized_df.to_csv(f"{output_dir}/{batch}_{mode}_pqn_normalized.csv")
-    normalized_df.to_csv(f"{output_dir}/pqn_normalized.csv")
+    normalized_df.to_csv(f"{output_dir}/{batch}_{mode}_median_normalized.csv")
+    normalized_df.to_csv(f"{output_dir}/median_normalized.csv")
 
-    central_dir = "/Users/j.groen/PycharmProjects/untargeted_pipeline/metabolomics_pipeline/data/pqn_normalized_batches"
+    central_dir = "/Users/j.groen/PycharmProjects/untargeted_pipeline/metabolomics_pipeline/data/median_normalized_batches"
     os.makedirs(central_dir, exist_ok=True)  # Ensure the directory exists
-    normalized_df.to_csv(f"{central_dir}/{batch}_{mode}_pqn_normalized.csv")
+    normalized_df.to_csv(f"{central_dir}/{batch}_{mode}_median_normalized.csv")
 
     return normalized_df

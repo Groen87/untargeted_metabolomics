@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Script to perform multi-batch ComBat correction on multiple PQN-normalized files.
+Script to perform multi-batch ComBat correction on multiple median-normalized files.
 
 This script:
-1. Gathers all pqn_normalized.csv files from specified batches
+1. Gathers all median_normalized.csv files from specified batches
 2. Merges them into a single dataset
 3. Performs ComBat batch correction with QC checks and visualizations
 
@@ -32,9 +32,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def find_pqn_files(batch_folders: List[str], mode: str, data_dir: str = "data") -> List[Tuple[str, Path, Path]]:
+def find_median_files(batch_folders: List[str], mode: str, data_dir: str = "data") -> List[Tuple[str, Path, Path]]:
     """
-    Find all pqn_normalized.csv and batch_data.csv files for the given batches and mode.
+    Find all median_normalized.csv and batch_data.csv files for the given batches and mode.
     
     Args:
         batch_folders: List of batch folder names
@@ -42,19 +42,19 @@ def find_pqn_files(batch_folders: List[str], mode: str, data_dir: str = "data") 
         data_dir: Base data directory
         
     Returns:
-        List of tuples: (batch_label, pqn_normalized_path, batch_data_path)
+        List of tuples: (batch_label, median_normalized_path, batch_data_path)
     """
     results = []
     for batch_folder in batch_folders:
-        pqn_path = Path(f"{data_dir}/{batch_folder}/output/{mode}/pqn_normalized.csv")
+        median_path = Path(f"{data_dir}/{batch_folder}/output/{mode}/median_normalized.csv")
         batch_data_path = Path(f"{data_dir}/{batch_folder}/output/{mode}/batch_data.csv")
         
-        if pqn_path.exists() and batch_data_path.exists():
-            results.append((batch_folder, pqn_path, batch_data_path))
-            logger.info(f"Found PQN files for batch {batch_folder}: {pqn_path}")
+        if median_path.exists() and batch_data_path.exists():
+            results.append((batch_folder, median_path, batch_data_path))
+            logger.info(f"Found median files for batch {batch_folder}: {median_path}")
         else:
-            logger.warning(f"PQN files not found for batch {batch_folder} mode {mode}")
-            logger.warning(f"  Expected: {pqn_path}")
+            logger.warning(f"median files not found for batch {batch_folder} mode {mode}")
+            logger.warning(f"  Expected: {median_path}")
             logger.warning(f"  Expected: {batch_data_path}")
     
     return results
@@ -72,7 +72,7 @@ def merge_multiple_batches(
     This extends the merge_batches_for_combat logic to handle N batches instead of just 2.
     
     Args:
-        batch_files: List of tuples (batch_label, pqn_normalized_path, batch_data_path)
+        batch_files: List of tuples (batch_label, median_normalized_path, batch_data_path)
         output_dir: Directory to save merged files
         mode: Ion mode (for naming)
         rt_threshold: RT threshold for feature matching
@@ -90,8 +90,8 @@ def merge_multiple_batches(
     batch_dfs = []
     batch_labels = []
     
-    for batch_label, pqn_path, batch_data_path in batch_files:
-        df = pd.read_csv(pqn_path, index_col='Feature')
+    for batch_label, median_path, batch_data_path in batch_files:
+        df = pd.read_csv(median_path, index_col='Feature')
         batch_df = pd.read_csv(batch_data_path)
         
         data_frames.append(df)
@@ -287,14 +287,14 @@ def run_multi_batch_combat(
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Step 1: Find all PQN files
+    # Step 1: Find all median files
     logger.info(f"Searching for PQN-normalized files in batches: {batch_folders}")
-    batch_files = find_pqn_files(batch_folders, mode, data_dir)
+    batch_files = find_median_files(batch_folders, mode, data_dir)
     
     if len(batch_files) < 2:
-        raise ValueError(f"Need at least 2 batches with PQN files. Found {len(batch_files)}")
+        raise ValueError(f"Need at least 2 batches with median files. Found {len(batch_files)}")
     
-    logger.info(f"Found {len(batch_files)} batches with PQN files")
+    logger.info(f"Found {len(batch_files)} batches with median files")
     
     # Step 2: Merge all batches
     logger.info(f"Merging {len(batch_files)} batches...")

@@ -14,7 +14,7 @@ from metabolomics_pipeline import Config
 from metabolomics_pipeline.pipeline import (
     process_metabolomics_data,
     correct_drift_with_loess,
-    pqn_normalize,
+    median_normalize,
     merge_batches_for_combat,
     run_combat_and_visualize,
     run_final_qc
@@ -81,9 +81,9 @@ def main():
                 output_dir=str(output_dir),
             )
 
-            # Step 3: PQN Normalization
-            logger.info(f"[{mode}] Applying PQN normalization...")
-            normalized_df = pqn_normalize(
+            # Step 3: Median Normalization
+            logger.info(f"[{mode}] Applying median normalization...")
+            normalized_df = median_normalize(
                 batch=batch_folder,
                 mode=mode,
                 corrected_df=corrected_df,
@@ -92,7 +92,7 @@ def main():
 
             # Step 4: Merge with Reference Batch for ComBat
             if reference_batch:
-                ref_data_file = Path(f"data/{reference_batch}/output/{mode}/pqn_normalized.csv")
+                ref_data_file = Path(f"data/{reference_batch}/output/{mode}/median_normalized.csv")
                 ref_batch_file = Path(f"data/{reference_batch}/output/{mode}/batch_data.csv")
 
                 if ref_data_file.exists() and ref_batch_file.exists():
@@ -106,7 +106,7 @@ def main():
 
                     # Merge batches
                     merged_data, merged_batch = merge_batches_for_combat(
-                        drift_corrected_file_batch1=str(output_dir / "pqn_normalized.csv"),
+                        drift_corrected_file_batch1=str(output_dir / "median_normalized.csv"),
                         drift_corrected_file_batch2=str(ref_data_file),
                         batch_file_batch1=str(output_dir / "batch_data.csv"),
                         batch_file_batch2=str(ref_batch_file),
