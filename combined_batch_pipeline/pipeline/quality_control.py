@@ -71,11 +71,11 @@ def run_qc_analysis(
         else:
             raise ValueError("clinical_data must contain 'sample_id' or 'original_col' column")
     
-    # Clean sample IDs
+    # Clean sample IDs - convert to string and strip
     clinical_data['sample_id'] = clinical_data['sample_id'].astype(str).str.strip()
     clinical_data = clinical_data.set_index('sample_id')
     
-    # Standardize metabolite column names
+    # Standardize metabolite column names - convert to string and strip
     metabolites_after.columns = metabolites_after.columns.astype(str).str.strip()
     
     if metabolites_before is not None:
@@ -100,10 +100,15 @@ def run_qc_analysis(
         batch_to_num = {b: i+1 for i, b in enumerate(sorted(batch_values))}
         clinical_data[batch_column] = clinical_data[batch_column].map(batch_to_num)
     
-    # Align samples
-    common_samples = list(set(clinical_data.index) & set(metabolites_after.columns))
+    # Align samples - ensure both are strings for comparison
+    clinical_samples = set(clinical_data.index.astype(str))
+    metabolite_samples = set(metabolites_after.columns.astype(str))
+    common_samples = list(clinical_samples & metabolite_samples)
     
     if not common_samples:
+        # Debug: show first few samples from each
+        logger.error(f"No overlapping samples. Clinical samples (first 5): {list(clinical_data.index.astype(str))[:5]}")
+        logger.error(f"Metabolite samples (first 5): {list(metabolites_after.columns.astype(str))[:5]}")
         raise ValueError(
             f"No overlapping samples between clinical ({len(clinical_data.index)}) "
             f"and metabolomics data ({len(metabolites_after.columns)})"
