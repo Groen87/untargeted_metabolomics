@@ -91,8 +91,8 @@ def run_qc_analysis(
         else:
             raise ValueError("clinical_data must contain 'sample_id' or 'original_col' column")
     
-    # Normalize clinical sample IDs (remove prefixes/suffixes)
-    clinical_data['sample_id'] = clinical_data['sample_id'].astype(str).apply(_normalize_column_name)
+    # Normalize clinical sample IDs (remove prefixes/suffixes) - do this BEFORE setting index
+    clinical_data['sample_id'] = clinical_data['sample_id'].astype(str).map(_normalize_column_name)
     
     # Convert batch column to numeric BEFORE setting index
     if batch_column not in clinical_data.columns:
@@ -115,10 +115,10 @@ def run_qc_analysis(
     clinical_data = clinical_data.set_index("sample_id")
     
     # Normalize metabolite column names
-    metabolites_after.columns = metabolites_after.columns.astype(str).apply(_normalize_column_name)
+    metabolites_after.columns = metabolites_after.columns.astype(str).map(_normalize_column_name)
     
     if metabolites_before is not None:
-        metabolites_before.columns = metabolites_before.columns.astype(str).apply(_normalize_column_name)
+        metabolites_before.columns = metabolites_before.columns.astype(str).map(_normalize_column_name)
     
     # ------------------------------------------------------------------
     # 2. Align samples by direct intersection
