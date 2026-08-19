@@ -1,0 +1,15 @@
+# Core dependencies for untargeted metabolomics pipelines
+pandas>=1.4.0
+numpy>=1.21.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+statsmodels>=0.13.0
+pyyaml>=6.0
+scipy>=1.7.0
+scikit-learn>=1.0.0
+
+# ComBat and QC (optional but recommended)
+inmoose>=0.1.0
+
+# For development/testing
+pytest>=7.0.0
