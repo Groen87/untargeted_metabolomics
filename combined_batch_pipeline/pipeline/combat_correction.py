@@ -189,8 +189,10 @@ def generate_combat_plots(
     sns.boxplot(
         x=batch_numbers,
         y=data_before.T.mean(axis=1),
+        hue=batch_numbers,
         palette=palette,
-        showfliers=False
+        showfliers=False,
+        legend=False
     )
     plt.title("Before ComBat - Mean Intensity by Batch")
     plt.xlabel("Batch")
@@ -204,8 +206,10 @@ def generate_combat_plots(
     sns.boxplot(
         x=batch_numbers,
         y=data_after.T.mean(axis=1),
+        hue=batch_numbers,
         palette=palette,
-        showfliers=False
+        showfliers=False,
+        legend=False
     )
     plt.title("After ComBat - Mean Intensity by Batch")
     plt.xlabel("Batch")

@@ -85,10 +85,20 @@ def run_qc_analysis(
     if batch_column not in clinical_data.columns:
         raise ValueError(f"Batch column '{batch_column}' not found in clinical_data.")
     
-    clinical_data[batch_column] = pd.to_numeric(
-        clinical_data[batch_column],
-        errors="raise"
-    )
+    # Convert batch column to numeric if possible, otherwise keep as string
+    # inmoose expects numeric batch labels, so we need to map string batch names to numbers
+    batch_values = clinical_data[batch_column].unique()
+    
+    # Check if batch values are already numeric
+    try:
+        clinical_data[batch_column] = pd.to_numeric(
+            clinical_data[batch_column],
+            errors="raise"
+        )
+    except (ValueError, TypeError):
+        # Batch values are strings (like 'MZ25_36'), map them to numeric IDs
+        batch_to_num = {b: i+1 for i, b in enumerate(sorted(batch_values))}
+        clinical_data[batch_column] = clinical_data[batch_column].map(batch_to_num)
     
     # Align samples
     common_samples = list(set(clinical_data.index) & set(metabolites_after.columns))
