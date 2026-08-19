@@ -16,6 +16,7 @@ import logging
 import numpy as np
 import traceback
 import re
+import warnings
 
 try:
     from inmoose.cohort_qc.cohort_metric import CohortMetric
@@ -28,15 +29,37 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_impute(df: pd.DataFrame) -> pd.DataFrame:
-    """Replace NaN and inf values with half the minimum positive value."""
+    """
+    Replace NaN and inf values with half the minimum positive value.
+    
+    This is critical for inmoose which uses linear regression internally.
+    Divide-by-zero warnings from statsmodels occur when features have
+    zero variance or all zeros after imputation.
+    """
     df = df.copy()
+    
+    # Convert to numeric, coercing errors to NaN
     df = df.apply(pd.to_numeric, errors="coerce")
     
-    min_pos = df[df > 0].min().min()
-    fill_value = (min_pos / 2) if pd.notna(min_pos) else 1e-10
+    # Calculate minimum positive value across the entire dataframe
+    positive_values = df[df > 0]
+    if positive_values.empty:
+        # If no positive values, use a small default
+        min_pos = 1e-10
+    else:
+        min_pos = positive_values.min().min()
     
+    fill_value = min_pos / 2 if pd.notna(min_pos) and min_pos > 0 else 1e-10
+    
+    # Replace NaN with fill_value
     df = df.fillna(fill_value)
+    
+    # Replace inf/-inf with fill_value
     df = df.replace([np.inf, -np.inf], fill_value)
+    
+    # Ensure no zeros remain (can cause divide by zero in statsmodels)
+    # Replace zeros with fill_value as well
+    df = df.replace(0, fill_value)
     
     return df
 
@@ -142,12 +165,17 @@ def run_qc_analysis(
         metabolites_before = metabolites_before.loc[:, common_samples]
     
     # ------------------------------------------------------------------
-    # 3. NaN + Inf cleanup (CRITICAL for PCA in inmoose)
+    # 3. NaN + Inf + Zero cleanup (CRITICAL for PCA in inmoose)
     # ------------------------------------------------------------------
-    metabolites_after = _safe_impute(metabolites_after)
-    
-    if metabolites_before is not None:
-        metabolites_before = _safe_impute(metabolites_before)
+    # Suppress statsmodels warnings - we handle the data properly
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        warnings.filterwarnings("ignore", category=UserWarning)
+        
+        metabolites_after = _safe_impute(metabolites_after)
+        
+        if metabolites_before is not None:
+            metabolites_before = _safe_impute(metabolites_before)
     
     # ------------------------------------------------------------------
     # 4. Diagnostics
@@ -164,23 +192,28 @@ def run_qc_analysis(
         return
     
     try:
-        cohort_qc = CohortMetric(
-            clinical_df=clinical_data,
-            batch_column=batch_column,
-            data_expression_df=metabolites_after,
-            data_expression_df_before=metabolites_before,
-        )
-        
-        cohort_qc.process()
-        
-        qc_report = QCReport(cohort_qc)
-        
-        Path(output_path).mkdir(parents=True, exist_ok=True)
-        
-        report_path = Path(output_path) / "qc_report.html"
-        qc_report.save_report(output_path=str(report_path))
-        
-        logger.info(f"QC report saved to {report_path}")
+        # Suppress warnings during QC processing
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            warnings.filterwarnings("ignore", category=UserWarning)
+            
+            cohort_qc = CohortMetric(
+                clinical_df=clinical_data,
+                batch_column=batch_column,
+                data_expression_df=metabolites_after,
+                data_expression_df_before=metabolites_before,
+            )
+            
+            cohort_qc.process()
+            
+            qc_report = QCReport(cohort_qc)
+            
+            Path(output_path).mkdir(parents=True, exist_ok=True)
+            
+            report_path = Path(output_path) / "qc_report.html"
+            qc_report.save_report(output_path=str(report_path))
+            
+            logger.info(f"QC report saved to {report_path}")
         
     except Exception as e:
         logger.error(f"QC failed: {e}")
