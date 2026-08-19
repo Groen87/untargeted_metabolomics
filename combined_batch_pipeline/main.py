@@ -164,6 +164,8 @@ def run_full_pipeline(
     
     if all_qc_samples:
         from combined_batch_pipeline.pipeline.batch_processing import filter_features_by_qc_quality
+        # Get all sample columns (Area: columns)
+        area_cols = [col for col in df.columns if col.startswith('Area:')]
         logger.info(f"Filtering features using {len(all_qc_samples)} QC samples across all batches")
         df = filter_features_by_qc_quality(
             df,
