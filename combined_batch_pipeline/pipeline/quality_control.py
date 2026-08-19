@@ -15,6 +15,7 @@ from pathlib import Path
 import logging
 import numpy as np
 import traceback
+import re
 
 try:
     from inmoose.cohort_qc.cohort_metric import CohortMetric
@@ -38,6 +39,19 @@ def _safe_impute(df: pd.DataFrame) -> pd.DataFrame:
     df = df.replace([np.inf, -np.inf], fill_value)
     
     return df
+
+
+def _normalize_column_name(col: str) -> str:
+    """
+    Normalize column name by removing common prefixes and suffixes.
+    This ensures clinical sample IDs match metabolite column names.
+    """
+    # Remove Area: prefix (case insensitive)
+    col = re.sub(r'^Area:\s*', '', col, flags=re.IGNORECASE)
+    # Remove .raw suffix (case insensitive)
+    col = re.sub(r'\.raw$', '', col, flags=re.IGNORECASE)
+    # Strip any remaining whitespace
+    return col.strip()
 
 
 def run_qc_analysis(
@@ -77,11 +91,10 @@ def run_qc_analysis(
         else:
             raise ValueError("clinical_data must contain 'sample_id' or 'original_col' column")
     
-    # Clean sample IDs - convert to string and strip
-    clinical_data["sample_id"] = clinical_data["sample_id"].astype(str).str.strip()
+    # Normalize clinical sample IDs (remove prefixes/suffixes)
+    clinical_data['sample_id'] = clinical_data['sample_id'].astype(str).apply(_normalize_column_name)
     
     # Convert batch column to numeric BEFORE setting index
-    # This is critical - we need to do it before any row selection
     if batch_column not in clinical_data.columns:
         raise ValueError(f"Batch column '{batch_column}' not found in clinical_data.")
     
@@ -101,11 +114,11 @@ def run_qc_analysis(
     # Now set the index
     clinical_data = clinical_data.set_index("sample_id")
     
-    # Clean metabolite column names
-    metabolites_after.columns = metabolites_after.columns.astype(str).str.strip()
+    # Normalize metabolite column names
+    metabolites_after.columns = metabolites_after.columns.astype(str).apply(_normalize_column_name)
     
     if metabolites_before is not None:
-        metabolites_before.columns = metabolites_before.columns.astype(str).str.strip()
+        metabolites_before.columns = metabolites_before.columns.astype(str).apply(_normalize_column_name)
     
     # ------------------------------------------------------------------
     # 2. Align samples by direct intersection
