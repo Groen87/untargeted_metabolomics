@@ -55,7 +55,7 @@ from combined_batch_pipeline.pipeline.injection_order import clean_sample_name
 
 # Configure logging - add DEBUG level for troubleshooting
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler()],
 )
