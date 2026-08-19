@@ -9,7 +9,7 @@ This module handles:
 Uses injection order from metadata for LOESS drift correction.
 """
 
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Union
 import pandas as pd
 import numpy as np
 import logging
@@ -94,7 +94,7 @@ def filter_features_by_qc_quality(
 
 def identify_qc_samples(
     sample_cols: List[str],
-    sample_info: Optional[pd.DataFrame] = None,
+    sample_info: Optional[Union[pd.DataFrame, Dict[str, Dict]]] = None,
     qc_pattern: str = "expQC",
     fallback_qc_pattern: Optional[str] = "QC3",
 ) -> Tuple[List[str], List[str]]:
@@ -103,7 +103,7 @@ def identify_qc_samples(
     
     Args:
         sample_cols: List of sample column names
-        sample_info: Optional DataFrame with sample metadata
+        sample_info: Optional DataFrame or dict with sample metadata
         qc_pattern: Pattern to identify QC samples
         fallback_qc_pattern: Fallback QC pattern
         
@@ -117,11 +117,19 @@ def identify_qc_samples(
         qc_samples = [col for col in sample_cols if fallback_qc_pattern in col]
     
     # If we have sample_info, also check for QC samples there
-    if sample_info is not None and 'sample_type' in sample_info.columns:
-        qc_from_info = sample_info[sample_info['sample_type'].str.contains('QC', case=False, na=False)]
-        if not qc_from_info.empty:
-            qc_sample_ids = qc_from_info['sample_id'].tolist()
-            qc_samples = list(set(qc_samples) | set(qc_sample_ids))
+    if sample_info is not None:
+        if isinstance(sample_info, pd.DataFrame) and 'sample_type' in sample_info.columns:
+            qc_from_info = sample_info[sample_info['sample_type'].str.contains('QC', case=False, na=False)]
+            if not qc_from_info.empty:
+                qc_sample_ids = qc_from_info['sample_id'].tolist()
+                qc_samples = list(set(qc_samples) | set(qc_sample_ids))
+        elif isinstance(sample_info, dict):
+            # sample_info is a dict of {sample_name: {metadata}}
+            for sample_name, metadata in sample_info.items():
+                if sample_name in sample_cols:
+                    sample_type = metadata.get('sample_type', '')
+                    if 'QC' in str(sample_type).upper():
+                        qc_samples.append(sample_name)
     
     non_qc_samples = [col for col in sample_cols if col not in qc_samples]
     
