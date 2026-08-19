@@ -1,14 +1,16 @@
 """
 Injection order extraction module for combined batch pipeline.
 
-Reuses the logic from multi_batch_pipeline but adapted for:
-- Tab-separated metadata CSV files (not Excel)
-- UTF-16 encoding (based on user's metadata format)
-- Column names matching user's format
+This module handles:
+- Loading metadata CSV files (tab-separated, UTF-16 encoding)
+- Removing duplicate samples (keeping first occurrence) to match data processing
+- Extracting injection order from creation dates
+- Mapping cleaned sample names to injection order
 """
 
 import pandas as pd
 from typing import List, Callable, Optional, Dict
+import re
 
 
 def clean_sample_name(x: str) -> str:
@@ -19,8 +21,7 @@ def clean_sample_name(x: str) -> str:
     - Extracts the base filename from paths (Windows or Unix)
     - Removes .raw extension
     - Removes parenthetical annotations (e.g., "(Fxx)")
-    - Preserves _1/_2 suffixes ONLY for expQC samples (case-insensitive)
-    - Removes _1/_2 suffixes for all other samples (including QC3, QC4, etc.)
+    - Removes _1/_2 suffixes for all samples (duplicates will be handled separately)
     - Strips whitespace
     
     Args:
@@ -33,7 +34,7 @@ def clean_sample_name(x: str) -> str:
         >>> clean_sample_name("path/to/Sample1_1.raw")
         'Sample1'
         >>> clean_sample_name("expQC_1.raw")
-        'expQC_1'
+        'expQC'
         >>> clean_sample_name("QC3_1 (F01).raw")
         'QC3'
     """
@@ -46,11 +47,7 @@ def clean_sample_name(x: str) -> str:
     # Remove .raw extension and parenthetical annotations
     base_name = filename.split('.raw')[0].split(' (')[0].strip()
     
-    # ONLY for expQC samples: preserve _1/_2 (case-insensitive)
-    if 'expqc' in base_name.lower():
-        return base_name
-    
-    # For ALL other samples: remove _1/_2
+    # Remove _1/_2 suffixes for all samples
     return base_name.replace('_1', '').replace('_2', '').strip()
 
 
@@ -64,22 +61,21 @@ def get_injection_order_from_metadata(
     """
     Extract chronological injection order from a metadata file.
     
-    This function reads a CSV metadata file, extracts sample names and
-    creation dates, and returns the samples in chronological order based on
-    their creation dates.
+    This function:
+    1. Reads the metadata CSV file
+    2. Cleans sample names (removes _1/_2 suffixes)
+    3. Deduplicates by keeping first occurrence (earliest injection)
+    4. Sorts remaining samples by creation date
     
     Args:
         metadata_file: Path to CSV file with sample metadata
         file_name_col: Column name containing file names (default: "File Name")
         date_col: Column name containing creation dates (default: "Creation Date")
         date_format: Format string for parsing dates (default: "%d-%m-%Y %H:%M:%S")
-            Matches format like "17-10-2025 14:25:53"
         sample_name_cleaner: Optional function to clean sample names
-            (default: uses clean_sample_name from this module)
             
     Returns:
-        List of sample names in chronological injection order
-        (duplicates removed, order preserved)
+        List of unique sample names in chronological injection order
         
     Raises:
         FileNotFoundError: If metadata file cannot be read
@@ -104,11 +100,20 @@ def get_injection_order_from_metadata(
     # Extract and clean sample names
     meta['Sample'] = meta[file_name_col].apply(sample_name_cleaner)
     
-    # Deduplicate and sort by Creation Date
-    injection_order = meta.sort_values(date_col)['Sample'].tolist()
-    injection_order = list(dict.fromkeys(injection_order))  # Preserve order, remove duplicates
+    # Sort by Creation Date first
+    meta = meta.sort_values(date_col)
     
-    print(f"✓ Extracted {len(injection_order)} samples in chronological order")
+    # Deduplicate: keep first occurrence (earliest injection time for each sample)
+    # This matches what we do with the data (averaging duplicates)
+    injection_order = []
+    seen_samples = set()
+    for _, row in meta.iterrows():
+        sample = row['Sample']
+        if sample not in seen_samples:
+            injection_order.append(sample)
+            seen_samples.add(sample)
+    
+    print(f"\u2713 Extracted {len(injection_order)} unique samples in chronological order")
     return injection_order
 
 
@@ -147,6 +152,8 @@ def get_sample_info_from_metadata(
     """
     Get complete sample information from metadata file.
     
+    This deduplicates by keeping the first occurrence (earliest injection).
+    
     Args:
         metadata_file: Path to CSV metadata file
         file_name_col: Column name containing file names
@@ -156,9 +163,9 @@ def get_sample_info_from_metadata(
         
     Returns:
         Dictionary mapping cleaned sample name to info dict with:
-        - sample_type
-        - creation_date
-        - original_file_name
+        - sample_type (from first occurrence)
+        - creation_date (from first occurrence)
+        - original_file_name (from first occurrence)
     """
     # Read metadata
     meta = pd.read_csv(metadata_file, sep='\t', encoding='utf-16')
@@ -169,14 +176,20 @@ def get_sample_info_from_metadata(
     # Convert date
     meta[date_col] = pd.to_datetime(meta[date_col], format=date_format, errors='coerce')
     
-    # Build info dictionary
+    # Sort by date and deduplicate (keep first)
+    meta = meta.sort_values(date_col)
+    
+    # Build info dictionary - keep first occurrence of each sample
     sample_info = {}
+    seen_samples = set()
     for _, row in meta.iterrows():
         cleaned = row['Cleaned_Sample']
-        sample_info[cleaned] = {
-            'sample_type': str(row[sample_type_col]).strip(),
-            'creation_date': row[date_col],
-            'original_file_name': str(row[file_name_col]).strip(),
-        }
+        if cleaned not in seen_samples:
+            sample_info[cleaned] = {
+                'sample_type': str(row[sample_type_col]).strip(),
+                'creation_date': row[date_col],
+                'original_file_name': str(row[file_name_col]).strip(),
+            }
+            seen_samples.add(cleaned)
     
     return sample_info

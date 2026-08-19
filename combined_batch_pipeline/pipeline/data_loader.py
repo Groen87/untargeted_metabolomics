@@ -7,6 +7,7 @@ This module handles loading and parsing the combined CSV file where:
 - Batch name is embedded in the filename (e.g., posneg_MZ25_36_...)
 - Duplicates have _1.raw and _2.raw suffixes
 - Injection order comes from metadata file creation dates
+- Duplicates are removed from metadata (keeping first) to match data averaging
 """
 
 import re
@@ -69,24 +70,25 @@ def extract_batch_from_filename(filename: str) -> Optional[str]:
     return None
 
 
-def extract_sample_id_from_filename(filename: str) -> str:
+def extract_sample_id_from_column(col: str) -> str:
     """
-    Extract a clean sample ID from a filename.
+    Extract a clean sample ID from a column name.
     
-    Removes:
-    - "Area: " prefix
-    - " (F#)" suffix
-    - ".raw" extension
-    - _1, _2 suffixes (for duplicates, except expQC)
+    Removes _1/_2 suffixes to match the cleaned names from metadata.
     
     Args:
-        filename: The filename to parse
+        col: Column name like "Area: posneg_MZ25_36_25230101131_1.raw (F1)"
         
     Returns:
-        Clean sample ID
+        Clean sample ID without _1/_2 suffixes
     """
-    # Use the same cleaning logic as the original pipeline
-    return clean_sample_name(filename)
+    # Remove "Area: " prefix
+    clean_name = col.split('Area: ')[1].split(' (')[0].strip()
+    # Remove .raw extension if present
+    clean_name = clean_name.split('.raw')[0].strip()
+    # Remove _1/_2 suffixes to match metadata cleaning
+    clean_name = clean_name.replace('_1', '').replace('_2', '').strip()
+    return clean_name
 
 
 def extract_sample_type(sample_id: str) -> str:
@@ -176,17 +178,17 @@ def load_combined_data(
     if metadata_file:
         logger.info(f"Loading injection order from {metadata_file}")
         try:
-            # Get injection order mapping from metadata
-            inj_order = get_injection_order_from_metadata(metadata_file)
-            inj_mapping = {sample: idx for idx, sample in enumerate(inj_order)}
-            
-            # Get sample info from metadata
+            # Get sample info from metadata (deduplicated, keeping first)
             metadata_sample_info = get_sample_info_from_metadata(metadata_file)
+            
+            # Get injection order mapping from metadata (deduplicated, keeping first)
+            inj_mapping = get_injection_order_mapping(metadata_file)
             
             # Build injection order for columns
             injection_order = {}
             for col in area_cols:
-                sample_id = extract_sample_id_from_filename(col)
+                # Extract the sample ID from the column (cleaned, no _1/_2)
+                sample_id = extract_sample_id_from_column(col)
                 if sample_id in inj_mapping:
                     injection_order[col] = inj_mapping[sample_id]
                 else:
@@ -205,7 +207,7 @@ def load_combined_data(
         # Extract batch and sample info
         filename = col.split('Area: ')[1].split(' (')[0].strip()
         batch = extract_batch_from_filename(filename)
-        sample_id = extract_sample_id_from_filename(col)
+        sample_id = extract_sample_id_from_column(col)
         
         # Use sample type from metadata if available, otherwise infer
         if metadata_file and sample_id in metadata_sample_info:
@@ -260,11 +262,8 @@ def average_duplicates(
         # Extract base name without _1/_2
         base = col.split('Area: ')[1].split('.raw')[0].split(' (')[0].strip()
         
-        # Remove _1 or _2 suffix (except for expQC)
-        if 'expqc' in base.lower():
-            # Keep _1/_2 for expQC
-            pass
-        elif base.endswith('_1'):
+        # Remove _1 or _2 suffix
+        if base.endswith('_1'):
             base = base[:-2]
         elif base.endswith('_2'):
             base = base[:-2]

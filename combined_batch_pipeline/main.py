@@ -9,14 +9,14 @@ where:
 - Batch name is embedded in the filename (e.g., posneg_MZ25_36_...)
 - Duplicates have _1.raw and _2.raw suffixes
 - Features are already aligned by Compound Discoverer
-- Injection order comes from metadata file creation dates
+- Injection order comes from metadata file creation dates (deduplicated)
 
 Workflow:
 1. Load combined CSV
-2. Load metadata file for injection order (based on creation dates)
+2. Load metadata file for injection order (based on creation dates, deduplicated)
 3. Extract batch information from column names
 4. For each batch:
-   a. Average duplicate samples (_1 + _2, except expQC)
+   a. Average duplicate samples (_1 + _2)
    b. Apply median normalization
    c. Apply LOESS drift correction (using injection order from metadata)
 5. Merge all batches
@@ -63,11 +63,9 @@ logger = logging.getLogger(__name__)
 
 
 def extract_base_name_from_column(col: str) -> str:
-    """Extract base name from column without _1/_2 suffix (except expQC)."""
+    """Extract base name from column without _1/_2 suffix."""
     clean_name = col.split('Area: ')[1].split('.raw')[0].split(' (')[0].strip()
-    if 'expqc' in clean_name.lower():
-        return clean_name
-    elif clean_name.endswith('_1'):
+    if clean_name.endswith('_1'):
         return clean_name[:-2]
     elif clean_name.endswith('_2'):
         return clean_name[:-2]
@@ -193,10 +191,20 @@ def run_full_pipeline(
                     }
                 
                 # Use injection order from first original column
-                if injection_order and first_orig in injection_order:
+                # The injection_order maps original column names to indices
+                if first_orig in injection_order:
                     updated_injection_order[new_col] = injection_order[first_orig]
                 else:
-                    updated_injection_order[new_col] = -1
+                    # Try to find a column with matching base name
+                    base_name = extract_base_name_from_column(first_orig)
+                    matched = False
+                    for orig_col, idx in injection_order.items():
+                        if extract_base_name_from_column(orig_col) == base_name:
+                            updated_injection_order[new_col] = idx
+                            matched = True
+                            break
+                    if not matched:
+                        updated_injection_order[new_col] = -1
             else:
                 updated_sample_info[new_col] = {
                     'sample_id': new_col,
