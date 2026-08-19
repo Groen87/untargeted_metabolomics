@@ -12,6 +12,7 @@ import pandas as pd
 from pathlib import Path
 import logging
 import numpy as np
+import re
 
 try:
     from inmoose.cohort_qc.cohort_metric import CohortMetric
@@ -35,6 +36,19 @@ def _safe_impute(df: pd.DataFrame) -> pd.DataFrame:
     df = df.replace([np.inf, -np.inf], fill_value)
     
     return df
+
+
+def _normalize_sample_id(sample_id: str) -> str:
+    """Normalize sample ID by removing common prefixes and suffixes."""
+    # Remove common prefixes
+    for prefix in ['Area: ', 'area: ', 'Area:', 'area:']:
+        if sample_id.startswith(prefix):
+            sample_id = sample_id[len(prefix):]
+    # Remove common suffixes
+    for suffix in ['.raw', '.RAW', '_raw', '_RAW']:
+        if sample_id.endswith(suffix):
+            sample_id = sample_id[:-len(suffix)]
+    return sample_id.strip()
 
 
 def run_qc_analysis(
@@ -73,13 +87,30 @@ def run_qc_analysis(
     
     # Clean sample IDs - convert to string and strip
     clinical_data['sample_id'] = clinical_data['sample_id'].astype(str).str.strip()
+    
+    # Normalize clinical sample IDs (remove prefixes/suffixes for matching)
+    clinical_data['sample_id_normalized'] = clinical_data['sample_id'].apply(_normalize_sample_id)
     clinical_data = clinical_data.set_index('sample_id')
     
     # Standardize metabolite column names - convert to string and strip
     metabolites_after.columns = metabolites_after.columns.astype(str).str.strip()
     
+    # Normalize metabolite column names for matching
+    metabolites_after_normalized = pd.DataFrame(
+        metabolites_after.values,
+        index=metabolites_after.index,
+        columns=metabolites_after.columns.map(_normalize_sample_id)
+    )
+    
     if metabolites_before is not None:
         metabolites_before.columns = metabolites_before.columns.astype(str).str.strip()
+        metabolites_before_normalized = pd.DataFrame(
+            metabolites_before.values,
+            index=metabolites_before.index,
+            columns=metabolites_before.columns.map(_normalize_sample_id)
+        )
+    else:
+        metabolites_before_normalized = None
     
     # Validate batch column
     if batch_column not in clinical_data.columns:
@@ -100,34 +131,54 @@ def run_qc_analysis(
         batch_to_num = {b: i+1 for i, b in enumerate(sorted(batch_values))}
         clinical_data[batch_column] = clinical_data[batch_column].map(batch_to_num)
     
-    # Align samples - ensure both are strings for comparison
-    clinical_samples = set(clinical_data.index.astype(str))
-    metabolite_samples = set(metabolites_after.columns.astype(str))
+    # Align samples using normalized IDs
+    clinical_samples = set(clinical_data.index.map(_normalize_sample_id))
+    metabolite_samples = set(metabolites_after_normalized.columns)
     common_samples = list(clinical_samples & metabolite_samples)
     
     if not common_samples:
         # Debug: show first few samples from each
-        logger.error(f"No overlapping samples. Clinical samples (first 5): {list(clinical_data.index.astype(str))[:5]}")
-        logger.error(f"Metabolite samples (first 5): {list(metabolites_after.columns.astype(str))[:5]}")
+        logger.error(f"No overlapping samples after normalization.")
+        logger.error(f"Clinical samples (first 5): {list(clinical_data.index.map(_normalize_sample_id))[:5]}")
+        logger.error(f"Metabolite samples (first 5): {list(metabolites_after_normalized.columns)[:5]}")
         raise ValueError(
             f"No overlapping samples between clinical ({len(clinical_data.index)}) "
             f"and metabolomics data ({len(metabolites_after.columns)})"
         )
     
-    clinical_data = clinical_data.loc[common_samples]
-    metabolites_after = metabolites_after[common_samples]
+    # Get original column names for the common samples
+    clinical_original_cols = clinical_data.index.tolist()
+    metabolite_original_cols = metabolites_after.columns.tolist()
+    
+    # Find which original columns correspond to common normalized samples
+    common_original_cols = []
+    for norm_sample in common_samples:
+        # Find clinical column that normalizes to this
+        clinical_match = [col for col in clinical_original_cols 
+                        if _normalize_sample_id(col) == norm_sample]
+        # Find metabolite column that normalizes to this
+        metabolite_match = [col for col in metabolite_original_cols 
+                          if _normalize_sample_id(col) == norm_sample]
+        if clinical_match and metabolite_match:
+            common_original_cols.append((clinical_match[0], metabolite_match[0]))
+    
+    # Extract the matching columns
+    clinical_data_aligned = clinical_data.loc[[c[0] for c in common_original_cols]]
+    metabolites_after_aligned = metabolites_after[[c[1] for c in common_original_cols]]
     
     if metabolites_before is not None:
-        metabolites_before = metabolites_before[common_samples]
+        metabolites_before_aligned = metabolites_before[[c[1] for c in common_original_cols]]
+    else:
+        metabolites_before_aligned = None
     
     # Impute NaN/inf values
-    metabolites_after = _safe_impute(metabolites_after)
+    metabolites_after_aligned = _safe_impute(metabolites_after_aligned)
     
-    if metabolites_before is not None:
-        metabolites_before = _safe_impute(metabolites_before)
+    if metabolites_before_aligned is not None:
+        metabolites_before_aligned = _safe_impute(metabolites_before_aligned)
     
-    logger.info(f"Sample count for QC: {clinical_data.shape[0]}")
-    logger.info(f"Batch values: {sorted(clinical_data[batch_column].unique())}")
+    logger.info(f"Sample count for QC: {clinical_data_aligned.shape[0]}")
+    logger.info(f"Batch values: {sorted(clinical_data_aligned[batch_column].unique())}")
     
     # Run inmoose QC if available
     if not INMOOSE_AVAILABLE:
@@ -136,10 +187,10 @@ def run_qc_analysis(
     
     try:
         cohort_qc = CohortMetric(
-            clinical_df=clinical_data,
+            clinical_df=clinical_data_aligned,
             batch_column=batch_column,
-            data_expression_df=metabolites_after,
-            data_expression_df_before=metabolites_before,
+            data_expression_df=metabolites_after_aligned,
+            data_expression_df_before=metabolites_before_aligned,
         )
         cohort_qc.process()
         
