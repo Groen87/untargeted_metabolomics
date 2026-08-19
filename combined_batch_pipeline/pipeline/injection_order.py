@@ -47,8 +47,12 @@ def clean_sample_name(x: str) -> str:
     # Remove .raw extension and parenthetical annotations
     base_name = filename.split('.raw')[0].split(' (')[0].strip()
     
-    # Remove _1/_2 suffixes for all samples
-    return base_name.replace('_1', '').replace('_2', '').strip()
+    # Remove _1/_2 suffixes ONLY at the end of the string
+    if base_name.endswith('_1'):
+        base_name = base_name[:-2]
+    elif base_name.endswith('_2'):
+        base_name = base_name[:-2]
+    return base_name.strip()
 
 
 def get_injection_order_from_metadata(
@@ -85,8 +89,15 @@ def get_injection_order_from_metadata(
     if sample_name_cleaner is None:
         sample_name_cleaner = clean_sample_name
     
-    # Read metadata file - tab-separated, UTF-16 encoding
-    meta = pd.read_csv(metadata_file, sep='\t', encoding='utf-16')
+    # Read metadata file - tab-separated, try UTF-16 first, then UTF-8
+    try:
+        meta = pd.read_csv(metadata_file, sep='\t', encoding='utf-16')
+    except UnicodeDecodeError:
+        try:
+            meta = pd.read_csv(metadata_file, sep='\t', encoding='utf-8')
+        except UnicodeDecodeError:
+            # Try without specifying encoding (let pandas auto-detect)
+            meta = pd.read_csv(metadata_file, sep='\t')
     
     # Validate required columns
     if file_name_col not in meta.columns:
@@ -167,8 +178,15 @@ def get_sample_info_from_metadata(
         - creation_date (from first occurrence)
         - original_file_name (from first occurrence)
     """
-    # Read metadata
-    meta = pd.read_csv(metadata_file, sep='\t', encoding='utf-16')
+    # Read metadata - try UTF-16 first, then UTF-8
+    try:
+        meta = pd.read_csv(metadata_file, sep='\t', encoding='utf-16')
+    except UnicodeDecodeError:
+        try:
+            meta = pd.read_csv(metadata_file, sep='\t', encoding='utf-8')
+        except UnicodeDecodeError:
+            # Try without specifying encoding (let pandas auto-detect)
+            meta = pd.read_csv(metadata_file, sep='\t')
     
     # Clean sample names
     meta['Cleaned_Sample'] = meta[file_name_col].apply(clean_sample_name)

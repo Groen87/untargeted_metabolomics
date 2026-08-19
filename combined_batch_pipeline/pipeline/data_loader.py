@@ -86,9 +86,12 @@ def extract_sample_id_from_column(col: str) -> str:
     clean_name = col.split('Area: ')[1].split(' (')[0].strip()
     # Remove .raw extension if present
     clean_name = clean_name.split('.raw')[0].strip()
-    # Remove _1/_2 suffixes to match metadata cleaning
-    clean_name = clean_name.replace('_1', '').replace('_2', '').strip()
-    return clean_name
+    # Remove _1/_2 suffixes ONLY at the end of the string
+    if clean_name.endswith('_1'):
+        clean_name = clean_name[:-2]
+    elif clean_name.endswith('_2'):
+        clean_name = clean_name[:-2]
+    return clean_name.strip()
 
 
 def extract_sample_type(sample_id: str) -> str:
