@@ -48,6 +48,7 @@ from combined_batch_pipeline.pipeline.data_loader import (
 from combined_batch_pipeline.pipeline.batch_processing import (
     process_batch,
     merge_batch_results,
+    identify_qc_samples,
 )
 from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_merged_data
 from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis
@@ -146,6 +147,33 @@ def run_full_pipeline(
     if injection_order is None:
         injection_order = {}
         logger.warning("No injection order loaded from metadata. Using column order.")
+    
+    # Step 1.5: Global QC-based feature filtering (before batch processing)
+    # This ensures all batches have the same features for ComBat correction
+    logger.info(f"
+{'='*70}")
+    logger.info(f"STEP 1.5: Global QC-based feature filtering")
+    logger.info(f"{'='*70}")
+    
+    # Get all QC samples across all batches
+    all_qc_samples = []
+    for batch in all_batches:
+        batch_samples_list = batch_groups[batch]
+        qc_samples, _ = identify_qc_samples(batch_samples_list, sample_info)
+        all_qc_samples.extend(qc_samples)
+    
+    if all_qc_samples:
+        from combined_batch_pipeline.pipeline.batch_processing import filter_features_by_qc_quality
+        logger.info(f"Filtering features using {len(all_qc_samples)} QC samples across all batches")
+        df = filter_features_by_qc_quality(
+            df,
+            area_cols,
+            qc_pattern=qc_pattern,
+            fallback_qc_pattern=fallback_qc_pattern,
+        )
+        logger.info(f"Global feature filtering complete. Data shape: {df.shape}")
+    else:
+        logger.warning("No QC samples found. Skipping global QC-based feature filtering.")
     
     # Step 2: Process each batch
     logger.info(f"\n{'='*70}")
