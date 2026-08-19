@@ -152,7 +152,7 @@ def run_full_pipeline(
     # This ensures all batches have the same features for ComBat correction
     logger.info(f"
 {'='*70}")
-    logger.info(f"STEP 1.5: Global QC-based feature filtering")
+    logger.info("STEP 1.5: Global QC-based feature filtering")
     logger.info(f"{'='*70}")
     
     # Get all QC samples across all batches
