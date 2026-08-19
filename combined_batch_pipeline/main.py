@@ -53,9 +53,9 @@ from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_mer
 from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis
 from combined_batch_pipeline.pipeline.injection_order import clean_sample_name
 
-# Configure logging
+# Configure logging - add DEBUG level for troubleshooting
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler()],
 )
@@ -135,6 +135,13 @@ def run_full_pipeline(
     all_batches = sorted(batch_groups.keys())
     logger.info(f"Identified {len(all_batches)} batches: {all_batches}")
     
+    # Debug: Print injection order info
+    if injection_order:
+        logger.debug(f"Injection order loaded for {len(injection_order)} columns")
+        logger.debug(f"Sample injection order entries: {list(injection_order.items())[:5]}")
+    else:
+        logger.warning("No injection order loaded!")
+    
     # Ensure injection_order is a dict (not None)
     if injection_order is None:
         injection_order = {}
@@ -149,6 +156,8 @@ def run_full_pipeline(
     
     for batch in all_batches:
         batch_samples = batch_groups[batch]
+        logger.debug(f"\nProcessing batch {batch} with {len(batch_samples)} samples")
+        logger.debug(f"Sample columns: {batch_samples[:5]}...")
         
         # First, average duplicates within this batch
         batch_df = df[batch_samples].copy()
@@ -156,6 +165,9 @@ def run_full_pipeline(
         
         # Update sample names after averaging
         averaged_samples = list(batch_df.columns)
+        logger.debug(f"After averaging: {len(averaged_samples)} columns")
+        logger.debug(f"Averaged columns: {averaged_samples[:5]}...")
+        logger.debug(f"Column mapping: {list(col_mapping.items())[:5]}")
         
         # Build updated sample_info and injection_order for averaged columns
         updated_sample_info: Dict[str, Dict] = {}
@@ -194,6 +206,7 @@ def run_full_pipeline(
                 # The injection_order maps original column names to indices
                 if first_orig in injection_order:
                     updated_injection_order[new_col] = injection_order[first_orig]
+                    logger.debug(f"  Mapped {new_col} -> injection order {injection_order[first_orig]} (from {first_orig})")
                 else:
                     # Try to find a column with matching base name
                     base_name = extract_base_name_from_column(first_orig)
@@ -201,10 +214,12 @@ def run_full_pipeline(
                     for orig_col, idx in injection_order.items():
                         if extract_base_name_from_column(orig_col) == base_name:
                             updated_injection_order[new_col] = idx
+                            logger.debug(f"  Mapped {new_col} -> injection order {idx} (from {orig_col}, matched by base name)")
                             matched = True
                             break
                     if not matched:
                         updated_injection_order[new_col] = -1
+                        logger.debug(f"  WARNING: Could not find injection order for {new_col} (from {first_orig})")
             else:
                 updated_sample_info[new_col] = {
                     'sample_id': new_col,
@@ -214,6 +229,9 @@ def run_full_pipeline(
                     'injection_order': -1,
                 }
                 updated_injection_order[new_col] = -1
+                logger.debug(f"  WARNING: No mapping for {new_col}")
+        
+        logger.debug(f"Updated injection order for batch: {updated_injection_order}")
         
         # Process the batch
         processed_df, batch_metadata = process_batch(

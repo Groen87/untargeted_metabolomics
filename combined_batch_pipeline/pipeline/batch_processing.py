@@ -155,16 +155,23 @@ def loess_drift_correction(
     if injection_order:
         # Sort all samples by injection order (global order from metadata)
         sorted_samples = sorted(sample_cols, key=lambda col: injection_order.get(col, float('inf')))
+        logger.debug(f"Sorted {len(sample_cols)} samples by injection order")
+        logger.debug(f"First 5 sorted samples: {sorted_samples[:5]}")
+        logger.debug(f"Injection order values for first 5: {[injection_order.get(c, -1) for c in sorted_samples[:5]]}")
     else:
         sorted_samples = sample_cols
         logger.warning("No injection order provided, using column order")
     
     # Create position mapping (0-based within sorted_samples)
     position_idx = {col: i for i, col in enumerate(sorted_samples)}
+    logger.debug(f"Position index: {position_idx}")
     
     # Filter QC and bio samples to only those in sorted_samples
     qc_samples = [col for col in qc_samples if col in position_idx]
     bio_samples = [col for col in bio_samples if col in position_idx]
+    
+    logger.debug(f"QC samples after filtering: {qc_samples}")
+    logger.debug(f"Bio samples after filtering: {bio_samples[:5]}...")
     
     if len(qc_samples) < 2:
         logger.warning(f"After filtering, only {len(qc_samples)} QC samples remain. Skipping drift correction.")
@@ -187,6 +194,8 @@ def loess_drift_correction(
         # Get QC sample positions in sorted_samples
         qc_positions = [position_idx[col] for col in qc_samples]
         qc_intensities = [feature_data[pos] for pos in qc_positions]
+        
+        logger.debug(f"Feature {feature}: feature_data shape = {feature_data.shape}, qc_positions = {qc_positions[:5]}...")
         
         # Fit LOESS
         try:
@@ -258,6 +267,7 @@ def process_batch(
     """
     logger.info(f"\nProcessing batch: {batch}")
     logger.info(f"  Samples: {len(batch_samples)}")
+    logger.debug(f"  Batch samples: {batch_samples[:5]}...")
     
     # Extract batch data
     batch_df = df[batch_samples].copy()
@@ -274,6 +284,7 @@ def process_batch(
     
     # Step 2: LOESS drift correction
     logger.info(f"  Applying LOESS drift correction...")
+    logger.debug(f"  Injection order keys (first 5): {list(injection_order.keys())[:5] if injection_order else 'None'}...")
     batch_df = loess_drift_correction(
         batch_df,
         batch_samples,
