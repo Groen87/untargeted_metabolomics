@@ -5,6 +5,8 @@ This module handles:
 1. Processing individual batches (median normalization, LOESS drift correction)
 2. Merging processed batches
 3. Preparing data for ComBat correction
+
+Uses injection order from metadata for LOESS drift correction.
 """
 
 from typing import Tuple, Dict, List, Optional
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 def identify_qc_samples(
     sample_cols: List[str],
+    sample_info: Optional[Dict[str, Dict]] = None,
     qc_pattern: str = "expQC",
     fallback_pattern: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
@@ -28,6 +31,7 @@ def identify_qc_samples(
     
     Args:
         sample_cols: List of sample column names
+        sample_info: Optional dictionary with sample metadata
         qc_pattern: Pattern to identify QC samples (default: "expQC")
         fallback_pattern: Fallback pattern if primary yields no samples
         
@@ -38,6 +42,13 @@ def identify_qc_samples(
     bio_samples = []
     
     for col in sample_cols:
+        if sample_info and col in sample_info:
+            sample_type = sample_info[col].get('sample_type', 'Sample')
+            if sample_type == "QC":
+                qc_samples.append(col)
+                continue
+        
+        # Fallback to pattern matching
         sample_id = extract_sample_id_from_filename(col)
         sample_type = extract_sample_type(sample_id)
         
@@ -56,6 +67,7 @@ def identify_qc_samples(
 def median_normalize_batch(
     df: pd.DataFrame,
     sample_cols: List[str],
+    sample_info: Optional[Dict[str, Dict]] = None,
     qc_pattern: str = "expQC",
     fallback_qc_pattern: Optional[str] = "QC3",
 ) -> pd.DataFrame:
@@ -68,6 +80,7 @@ def median_normalize_batch(
     Args:
         df: DataFrame with features as rows, samples as columns
         sample_cols: List of sample column names to normalize
+        sample_info: Optional dictionary with sample metadata
         qc_pattern: Pattern to identify QC samples
         fallback_qc_pattern: Fallback QC pattern
         
@@ -75,13 +88,13 @@ def median_normalize_batch(
         DataFrame with median-normalized values
     """
     # Identify QC samples
-    qc_samples, _ = identify_qc_samples(sample_cols, qc_pattern, fallback_qc_pattern)
+    qc_samples, _ = identify_qc_samples(sample_cols, sample_info, qc_pattern, fallback_qc_pattern)
     
     if not qc_samples:
         logger.warning(f"No QC samples found. Skipping median normalization.")
         return df.copy()
     
-    logger.info(f"Using {len(qc_samples)} QC samples for median normalization: {qc_samples}")
+    logger.info(f"Using {len(qc_samples)} QC samples for median normalization: {qc_samples[:3]}...")
     
     # Calculate median for each sample
     sample_medians = df[sample_cols].median(axis=0)
@@ -91,9 +104,6 @@ def median_normalize_batch(
     reference_median = qc_medians.median()
     
     logger.info(f"Reference median: {reference_median:.2f}")
-    
-    # Calculate scaling factors
-    scaling_factors = sample_medians / reference_median
     
     # Apply normalization
     df_normalized = df.copy()
@@ -106,6 +116,8 @@ def median_normalize_batch(
 def loess_drift_correction(
     df: pd.DataFrame,
     sample_cols: List[str],
+    sample_info: Optional[Dict[str, Dict]] = None,
+    injection_order: Optional[Dict[str, int]] = None,
     qc_pattern: str = "expQC",
     fallback_qc_pattern: Optional[str] = "QC3",
     frac: float = 0.5,
@@ -113,16 +125,14 @@ def loess_drift_correction(
     """
     Apply LOESS drift correction to a batch.
     
-    This is a simplified version that:
-    1. Identifies QC samples
-    2. Fits LOESS curves to QC intensities across injection order
-    3. Applies correction to all samples
-    
-    Note: This assumes samples are in injection order (column order = injection order).
+    Uses injection order from metadata (creation dates) to properly order samples.
+    If no injection order is provided, uses column order as fallback.
     
     Args:
         df: DataFrame with features as rows, samples as columns
-        sample_cols: List of sample column names (in injection order)
+        sample_cols: List of sample column names (will be reordered by injection order)
+        sample_info: Optional dictionary with sample metadata
+        injection_order: Optional dictionary mapping columns to injection order index
         qc_pattern: Pattern to identify QC samples
         fallback_qc_pattern: Fallback QC pattern
         frac: LOESS fraction parameter
@@ -133,7 +143,7 @@ def loess_drift_correction(
     from statsmodels.nonparametric.smoothers_lowess import lowess
     
     # Identify QC samples
-    qc_samples, bio_samples = identify_qc_samples(sample_cols, qc_pattern, fallback_qc_pattern)
+    qc_samples, bio_samples = identify_qc_samples(sample_cols, sample_info, qc_pattern, fallback_qc_pattern)
     
     if len(qc_samples) < 2:
         logger.warning(f"Need at least 2 QC samples for LOESS. Found {len(qc_samples)}. Skipping drift correction.")
@@ -141,14 +151,22 @@ def loess_drift_correction(
     
     logger.info(f"Applying LOESS drift correction with {len(qc_samples)} QC samples")
     
-    # Create injection order mapping
-    injection_order = {col: i for i, col in enumerate(sample_cols)}
+    # Sort samples by injection order if available, otherwise use column order
+    if injection_order:
+        # Sort all samples by injection order
+        sorted_samples = sorted(sample_cols, key=lambda col: injection_order.get(col, float('inf')))
+    else:
+        sorted_samples = sample_cols
+        logger.warning("No injection order provided, using column order")
+    
+    # Create injection order mapping based on sorted order
+    injection_idx = {col: i for i, col in enumerate(sorted_samples)}
     
     # For each feature, fit LOESS to QC samples and apply correction
     df_corrected = df.copy()
     
     # Use high-intensity features for drift estimation
-    feature_means = df[sample_cols].mean(axis=1)
+    feature_means = df[sorted_samples].mean(axis=1)
     high_intensity_mask = feature_means > feature_means.quantile(0.9)
     high_intensity_features = df.index[high_intensity_mask]
     
@@ -156,11 +174,11 @@ def loess_drift_correction(
     
     # Fit LOESS for each high-intensity feature
     for feature in high_intensity_features:
-        feature_data = df.loc[feature, sample_cols].values
+        feature_data = df.loc[feature, sorted_samples].values
         
         # Get QC sample indices and intensities
-        qc_indices = [injection_order[col] for col in qc_samples]
-        qc_intensities = [feature_data[injection_order[col]] for col in qc_samples]
+        qc_indices = [injection_idx[col] for col in qc_samples]
+        qc_intensities = [feature_data[injection_idx[col]] for col in qc_samples]
         
         # Fit LOESS
         try:
@@ -180,7 +198,7 @@ def loess_drift_correction(
             
             # For biological samples, interpolate from nearest QC
             for bio_col in bio_samples:
-                bio_idx = injection_order[bio_col]
+                bio_idx = injection_idx[bio_col]
                 nearest_qc_idx = min(qc_indices, key=lambda x: abs(x - bio_idx))
                 nearest_qc_col = qc_samples[qc_indices.index(nearest_qc_idx)]
                 df_corrected.loc[feature, bio_col] = df_corrected.loc[feature, nearest_qc_col]
@@ -191,7 +209,7 @@ def loess_drift_correction(
     
     # For features not in high_intensity_features, use median correction
     if len(high_intensity_features) < len(df):
-        median_correction = df_corrected[sample_cols].median(axis=0) / df[sample_cols].median(axis=0)
+        median_correction = df_corrected[sorted_samples].median(axis=0) / df[sorted_samples].median(axis=0)
         for feature in df.index:
             if feature not in high_intensity_features:
                 df_corrected.loc[feature] = df.loc[feature] * median_correction
@@ -203,6 +221,8 @@ def process_batch(
     df: pd.DataFrame,
     batch: str,
     batch_samples: List[str],
+    sample_info: Optional[Dict[str, Dict]] = None,
+    injection_order: Optional[Dict[str, int]] = None,
     qc_pattern: str = "expQC",
     fallback_qc_pattern: Optional[str] = "QC3",
     frac: float = 0.5,
@@ -215,6 +235,8 @@ def process_batch(
         df: Full DataFrame with all features and samples
         batch: Batch name
         batch_samples: List of sample column names belonging to this batch
+        sample_info: Optional dictionary with sample metadata
+        injection_order: Optional dictionary mapping columns to injection order
         qc_pattern: Pattern to identify QC samples
         fallback_qc_pattern: Fallback QC pattern
         frac: LOESS fraction parameter
@@ -236,6 +258,7 @@ def process_batch(
     batch_df = median_normalize_batch(
         batch_df,
         batch_samples,
+        sample_info=sample_info,
         qc_pattern=qc_pattern,
         fallback_qc_pattern=fallback_qc_pattern,
     )
@@ -245,6 +268,8 @@ def process_batch(
     batch_df = loess_drift_correction(
         batch_df,
         batch_samples,
+        sample_info=sample_info,
+        injection_order=injection_order,
         qc_pattern=qc_pattern,
         fallback_qc_pattern=fallback_qc_pattern,
         frac=frac,
@@ -253,15 +278,16 @@ def process_batch(
     # Create batch metadata
     batch_metadata = pd.DataFrame([
         {
-            'sample_id': extract_sample_id_from_filename(col),
+            'sample_id': sample_info[col]['sample_id'] if sample_info and col in sample_info else extract_sample_id_from_filename(col),
             'batch': batch,
-            'sample_type': extract_sample_type(extract_sample_id_from_filename(col)),
+            'sample_type': sample_info[col]['sample_type'] if sample_info and col in sample_info else extract_sample_type(extract_sample_id_from_filename(col)),
             'original_col': col,
+            'injection_order': sample_info[col]['injection_order'] if sample_info and col in sample_info else -1,
         }
         for col in batch_samples
     ])
     
-    logger.info(f"  [32m✓ Batch {batch} processed successfully[0m")
+    logger.info(f"  ✓ Batch {batch} processed successfully")
     
     return batch_df, batch_metadata
 

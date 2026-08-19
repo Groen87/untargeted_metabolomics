@@ -6,6 +6,7 @@ This module handles loading and parsing the combined CSV file where:
 - Columns are named: "Area: {filename} ({F#})"
 - Batch name is embedded in the filename (e.g., posneg_MZ25_36_...)
 - Duplicates have _1.raw and _2.raw suffixes
+- Injection order comes from metadata file creation dates
 """
 
 import re
@@ -13,6 +14,13 @@ from typing import Tuple, Dict, List, Optional
 import pandas as pd
 import numpy as np
 import logging
+
+from .injection_order import (
+    clean_sample_name,
+    get_injection_order_from_metadata,
+    get_injection_order_mapping,
+    get_sample_info_from_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +32,7 @@ def extract_batch_from_filename(filename: str) -> Optional[str]:
     Examples:
         posneg_MZ25_36_25230101131_1.raw -> MZ25_36
         posneg_MZ26_10_26050123531_1.raw -> MZ26_10
-        Area: posneg_MZ25_36_expQC_1.raw (F1) -> MZ25_36
+        C:\\Untargeted project Joost\\Data Exploris 120\\MZ25_36\\posneg_MZ25_36_25230101131_1.raw -> MZ25_36
     
     Args:
         filename: The filename to parse
@@ -32,12 +40,11 @@ def extract_batch_from_filename(filename: str) -> Optional[str]:
     Returns:
         The batch name (e.g., "MZ25_36") or None if not found
     """
-    # Remove any prefix like "Area: " or "(F1)"
-    clean_name = filename.split('Area: ')[-1].split(' (')[0].strip()
+    # Handle Windows paths
+    clean_name = filename.replace('\\', '/').split('/')[-1]
     
     # Pattern: posneg_{BATCH}_{REST} or Posneg_{BATCH}_{REST}
     # Batch name is typically MZ##_## (e.g., MZ25_36)
-    # We want to extract exactly the batch part (first two segments after posneg_)
     
     # Try posneg_ prefix first
     posneg_match = re.search(r'posneg_([A-Z]+\d+)_(\d+)', clean_name)
@@ -70,7 +77,7 @@ def extract_sample_id_from_filename(filename: str) -> str:
     - "Area: " prefix
     - " (F#)" suffix
     - ".raw" extension
-    - _1, _2 suffixes (for duplicates)
+    - _1, _2 suffixes (for duplicates, except expQC)
     
     Args:
         filename: The filename to parse
@@ -78,22 +85,8 @@ def extract_sample_id_from_filename(filename: str) -> str:
     Returns:
         Clean sample ID
     """
-    # Remove "Area: " prefix
-    clean_name = filename.split('Area: ')[-1]
-    
-    # Remove " (F#)" suffix
-    clean_name = clean_name.split(' (')[0].strip()
-    
-    # Remove .raw extension
-    clean_name = clean_name.split('.raw')[0].strip()
-    
-    # Remove _1 or _2 suffix (for duplicates)
-    if clean_name.endswith('_1'):
-        clean_name = clean_name[:-2]
-    elif clean_name.endswith('_2'):
-        clean_name = clean_name[:-2]
-    
-    return clean_name
+    # Use the same cleaning logic as the original pipeline
+    return clean_sample_name(filename)
 
 
 def extract_sample_type(sample_id: str) -> str:
@@ -101,14 +94,14 @@ def extract_sample_type(sample_id: str) -> str:
     Extract sample type from sample ID.
     
     Args:
-        sample_id: Clean sample ID (e.g., "posneg_MZ25_36_expQC_1")
+        sample_id: Clean sample ID
         
     Returns:
         Sample type: "QC", "blanco", "blauw", "Mix", or "Sample"
     """
     sample_id_lower = sample_id.lower()
     
-    if any(kw in sample_id_lower for kw in ['expqc', 'qc3', 'qc4']):
+    if any(kw in sample_id_lower for kw in ['expqc']):
         return "QC"
     elif 'blanco' in sample_id_lower:
         return "blanco"
@@ -123,7 +116,8 @@ def extract_sample_type(sample_id: str) -> str:
 def load_combined_data(
     input_file: str,
     intensity_threshold: float = 10000.0,
-) -> Tuple[pd.DataFrame, Dict[str, List[str]], Dict[str, Dict]]:
+    metadata_file: Optional[str] = None,
+) -> Tuple[pd.DataFrame, Dict[str, List[str]], Dict[str, Dict], Optional[Dict[str, int]]]:
     """
     Load combined batch data from a single CSV file.
     
@@ -133,16 +127,19 @@ def load_combined_data(
     3. Extracts batch names from filenames
     4. Groups samples by batch
     5. Filters out low-intensity features
+    6. Optionally loads injection order from metadata file
     
     Args:
         input_file: Path to the combined CSV file
         intensity_threshold: Minimum intensity threshold for filtering (default: 10000)
+        metadata_file: Optional path to metadata CSV file for injection order
         
     Returns:
         Tuple of:
         - df: DataFrame with features as rows, samples as columns
         - batch_groups: Dictionary mapping batch names to lists of sample column names
         - sample_info: Dictionary with metadata for each sample column
+        - injection_order: Dictionary mapping column names to injection order (if metadata provided)
     """
     logger.info(f"Loading data from {input_file}")
     
@@ -166,12 +163,39 @@ def load_combined_data(
         df[col] = pd.to_numeric(df[col], errors='coerce')
     
     # Filter out low-intensity features
-    # A feature is kept if at least one sample has intensity > threshold
     initial_features = len(df)
     intensity_mask = (df[area_cols] > intensity_threshold).any(axis=1)
     df = df[intensity_mask]
     filtered_features = initial_features - len(df)
     logger.info(f"Filtered out {filtered_features} features with all intensities <= {intensity_threshold}")
+    
+    # Load injection order from metadata if provided
+    injection_order: Optional[Dict[str, int]] = None
+    metadata_sample_info: Dict[str, Dict] = {}
+    
+    if metadata_file:
+        logger.info(f"Loading injection order from {metadata_file}")
+        try:
+            # Get injection order mapping from metadata
+            inj_order = get_injection_order_from_metadata(metadata_file)
+            inj_mapping = {sample: idx for idx, sample in enumerate(inj_order)}
+            
+            # Get sample info from metadata
+            metadata_sample_info = get_sample_info_from_metadata(metadata_file)
+            
+            # Build injection order for columns
+            injection_order = {}
+            for col in area_cols:
+                sample_id = extract_sample_id_from_filename(col)
+                if sample_id in inj_mapping:
+                    injection_order[col] = inj_mapping[sample_id]
+                else:
+                    logger.warning(f"Could not find injection order for: {sample_id}")
+                    injection_order[col] = -1
+            
+            logger.info(f"Loaded injection order for {len(injection_order)} columns")
+        except Exception as e:
+            logger.warning(f"Could not load injection order from metadata: {e}")
     
     # Group samples by batch
     batch_groups: Dict[str, List[str]] = {}
@@ -180,9 +204,14 @@ def load_combined_data(
     for col in area_cols:
         # Extract batch and sample info
         filename = col.split('Area: ')[1].split(' (')[0].strip()
-        batch = extract_batch_from_filename(col)
+        batch = extract_batch_from_filename(filename)
         sample_id = extract_sample_id_from_filename(col)
-        sample_type = extract_sample_type(sample_id)
+        
+        # Use sample type from metadata if available, otherwise infer
+        if metadata_file and sample_id in metadata_sample_info:
+            sample_type = metadata_sample_info[sample_id]['sample_type']
+        else:
+            sample_type = extract_sample_type(sample_id)
         
         if batch is None:
             logger.warning(f"Could not extract batch from column: {col}")
@@ -198,13 +227,14 @@ def load_combined_data(
             'sample_id': sample_id,
             'sample_type': sample_type,
             'original_col': col,
+            'injection_order': injection_order.get(col, -1) if injection_order else -1,
         }
     
     logger.info(f"Identified {len(batch_groups)} batches: {sorted(batch_groups.keys())}")
     for batch, cols in sorted(batch_groups.items()):
         logger.info(f"  {batch}: {len(cols)} samples")
     
-    return df, batch_groups, sample_info
+    return df, batch_groups, sample_info, injection_order
 
 
 def average_duplicates(
@@ -230,8 +260,11 @@ def average_duplicates(
         # Extract base name without _1/_2
         base = col.split('Area: ')[1].split('.raw')[0].split(' (')[0].strip()
         
-        # Remove _1 or _2 suffix
-        if base.endswith('_1'):
+        # Remove _1 or _2 suffix (except for expQC)
+        if 'expqc' in base.lower():
+            # Keep _1/_2 for expQC
+            pass
+        elif base.endswith('_1'):
             base = base[:-2]
         elif base.endswith('_2'):
             base = base[:-2]

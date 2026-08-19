@@ -9,22 +9,24 @@ where:
 - Batch name is embedded in the filename (e.g., posneg_MZ25_36_...)
 - Duplicates have _1.raw and _2.raw suffixes
 - Features are already aligned by Compound Discoverer
+- Injection order comes from metadata file creation dates
 
 Workflow:
 1. Load combined CSV
-2. Extract batch information from column names
-3. For each batch:
-   a. Average duplicate samples (_1 + _2)
+2. Load metadata file for injection order (based on creation dates)
+3. Extract batch information from column names
+4. For each batch:
+   a. Average duplicate samples (_1 + _2, except expQC)
    b. Apply median normalization
-   c. Apply LOESS drift correction
-4. Merge all batches
-5. Run ComBat batch correction
-6. Generate QC reports (optional)
+   c. Apply LOESS drift correction (using injection order from metadata)
+5. Merge all batches
+6. Run ComBat batch correction
+7. Generate QC reports (optional)
 
 Usage:
-    python combined_batch_pipeline/main.py --input data/combined_all_batches.csv
-    python combined_batch_pipeline/main.py --input data/combined.csv --output output/my_run
-    python combined_batch_pipeline/main.py --input data/combined.csv --no-qc --no-plots
+    python combined_batch_pipeline/main.py --input data/combined_all_batches.csv --metadata metadata.csv
+    python combined_batch_pipeline/main.py --input data/combined.csv --metadata metadata.csv --output output/my_run
+    python combined_batch_pipeline/main.py --input data/combined.csv --metadata metadata.csv --no-qc --no-plots
 """
 
 import argparse
@@ -61,6 +63,7 @@ logger = logging.getLogger(__name__)
 def run_full_pipeline(
     input_file: str,
     output_dir: str = "output/combined_batch_pipeline",
+    metadata_file: Optional[str] = None,
     config_path: Optional[str] = None,
     qc_pattern: str = "expQC",
     fallback_qc_pattern: str = "QC3",
@@ -76,6 +79,7 @@ def run_full_pipeline(
     Args:
         input_file: Path to combined CSV file
         output_dir: Output directory
+        metadata_file: Path to metadata CSV file (for injection order)
         config_path: Path to config file (optional)
         qc_pattern: Pattern to identify QC samples
         fallback_qc_pattern: Fallback QC pattern
@@ -101,6 +105,8 @@ def run_full_pipeline(
     logger.info(f"COMBINED BATCH PIPELINE")
     logger.info(f"{'='*70}")
     logger.info(f"Input file: {input_file}")
+    if metadata_file:
+        logger.info(f"Metadata file: {metadata_file}")
     logger.info(f"Output directory: {output_dir}")
     
     # Step 1: Load data
@@ -108,9 +114,10 @@ def run_full_pipeline(
     logger.info(f"STEP 1: Loading data")
     logger.info(f"{'='*70}")
     
-    df, batch_groups, sample_info = load_combined_data(
+    df, batch_groups, sample_info, injection_order = load_combined_data(
         input_file=input_file,
         intensity_threshold=config.get("intensity_threshold", 10000),
+        metadata_file=metadata_file,
     )
     
     all_batches = sorted(batch_groups.keys())
@@ -133,11 +140,60 @@ def run_full_pipeline(
         # Update sample names after averaging
         averaged_samples = list(batch_df.columns)
         
+        # Update sample_info for averaged columns
+        updated_sample_info = {}
+        for new_col in averaged_samples:
+            if new_col in col_mapping:
+                original_cols = col_mapping[new_col]
+                if isinstance(original_cols, str):
+                    original_cols = [original_cols]
+                # Use info from first original column
+                first_orig = original_cols[0]
+                if first_orig in sample_info:
+                    updated_sample_info[new_col] = sample_info[first_orig].copy()
+                    updated_sample_info[new_col]['original_col'] = new_col
+                else:
+                    updated_sample_info[new_col] = {
+                        'sample_id': new_col,
+                        'batch': batch,
+                        'sample_type': 'Sample',
+                        'original_col': new_col,
+                        'injection_order': -1,
+                    }
+            else:
+                updated_sample_info[new_col] = {
+                    'sample_id': new_col,
+                    'batch': batch,
+                    'sample_type': 'Sample',
+                    'original_col': new_col,
+                    'injection_order': -1,
+                }
+        
+        # Update injection order for averaged columns
+        updated_injection_order = {}
+        if injection_order:
+            for new_col in averaged_samples:
+                if new_col in col_mapping:
+                    original_cols = col_mapping[new_col]
+                    if isinstance(original_cols, str):
+                        original_cols = [original_cols]
+                    # Use injection order from first original column
+                    for orig_col in original_cols:
+                        if orig_col in injection_order:
+                            updated_injection_order[new_col] = injection_order[orig_col]
+                            break
+                    else:
+                        updated_injection_order[new_col] = -1
+                else:
+                    updated_injection_order[new_col] = -1
+        
         # Process the batch
         processed_df, batch_metadata = process_batch(
             df=batch_df,
             batch=batch,
             batch_samples=averaged_samples,
+            sample_info=updated_sample_info,
+            injection_order=updated_injection_order if injection_order else None,
             qc_pattern=qc_pattern,
             fallback_qc_pattern=fallback_qc_pattern,
             frac=frac,
@@ -222,6 +278,11 @@ def main():
         help="Path to combined CSV file (default: data/combined_all_batches.csv)",
     )
     parser.add_argument(
+        "--metadata",
+        default=None,
+        help="Path to metadata CSV file for injection order (required for LOESS)",
+    )
+    parser.add_argument(
         "--output",
         default="output/combined_batch_pipeline",
         help="Output directory (default: output/combined_batch_pipeline)",
@@ -271,10 +332,17 @@ def main():
     
     args = parser.parse_args()
     
+    # Validate metadata file is provided
+    if not args.metadata:
+        print("ERROR: --metadata argument is required for injection order")
+        print("Usage: python combined_batch_pipeline/main.py --input data.csv --metadata metadata.csv")
+        sys.exit(1)
+    
     try:
         run_full_pipeline(
             input_file=args.input,
             output_dir=args.output,
+            metadata_file=args.metadata,
             config_path=args.config,
             qc_pattern=args.qc_pattern,
             fallback_qc_pattern=args.fallback_qc,
