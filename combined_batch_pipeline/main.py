@@ -33,8 +33,9 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 import pandas as pd
+import re
 
 from combined_batch_pipeline.config.config import Config
 from combined_batch_pipeline.pipeline.data_loader import (
@@ -50,6 +51,7 @@ from combined_batch_pipeline.pipeline.batch_processing import (
 )
 from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_merged_data
 from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis
+from combined_batch_pipeline.pipeline.injection_order import clean_sample_name
 
 # Configure logging
 logging.basicConfig(
@@ -58,6 +60,18 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
+
+
+def extract_base_name_from_column(col: str) -> str:
+    """Extract base name from column without _1/_2 suffix (except expQC)."""
+    clean_name = col.split('Area: ')[1].split('.raw')[0].split(' (')[0].strip()
+    if 'expqc' in clean_name.lower():
+        return clean_name
+    elif clean_name.endswith('_1'):
+        return clean_name[:-2]
+    elif clean_name.endswith('_2'):
+        return clean_name[:-2]
+    return clean_name
 
 
 def run_full_pipeline(
@@ -140,15 +154,27 @@ def run_full_pipeline(
         # Update sample names after averaging
         averaged_samples = list(batch_df.columns)
         
-        # Update sample_info for averaged columns
-        updated_sample_info = {}
+        # Build updated sample_info and injection_order for averaged columns
+        updated_sample_info: Dict[str, Dict] = {}
+        updated_injection_order: Dict[str, int] = {}
+        
         for new_col in averaged_samples:
             if new_col in col_mapping:
                 original_cols = col_mapping[new_col]
+                # col_mapping can be a string (single col) or "average of [col1, col2]"
                 if isinstance(original_cols, str):
-                    original_cols = [original_cols]
+                    if original_cols.startswith('average of '):
+                        # Parse the list from the string
+                        orig_list_str = original_cols.replace('average of ', '')
+                        orig_list_str = orig_list_str.strip('[]')
+                        original_cols_list = [c.strip().strip("'\"") for c in orig_list_str.split(',')]
+                    else:
+                        original_cols_list = [original_cols]
+                else:
+                    original_cols_list = [original_cols]
+                
                 # Use info from first original column
-                first_orig = original_cols[0]
+                first_orig = original_cols_list[0]
                 if first_orig in sample_info:
                     updated_sample_info[new_col] = sample_info[first_orig].copy()
                     updated_sample_info[new_col]['original_col'] = new_col
@@ -160,6 +186,12 @@ def run_full_pipeline(
                         'original_col': new_col,
                         'injection_order': -1,
                     }
+                
+                # Use injection order from first original column
+                if first_orig in injection_order:
+                    updated_injection_order[new_col] = injection_order[first_orig]
+                else:
+                    updated_injection_order[new_col] = -1
             else:
                 updated_sample_info[new_col] = {
                     'sample_id': new_col,
@@ -168,24 +200,7 @@ def run_full_pipeline(
                     'original_col': new_col,
                     'injection_order': -1,
                 }
-        
-        # Update injection order for averaged columns
-        updated_injection_order = {}
-        if injection_order:
-            for new_col in averaged_samples:
-                if new_col in col_mapping:
-                    original_cols = col_mapping[new_col]
-                    if isinstance(original_cols, str):
-                        original_cols = [original_cols]
-                    # Use injection order from first original column
-                    for orig_col in original_cols:
-                        if orig_col in injection_order:
-                            updated_injection_order[new_col] = injection_order[orig_col]
-                            break
-                    else:
-                        updated_injection_order[new_col] = -1
-                else:
-                    updated_injection_order[new_col] = -1
+                updated_injection_order[new_col] = -1
         
         # Process the batch
         processed_df, batch_metadata = process_batch(
