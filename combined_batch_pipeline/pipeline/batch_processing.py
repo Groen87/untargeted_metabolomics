@@ -19,18 +19,13 @@ from .data_loader import extract_batch_from_filename, extract_sample_id_from_col
 
 logger = logging.getLogger(__name__)
 
-# Constants for QC-based feature filtering
-QC_RSD_THRESHOLD = 20.0  # %
-QC_INTENSITY_QUANTILE = 0.25  # 25th percentile
-
-
 def filter_features_by_qc_quality(
     df: pd.DataFrame,
     sample_cols: List[str],
     qc_pattern: str = "expQC",
     fallback_qc_pattern: Optional[str] = "QC3",
-    rsd_threshold: float = QC_RSD_THRESHOLD,
-    intensity_quantile: float = QC_INTENSITY_QUANTILE,
+    rsd_threshold: float = 20.0,
+    intensity_quantile: float = 0.25,
 ) -> pd.DataFrame:
     """
     Filter features based on QC sample quality:
@@ -267,6 +262,18 @@ def loess_drift_correction(
     
     logger.info(f"Using {len(high_intensity_features)} high-intensity features for drift estimation")
     
+    # Pre-compute QC positions (constant for all features)
+    qc_positions = [position_idx[col] for col in qc_samples]
+    qc_positions_array = np.array(qc_positions)
+    
+    # Pre-compute nearest QC sample for each biological sample (constant for all features)
+    bio_to_qc = {}
+    for bio_col in bio_samples:
+        bio_pos = position_idx[bio_col]
+        nearest_qc_pos = min(qc_positions, key=lambda x: abs(x - bio_pos))
+        nearest_qc_idx = qc_positions.index(nearest_qc_pos)
+        bio_to_qc[bio_col] = qc_samples[nearest_qc_idx]
+    
     # Fit LOESS for each high-intensity feature
     for feature in high_intensity_features:
         # Handle case where feature might have duplicate index entries
@@ -277,15 +284,12 @@ def loess_drift_correction(
         else:
             feature_data = feature_values.values
         
-        # Get QC sample positions in sorted_samples
-        qc_positions = [position_idx[col] for col in qc_samples]
-        qc_intensities = [feature_data[pos] for pos in qc_positions]
-        
-        logger.debug(f"Feature {feature}: feature_data shape = {feature_data.shape}, qc_positions = {qc_positions[:5]}...")
+        # Get QC intensities using pre-computed positions
+        qc_intensities = feature_data[qc_positions_array]
         
         # Fit LOESS
         try:
-            smoothed = lowess(qc_intensities, qc_positions, frac=frac)
+            smoothed = lowess(qc_intensities, qc_positions_array, frac=frac)
             
             # Calculate correction factors
             qc_mean = np.mean(qc_intensities)
@@ -294,18 +298,14 @@ def loess_drift_correction(
             # Avoid division by zero
             smoothed_safe = np.where(smoothed_values > 0, smoothed_values, qc_mean)
             
-            # Correction factor: target / smoothed
+            # Apply corrections to QC samples
             for i, col in enumerate(qc_samples):
                 correction = qc_mean / smoothed_safe[i]
                 df_corrected.loc[feature, col] *= correction
             
-            # For biological samples, interpolate from nearest QC
+            # For biological samples, use pre-computed nearest QC
             for bio_col in bio_samples:
-                bio_pos = position_idx[bio_col]
-                nearest_qc_pos = min(qc_positions, key=lambda x: abs(x - bio_pos))
-                nearest_qc_idx = qc_positions.index(nearest_qc_pos)
-                nearest_qc_col = qc_samples[nearest_qc_idx]
-                df_corrected.loc[feature, bio_col] = df_corrected.loc[feature, nearest_qc_col]
+                df_corrected.loc[feature, bio_col] = df_corrected.loc[feature, bio_to_qc[bio_col]]
                 
         except Exception as e:
             logger.debug(f"Failed to fit LOESS for feature {feature}: {e}")
@@ -313,10 +313,11 @@ def loess_drift_correction(
     
     # For features not in high_intensity_features, use median correction
     if len(high_intensity_features) < len(df):
-        median_correction = df_corrected[sorted_samples].median(axis=0) / df[sorted_samples].median(axis=0)
-        for feature in df.index:
-            if feature not in high_intensity_features:
-                df_corrected.loc[feature] = df.loc[feature] * median_correction
+        # Vectorized median correction for all remaining features
+        remaining_features = [f for f in df.index.unique() if f not in high_intensity_features]
+        if remaining_features:
+            median_correction = df_corrected[sorted_samples].median(axis=0) / df[sorted_samples].median(axis=0)
+            df_corrected.loc[remaining_features] = df.loc[remaining_features] * median_correction.values
     
     return df_corrected
 

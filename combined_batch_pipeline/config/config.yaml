@@ -13,6 +13,10 @@ frac: 0.5
 rt_threshold: 0.02
 ref_batch: null
 
+# QC-based feature filtering thresholds
+qc_rsd_threshold: 20.0  # % RSD in QC samples
+qc_intensity_quantile: 0.25  # 25th percentile for QC intensity
+
 # Logging
 log_level: "INFO"
 log_file: "logs/combined_batch_pipeline.log"
