@@ -145,7 +145,7 @@ def run_combat_on_merged_data(
         generate_combat_plots(
             merged_data,
             corrected_data,
-            numeric_batch_vector,
+            batch_vector,
             batch_to_num,
             output_dir,
         )
@@ -168,10 +168,21 @@ def generate_combat_plots(
     palette = sns.color_palette('viridis', n_colors=num_batches)
     batch_colors = {b: palette[i] for i, b in enumerate(unique_batches)}
     
+    # Convert batch_vector elements to standard Python types for dictionary lookup
+    # Handle both numpy string and numpy int types
+    batch_numbers = []
+    for b in batch_vector:
+        # Convert numpy types to native Python types
+        if hasattr(b, 'item'):
+            b_native = b.item()
+        else:
+            b_native = b
+        batch_numbers.append(batch_to_num[b_native])
+    
     # Boxplot before correction
     plt.figure(figsize=(12, 6))
     sns.boxplot(
-        x=[batch_to_num[b] for b in batch_vector],
+        x=batch_numbers,
         y=data_before.T.mean(axis=1),
         palette=palette,
         showfliers=False
@@ -186,7 +197,7 @@ def generate_combat_plots(
     # Boxplot after correction
     plt.figure(figsize=(12, 6))
     sns.boxplot(
-        x=[batch_to_num[b] for b in batch_vector],
+        x=batch_numbers,
         y=data_after.T.mean(axis=1),
         palette=palette,
         showfliers=False
