@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""
+Main entry point for the combined batch metabolomics pipeline.
+
+This pipeline processes a single CSV file containing all batches combined,
+where:
+- All batches are in one file
+- Columns are named: "Area: {filename} ({F#})"
+- Batch name is embedded in the filename (e.g., posneg_MZ25_36_...)
+- Duplicates have _1.raw and _2.raw suffixes
+- Features are already aligned by Compound Discoverer
+
+Workflow:
+1. Load combined CSV
+2. Extract batch information from column names
+3. For each batch:
+   a. Average duplicate samples (_1 + _2)
+   b. Apply median normalization
+   c. Apply LOESS drift correction
+4. Merge all batches
+5. Run ComBat batch correction
+6. Generate QC reports (optional)
+
+Usage:
+    python combined_batch_pipeline/main.py --input data/combined_all_batches.csv
+    python combined_batch_pipeline/main.py --input data/combined.csv --output output/my_run
+    python combined_batch_pipeline/main.py --input data/combined.csv --no-qc --no-plots
+"""
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+from typing import Dict, Tuple, Optional
+import pandas as pd
+
+from combined_batch_pipeline.config.config import Config
+from combined_batch_pipeline.pipeline.data_loader import (
+    load_combined_data,
+    extract_batch_from_filename,
+    average_duplicates,
+    get_all_batches,
+    get_batch_samples,
+)
+from combined_batch_pipeline.pipeline.batch_processing import (
+    process_batch,
+    merge_batch_results,
+)
+from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_merged_data
+from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()],
+)
+logger = logging.getLogger(__name__)
+
+
+def run_full_pipeline(
+    input_file: str,
+    output_dir: str = "output/combined_batch_pipeline",
+    config_path: Optional[str] = None,
+    qc_pattern: str = "expQC",
+    fallback_qc_pattern: str = "QC3",
+    frac: float = 0.5,
+    ref_batch: Optional[int] = None,
+    run_qc: bool = True,
+    save_plots: bool = True,
+    show_plots: bool = False,
+) -> Dict:
+    """
+    Run the complete combined batch pipeline.
+    
+    Args:
+        input_file: Path to combined CSV file
+        output_dir: Output directory
+        config_path: Path to config file (optional)
+        qc_pattern: Pattern to identify QC samples
+        fallback_qc_pattern: Fallback QC pattern
+        frac: LOESS fraction parameter
+        ref_batch: Reference batch for ComBat
+        run_qc: Whether to run QC analysis
+        save_plots: Whether to save plots
+        show_plots: Whether to show plots
+        
+    Returns:
+        Dictionary with results and metrics
+    """
+    # Load configuration
+    if config_path:
+        config = Config(config_path)
+    else:
+        config = Config()
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"\n{'='*70}")
+    logger.info(f"COMBINED BATCH PIPELINE")
+    logger.info(f"{'='*70}")
+    logger.info(f"Input file: {input_file}")
+    logger.info(f"Output directory: {output_dir}")
+    
+    # Step 1: Load data
+    logger.info(f"\n{'='*70}")
+    logger.info(f"STEP 1: Loading data")
+    logger.info(f"{'='*70}")
+    
+    df, batch_groups, sample_info = load_combined_data(
+        input_file=input_file,
+        intensity_threshold=config.get("intensity_threshold", 10000),
+    )
+    
+    all_batches = sorted(batch_groups.keys())
+    logger.info(f"Identified {len(all_batches)} batches: {all_batches}")
+    
+    # Step 2: Process each batch
+    logger.info(f"\n{'='*70}")
+    logger.info(f"STEP 2: Processing batches")
+    logger.info(f"{'='*70}")
+    
+    batch_results: Dict[str, Tuple[pd.DataFrame, pd.DataFrame]] = {}
+    
+    for batch in all_batches:
+        batch_samples = batch_groups[batch]
+        
+        # First, average duplicates within this batch
+        batch_df = df[batch_samples].copy()
+        batch_df, col_mapping = average_duplicates(batch_df, batch_samples)
+        
+        # Update sample names after averaging
+        averaged_samples = list(batch_df.columns)
+        
+        # Process the batch
+        processed_df, batch_metadata = process_batch(
+            df=batch_df,
+            batch=batch,
+            batch_samples=averaged_samples,
+            qc_pattern=qc_pattern,
+            fallback_qc_pattern=fallback_qc_pattern,
+            frac=frac,
+            output_dir=output_dir / "batch_outputs" / batch,
+        )
+        
+        batch_results[batch] = (processed_df, batch_metadata)
+    
+    # Step 3: Merge all batches
+    logger.info(f"\n{'='*70}")
+    logger.info(f"STEP 3: Merging batches")
+    logger.info(f"{'='*70}")
+    
+    merged_data, merged_metadata = merge_batch_results(
+        batch_results=batch_results,
+        output_dir=output_dir / "merged",
+    )
+    
+    logger.info(f"Merged data shape: {merged_data.shape}")
+    logger.info(f"Merged metadata shape: {merged_metadata.shape}")
+    
+    # Step 4: ComBat correction
+    logger.info(f"\n{'='*70}")
+    logger.info(f"STEP 4: ComBat batch correction")
+    logger.info(f"{'='*70}")
+    
+    corrected_data, combat_metrics = run_combat_on_merged_data(
+        merged_data=merged_data,
+        merged_metadata=merged_metadata,
+        output_dir=output_dir / "combat",
+        ref_batch=ref_batch,
+        save_plots=save_plots,
+        show_plots=show_plots,
+    )
+    
+    # Step 5: QC analysis
+    if run_qc:
+        logger.info(f"\n{'='*70}")
+        logger.info(f"STEP 5: QC analysis")
+        logger.info(f"{'='*70}")
+        
+        try:
+            run_qc_analysis(
+                clinical_data=merged_metadata,
+                metabolites_after=corrected_data,
+                metabolites_before=merged_data,
+                batch_column="batch",
+                output_path=str(output_dir / "qc_reports"),
+            )
+        except Exception as e:
+            logger.error(f"QC analysis failed: {e}")
+    
+    # Save final results
+    final_output = output_dir / "final"
+    final_output.mkdir(parents=True, exist_ok=True)
+    corrected_data.to_csv(final_output / "final_corrected_data.csv")
+    merged_metadata.to_csv(final_output / "final_metadata.csv", index=False)
+    
+    logger.info(f"\n{'='*70}")
+    logger.info(f"PIPELINE COMPLETED")
+    logger.info(f"{'='*70}")
+    logger.info(f"Final corrected data: {final_output / 'final_corrected_data.csv'}")
+    logger.info(f"Final metadata: {final_output / 'final_metadata.csv'}")
+    
+    return {
+        'corrected_data': corrected_data,
+        'metadata': merged_metadata,
+        'combat_metrics': combat_metrics,
+        'batches': all_batches,
+    }
+
+
+def main():
+    """Command-line interface for combined batch pipeline."""
+    parser = argparse.ArgumentParser(
+        description="Process combined batch metabolomics data with ComBat correction"
+    )
+    
+    parser.add_argument(
+        "--input",
+        default="data/combined_all_batches.csv",
+        help="Path to combined CSV file (default: data/combined_all_batches.csv)",
+    )
+    parser.add_argument(
+        "--output",
+        default="output/combined_batch_pipeline",
+        help="Output directory (default: output/combined_batch_pipeline)",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to config file (default: combined_batch_pipeline/config/config.yaml)",
+    )
+    parser.add_argument(
+        "--qc-pattern",
+        default="expQC",
+        help="Pattern to identify QC samples (default: expQC)",
+    )
+    parser.add_argument(
+        "--fallback-qc",
+        default="QC3",
+        help="Fallback QC pattern (default: QC3)",
+    )
+    parser.add_argument(
+        "--frac",
+        type=float,
+        default=0.5,
+        help="LOESS fraction parameter (default: 0.5)",
+    )
+    parser.add_argument(
+        "--ref-batch",
+        type=int,
+        default=None,
+        help="Reference batch for ComBat (default: None = automatic)",
+    )
+    parser.add_argument(
+        "--no-qc",
+        action="store_true",
+        help="Skip QC analysis",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip saving plots",
+    )
+    parser.add_argument(
+        "--show-plots",
+        action="store_true",
+        help="Show plots interactively",
+    )
+    
+    args = parser.parse_args()
+    
+    try:
+        run_full_pipeline(
+            input_file=args.input,
+            output_dir=args.output,
+            config_path=args.config,
+            qc_pattern=args.qc_pattern,
+            fallback_qc_pattern=args.fallback_qc,
+            frac=args.frac,
+            ref_batch=args.ref_batch,
+            run_qc=not args.no_qc,
+            save_plots=not args.no_plots,
+            show_plots=args.show_plots,
+        )
+        
+        logger.info("\nCombined batch pipeline completed successfully!")
+        
+    except Exception as e:
+        logger.error(f"Pipeline failed: {e}", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

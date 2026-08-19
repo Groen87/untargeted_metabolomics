@@ -1,0 +1,23 @@
+# Combined Batch Pipeline Configuration
+
+# Input/Output
+input_file: "data/combined_all_batches.csv"
+output_dir: "output/combined_batch_pipeline"
+
+# Processing parameters
+intensity_threshold: 10000
+qc_pattern: "expQC"
+fallback_qc_pattern: "QC3"
+qc_intensity_threshold: 0.1
+frac: 0.5
+rt_threshold: 0.02
+ref_batch: null
+
+# Logging
+log_level: "INFO"
+log_file: "logs/combined_batch_pipeline.log"
+
+# Options
+run_qc: true
+save_plots: true
+show_plots: false
