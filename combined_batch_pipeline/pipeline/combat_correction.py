@@ -147,6 +147,7 @@ def run_combat_on_merged_data(
             corrected_data,
             batch_vector,
             batch_to_num,
+            numeric_batch_vector,
             output_dir,
         )
     
@@ -158,6 +159,7 @@ def generate_combat_plots(
     data_after: pd.DataFrame,
     batch_vector: np.ndarray,
     batch_to_num: Dict,
+    numeric_batch_vector: np.ndarray,
     output_dir: Path,
 ) -> None:
     """Generate diagnostic plots for ComBat correction including UMAP, PCA, and Boxplots."""
@@ -257,11 +259,13 @@ def generate_combat_plots(
                     ent = entropy(probs)
                     entropies.append(ent)
                 return float(np.mean(entropies))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Entropy calculation failed: {e}")
                 return float('nan')
         
         # Generate UMAP plots for before and after
-        for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
+        for label, df, batch_vec in [("Before ComBat", data_before, numeric_batch_vector), 
+                                       ("After ComBat", data_after, numeric_batch_vector)]:
             # Handle NaN values
             df_filled = df.copy()
             if df_filled.isna().any().any():
@@ -269,46 +273,51 @@ def generate_combat_plots(
                 small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
                 df_filled = df_filled.fillna(small_value)
             
-            # Generate UMAP
-            emb = umap.UMAP(random_state=42, n_jobs=1).fit_transform(df_filled.T)
+            # Generate UMAP - use more neighbors for better global structure
+            emb = umap.UMAP(random_state=42, n_jobs=1, n_neighbors=30, min_dist=0.1).fit_transform(df_filled.T)
             
-            # Create color mapping for batches
-            unique_batches_all = sorted(set(batch_vector_native))
-            palette_all = sns.color_palette('viridis', n_colors=len(unique_batches_all))
-            batch_to_color = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
+            # Create figure
+            plt.figure(figsize=(14, 12))
             
-            # Get batch labels for each sample
-            sample_batches = [batch_to_num.get(b, 0) for b in batch_vector_native]
-            
-            # UMAP plot
-            plt.figure(figsize=(12, 10))
-            for i, batch_label in enumerate(unique_batches_all):
-                batch_mask = batch_vector_native == batch_label
+            # Plot each batch with distinct color
+            for i, batch_label in enumerate(unique_batches):
+                batch_mask = batch_vec == (i + 1)  # numeric_batch_vector uses 1-indexed
                 if np.any(batch_mask):
                     plt.scatter(
                         emb[batch_mask, 0],
                         emb[batch_mask, 1],
-                        c=[batch_to_color[batch_label]],
-                        alpha=0.6,
-                        s=40,
+                        c=[palette[i]],
+                        alpha=0.7,
+                        s=30,
                         label=f'Batch {batch_label}',
-                        edgecolors='w',
-                        linewidth=0.5
+                        edgecolors='black',
+                        linewidth=0.3
                     )
             
-            plt.title(f"{label} (UMAP)")
+            plt.title(f"{label} (UMAP) - n_neighbors=30, min_dist=0.1")
             plt.xlabel("UMAP 1")
             plt.ylabel("UMAP 2")
-            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.grid(True, alpha=0.3)
+            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+            plt.grid(True, alpha=0.2)
+            plt.tight_layout()
             plt.savefig(output_dir / f"{label.lower().replace(' ', '_')}_umap.png", 
                        dpi=300, bbox_inches='tight')
             plt.close()
             
-            # Calculate and log metrics
-            batch_asw = calculate_batch_asw(emb, sample_batches)
-            batch_entropy = calculate_batch_mixing_entropy(emb, sample_batches, n_neighbors=10)
+            # Calculate and log metrics with numeric batch labels
+            batch_asw = calculate_batch_asw(emb, batch_vec)
+            batch_entropy = calculate_batch_mixing_entropy(emb, batch_vec, n_neighbors=10)
             logger.info(f"{label} UMAP - Batch ASW: {batch_asw:.4f}, Mixing Entropy: {batch_entropy:.4f}")
+            
+            # Print interpretation
+            if batch_asw > 0.1:
+                logger.info(f"  -> Samples show batch separation (ASW={batch_asw:.4f})")
+            else:
+                logger.info(f"  -> Batch effect removed (ASW={batch_asw:.4f})")
+            
+            if not np.isnan(batch_entropy):
+                max_entropy = np.log(len(unique_batches))
+                logger.info(f"  -> Mixing entropy: {batch_entropy:.4f} / {max_entropy:.4f} (higher = better mixing)")
         
     except ImportError as e:
         logger.warning(f"UMAP not available: {e}. Skipping UMAP plots.")
@@ -319,9 +328,11 @@ def generate_combat_plots(
     
     try:
         from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
         
         # Generate PCA plots for before and after
-        for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
+        for label, df, batch_vec in [("Before ComBat", data_before, numeric_batch_vector), 
+                                       ("After ComBat", data_after, numeric_batch_vector)]:
             # Handle NaN values
             df_filled = df.copy()
             if df_filled.isna().any().any():
@@ -330,7 +341,6 @@ def generate_combat_plots(
                 df_filled = df_filled.fillna(small_value)
             
             # Standardize data
-            from sklearn.preprocessing import StandardScaler
             scaler = StandardScaler()
             df_scaled = scaler.fit_transform(df_filled.T)
             
@@ -339,43 +349,48 @@ def generate_combat_plots(
             emb = pca.fit_transform(df_scaled)
             explained_variance = pca.explained_variance_ratio_
             
-            # Create color mapping for batches
-            unique_batches_all = sorted(set(batch_vector_native))
-            palette_all = sns.color_palette('viridis', n_colors=len(unique_batches_all))
-            batch_to_color = {b: palette_all[i] for i, b in enumerate(unique_batches_all)}
+            # Create figure
+            plt.figure(figsize=(14, 12))
             
-            # Get batch labels for each sample
-            sample_batches = [batch_to_num.get(b, 0) for b in batch_vector_native]
-            
-            # PCA plot
-            plt.figure(figsize=(12, 10))
-            for i, batch_label in enumerate(unique_batches_all):
-                batch_mask = batch_vector_native == batch_label
+            # Plot each batch with distinct color
+            for i, batch_label in enumerate(unique_batches):
+                batch_mask = batch_vec == (i + 1)  # numeric_batch_vector uses 1-indexed
                 if np.any(batch_mask):
                     plt.scatter(
                         emb[batch_mask, 0],
                         emb[batch_mask, 1],
-                        c=[batch_to_color[batch_label]],
-                        alpha=0.6,
-                        s=40,
+                        c=[palette[i]],
+                        alpha=0.7,
+                        s=30,
                         label=f'Batch {batch_label}',
-                        edgecolors='w',
-                        linewidth=0.5
+                        edgecolors='black',
+                        linewidth=0.3
                     )
             
             plt.title(f"{label} (PCA)\nExplained Variance: PC1={explained_variance[0]:.2%}, PC2={explained_variance[1]:.2%}")
             plt.xlabel(f"PC1 ({explained_variance[0]:.1%})")
             plt.ylabel(f"PC2 ({explained_variance[1]:.1%})")
-            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.grid(True, alpha=0.3)
+            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+            plt.grid(True, alpha=0.2)
+            plt.tight_layout()
             plt.savefig(output_dir / f"{label.lower().replace(' ', '_')}_pca.png", 
                        dpi=300, bbox_inches='tight')
             plt.close()
             
-            # Calculate and log metrics
-            batch_asw = calculate_batch_asw(emb, sample_batches)
-            batch_entropy = calculate_batch_mixing_entropy(emb, sample_batches, n_neighbors=10)
+            # Calculate and log metrics with numeric batch labels
+            batch_asw = calculate_batch_asw(emb, batch_vec)
+            batch_entropy = calculate_batch_mixing_entropy(emb, batch_vec, n_neighbors=10)
             logger.info(f"{label} PCA - Batch ASW: {batch_asw:.4f}, Mixing Entropy: {batch_entropy:.4f}")
+            
+            # Print interpretation
+            if batch_asw > 0.1:
+                logger.info(f"  -> Samples show batch separation (ASW={batch_asw:.4f})")
+            else:
+                logger.info(f"  -> Batch effect removed (ASW={batch_asw:.4f})")
+            
+            if not np.isnan(batch_entropy):
+                max_entropy = np.log(len(unique_batches))
+                logger.info(f"  -> Mixing entropy: {batch_entropy:.4f} / {max_entropy:.4f} (higher = better mixing)")
         
     except ImportError as e:
         logger.warning(f"sklearn not available: {e}. Skipping PCA plots.")
