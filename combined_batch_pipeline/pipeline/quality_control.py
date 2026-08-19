@@ -79,6 +79,26 @@ def run_qc_analysis(
     
     # Clean sample IDs - convert to string and strip
     clinical_data["sample_id"] = clinical_data["sample_id"].astype(str).str.strip()
+    
+    # Convert batch column to numeric BEFORE setting index
+    # This is critical - we need to do it before any row selection
+    if batch_column not in clinical_data.columns:
+        raise ValueError(f"Batch column '{batch_column}' not found in clinical_data.")
+    
+    # Map string batch names to numeric IDs
+    batch_values = clinical_data[batch_column].unique()
+    try:
+        # Try direct numeric conversion first
+        clinical_data[batch_column] = pd.to_numeric(clinical_data[batch_column], errors="raise")
+    except (ValueError, TypeError):
+        # If that fails, create a mapping from string batch names to numeric IDs
+        batch_to_num = {b: i+1 for i, b in enumerate(sorted(batch_values))}
+        clinical_data[batch_column] = clinical_data[batch_column].map(batch_to_num)
+    
+    # Ensure it's integer type
+    clinical_data[batch_column] = clinical_data[batch_column].astype(int)
+    
+    # Now set the index
     clinical_data = clinical_data.set_index("sample_id")
     
     # Clean metabolite column names
@@ -88,26 +108,7 @@ def run_qc_analysis(
         metabolites_before.columns = metabolites_before.columns.astype(str).str.strip()
     
     # ------------------------------------------------------------------
-    # 2. Batch column cleanup - must be numeric
-    # ------------------------------------------------------------------
-    if batch_column not in clinical_data.columns:
-        raise ValueError(f"Batch column '{batch_column}' not found in clinical_data.")
-    
-    # Convert to numeric - this will fail if batch values are strings
-    # which is what we want to catch
-    try:
-        clinical_data[batch_column] = pd.to_numeric(
-            clinical_data[batch_column],
-            errors="raise"
-        )
-    except (ValueError, TypeError) as e:
-        # If conversion fails, log the unique values for debugging
-        unique_batches = clinical_data[batch_column].unique()
-        logger.error(f"Batch column '{batch_column}' contains non-numeric values: {unique_batches[:10]}")
-        raise ValueError(f"Batch column must be numeric. Found values: {unique_batches[:10]}")
-    
-    # ------------------------------------------------------------------
-    # 3. Align samples by direct intersection
+    # 2. Align samples by direct intersection
     # ------------------------------------------------------------------
     common_samples = metabolites_after.columns.intersection(clinical_data.index)
     
@@ -118,6 +119,7 @@ def run_qc_analysis(
         logger.error(f"No overlapping samples!")
         logger.error(f"Clinical index (first 5): {list(clinical_data.index[:5])}")
         logger.error(f"Metabolite columns (first 5): {list(metabolites_after.columns[:5])}")
+        logger.error(f"Batch values in clinical_data: {clinical_data[batch_column].unique()}")
         raise ValueError("No overlapping samples between clinical and metabolomics data.")
     
     clinical_data = clinical_data.loc[common_samples]
@@ -127,7 +129,7 @@ def run_qc_analysis(
         metabolites_before = metabolites_before.loc[:, common_samples]
     
     # ------------------------------------------------------------------
-    # 4. NaN + Inf cleanup (CRITICAL for PCA in inmoose)
+    # 3. NaN + Inf cleanup (CRITICAL for PCA in inmoose)
     # ------------------------------------------------------------------
     metabolites_after = _safe_impute(metabolites_after)
     
@@ -135,14 +137,14 @@ def run_qc_analysis(
         metabolites_before = _safe_impute(metabolites_before)
     
     # ------------------------------------------------------------------
-    # 5. Diagnostics
+    # 4. Diagnostics
     # ------------------------------------------------------------------
     logger.info(f"Sample count for QC: {clinical_data.shape[0]}")
     logger.info(f"Batch values: {sorted(clinical_data[batch_column].unique())}")
     logger.info(f"Batch dtype: {clinical_data[batch_column].dtype}")
     
     # ------------------------------------------------------------------
-    # 6. Run inmoose QC
+    # 5. Run inmoose QC
     # ------------------------------------------------------------------
     if not INMOOSE_AVAILABLE:
         logger.warning("Skipping QC report generation (inmoose not available).")
