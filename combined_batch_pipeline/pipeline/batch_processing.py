@@ -153,18 +153,18 @@ def loess_drift_correction(
     
     # Sort samples by injection order if available, otherwise use column order
     if injection_order:
-        # Sort all samples by injection order
+        # Sort all samples by injection order (global order from metadata)
         sorted_samples = sorted(sample_cols, key=lambda col: injection_order.get(col, float('inf')))
     else:
         sorted_samples = sample_cols
         logger.warning("No injection order provided, using column order")
     
-    # Create injection order mapping based on sorted order
-    injection_idx = {col: i for i, col in enumerate(sorted_samples)}
+    # Create position mapping (0-based within sorted_samples)
+    position_idx = {col: i for i, col in enumerate(sorted_samples)}
     
     # Filter QC and bio samples to only those in sorted_samples
-    qc_samples = [col for col in qc_samples if col in injection_idx]
-    bio_samples = [col for col in bio_samples if col in injection_idx]
+    qc_samples = [col for col in qc_samples if col in position_idx]
+    bio_samples = [col for col in bio_samples if col in position_idx]
     
     if len(qc_samples) < 2:
         logger.warning(f"After filtering, only {len(qc_samples)} QC samples remain. Skipping drift correction.")
@@ -184,13 +184,13 @@ def loess_drift_correction(
     for feature in high_intensity_features:
         feature_data = df.loc[feature, sorted_samples].values
         
-        # Get QC sample indices and intensities - only for QC samples in sorted_samples
-        qc_indices = [injection_idx[col] for col in qc_samples]
-        qc_intensities = [feature_data[idx] for idx in qc_indices]
+        # Get QC sample positions in sorted_samples
+        qc_positions = [position_idx[col] for col in qc_samples]
+        qc_intensities = [feature_data[pos] for pos in qc_positions]
         
         # Fit LOESS
         try:
-            smoothed = lowess(qc_intensities, qc_indices, frac=frac)
+            smoothed = lowess(qc_intensities, qc_positions, frac=frac)
             
             # Calculate correction factors
             qc_mean = np.mean(qc_intensities)
@@ -206,9 +206,10 @@ def loess_drift_correction(
             
             # For biological samples, interpolate from nearest QC
             for bio_col in bio_samples:
-                bio_idx = injection_idx[bio_col]
-                nearest_qc_idx = min(qc_indices, key=lambda x: abs(x - bio_idx))
-                nearest_qc_col = qc_samples[qc_indices.index(nearest_qc_idx)]
+                bio_pos = position_idx[bio_col]
+                nearest_qc_pos = min(qc_positions, key=lambda x: abs(x - bio_pos))
+                nearest_qc_idx = qc_positions.index(nearest_qc_pos)
+                nearest_qc_col = qc_samples[nearest_qc_idx]
                 df_corrected.loc[feature, bio_col] = df_corrected.loc[feature, nearest_qc_col]
                 
         except Exception as e:
@@ -244,7 +245,7 @@ def process_batch(
         batch: Batch name
         batch_samples: List of sample column names belonging to this batch
         sample_info: Optional dictionary with sample metadata
-        injection_order: Optional dictionary mapping columns to injection order
+        injection_order: Optional dictionary mapping columns to injection order index
         qc_pattern: Pattern to identify QC samples
         fallback_qc_pattern: Fallback QC pattern
         frac: LOESS fraction parameter
