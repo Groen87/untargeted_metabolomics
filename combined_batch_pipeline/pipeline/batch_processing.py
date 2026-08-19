@@ -16,80 +16,9 @@ import logging
 from pathlib import Path
 
 from .data_loader import extract_batch_from_filename, extract_sample_id_from_column, extract_sample_type
+from .feature_filtering import filter_features, FeatureFilter
 
 logger = logging.getLogger(__name__)
-
-def filter_features_by_qc_quality(
-    df: pd.DataFrame,
-    sample_cols: List[str],
-    qc_pattern: str = "expQC",
-    fallback_qc_pattern: Optional[str] = "QC3",
-    rsd_threshold: float = 20.0,
-    intensity_quantile: float = 0.25,
-) -> pd.DataFrame:
-    """
-    Filter features based on QC sample quality:
-    1. Present in all QC samples
-    2. RSD <= threshold in QC samples (SKIPPED - removes too many features)
-    3. Mean intensity >= quantile in QC samples
-    
-    Args:
-        df: DataFrame with features as rows, samples as columns
-        sample_cols: List of sample column names
-        qc_pattern: Pattern to identify QC samples
-        fallback_qc_pattern: Fallback QC pattern
-        rsd_threshold: Maximum RSD percentage in QC samples (default: 20%)
-        intensity_quantile: Minimum quantile for mean QC intensity (default: 0.25)
-        
-    Returns:
-        Filtered DataFrame with only high-quality features
-    """
-    # Identify QC samples
-    qc_samples, _ = identify_qc_samples(sample_cols, None, qc_pattern, fallback_qc_pattern)
-    
-    if not qc_samples:
-        logger.warning("No QC samples found. Skipping QC-based feature filtering.")
-        return df
-    
-    logger.info(f"Filtering features by QC quality using {len(qc_samples)} QC samples")
-    
-    # Get QC subset
-    qc_df = df[qc_samples]
-    
-    # Filter 1: Present in all QC samples (not NaN)
-    initial_features = len(df)
-    mask_all_qc = qc_df.notna().all(axis=1)
-    df = df[mask_all_qc]
-    filtered_1 = initial_features - len(df)
-    logger.info(f"  Filter 1 (present in all QC): removed {filtered_1} features")
-    
-    if len(df) == 0:
-        logger.warning("No features remain after Filter 1. Returning empty DataFrame.")
-        return df
-    
-    # Filter 2: RSD <= threshold in QC samples - SKIPPED as per user request
-    # RSD filtering was removing too many features due to intensity differences between batches
-    filtered_2 = 0
-    logger.info(f"  Filter 2 (RSD <= {rsd_threshold}%): removed {filtered_2} features (SKIPPED)")
-    
-    # Filter 3: Mean QC intensity >= quantile
-    qc_df = df[qc_samples]
-    qc_mean = qc_df.mean(axis=1)
-    intensity_threshold = qc_mean.quantile(intensity_quantile)
-    mask_high_intensity = qc_mean >= intensity_threshold
-    df = df[mask_high_intensity]
-    filtered_3 = len(qc_df) - len(df)
-    logger.info(f"  Filter 3 (QC intensity >= {intensity_quantile} quantile): removed {filtered_3} features")
-    
-    total_filtered = initial_features - len(df)
-    logger.info(f"Total: filtered out {total_filtered}/{initial_features} features ({100*total_filtered/initial_features:.1f}%)")
-    
-    # Ensure unique index (combine duplicates by taking mean)
-    if df.index.has_duplicates:
-        logger.info(f"  Combining {df.index.duplicated().sum()} duplicate feature names by taking mean")
-        df = df.groupby(level=0).mean()
-    
-    return df
 
 
 def identify_qc_samples(
@@ -330,9 +259,10 @@ def process_batch(
     fallback_qc_pattern: Optional[str] = "QC3",
     frac: float = 0.5,
     output_dir: Optional[Path] = None,
+    filter_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Process a single batch: median normalization + LOESS drift correction.
+    Process a single batch: feature filtering + median normalization + LOESS drift correction.
     
     Args:
         df: Full DataFrame with all features and samples
@@ -344,6 +274,7 @@ def process_batch(
         fallback_qc_pattern: Fallback QC pattern
         frac: LOESS fraction parameter
         output_dir: Optional directory to save intermediate files
+        filter_config: Optional configuration dictionary for feature filtering
         
     Returns:
         Tuple of:
@@ -357,13 +288,20 @@ def process_batch(
     # Extract batch data
     batch_df = df[batch_samples].copy()
     
-    # Step 0: Filter features by QC quality (before normalization)
-    logger.info(f"  Applying QC-based feature filtering...")
-    batch_df = filter_features_by_qc_quality(
-        batch_df,
-        batch_samples,
-        qc_pattern=qc_pattern,
-        fallback_qc_pattern=fallback_qc_pattern,
+    # Step 0: Filter features (before normalization)
+    # Build batch_info for filtering (all samples in this batch belong to this batch)
+    batch_info = {col: batch for col in batch_samples}
+    
+    if filter_config is None:
+        filter_config = {}
+    
+    logger.info(f"  Applying feature filtering...")
+    batch_df = filter_features(
+        df=batch_df,
+        sample_cols=batch_samples,
+        batch_info=batch_info,
+        sample_info=sample_info,
+        config=filter_config,
     )
     
     # Step 1: Median normalization

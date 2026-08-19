@@ -50,6 +50,7 @@ from combined_batch_pipeline.pipeline.batch_processing import (
     merge_batch_results,
     identify_qc_samples,
 )
+from combined_batch_pipeline.pipeline.feature_filtering import filter_features
 from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_merged_data
 from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis
 from combined_batch_pipeline.pipeline.injection_order import clean_sample_name
@@ -274,6 +275,7 @@ def run_full_pipeline(
             fallback_qc_pattern=fallback_qc_pattern,
             frac=frac,
             output_dir=output_dir / "batch_outputs" / batch,
+            filter_config=filter_config,
         )
         
         batch_results[batch] = (processed_df, batch_metadata)
