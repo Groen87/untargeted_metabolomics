@@ -91,6 +91,11 @@ def filter_features_by_qc_quality(
     total_filtered = initial_features - len(df)
     logger.info(f"Total: filtered out {total_filtered}/{initial_features} features ({100*total_filtered/initial_features:.1f}%)")
     
+    # Ensure unique index (combine duplicates by taking mean)
+    if df.index.has_duplicates:
+        logger.info(f"  Combining {df.index.duplicated().sum()} duplicate feature names by taking mean")
+        df = df.groupby(level=0).mean()
+    
     return df
 
 
