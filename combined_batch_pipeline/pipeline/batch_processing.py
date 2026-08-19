@@ -162,6 +162,14 @@ def loess_drift_correction(
     # Create injection order mapping based on sorted order
     injection_idx = {col: i for i, col in enumerate(sorted_samples)}
     
+    # Filter QC and bio samples to only those in sorted_samples
+    qc_samples = [col for col in qc_samples if col in injection_idx]
+    bio_samples = [col for col in bio_samples if col in injection_idx]
+    
+    if len(qc_samples) < 2:
+        logger.warning(f"After filtering, only {len(qc_samples)} QC samples remain. Skipping drift correction.")
+        return df.copy()
+    
     # For each feature, fit LOESS to QC samples and apply correction
     df_corrected = df.copy()
     
@@ -176,9 +184,9 @@ def loess_drift_correction(
     for feature in high_intensity_features:
         feature_data = df.loc[feature, sorted_samples].values
         
-        # Get QC sample indices and intensities
+        # Get QC sample indices and intensities - only for QC samples in sorted_samples
         qc_indices = [injection_idx[col] for col in qc_samples]
-        qc_intensities = [feature_data[injection_idx[col]] for col in qc_samples]
+        qc_intensities = [feature_data[idx] for idx in qc_indices]
         
         # Fit LOESS
         try:
@@ -287,7 +295,7 @@ def process_batch(
         for col in batch_samples
     ])
     
-    logger.info(f"  ✓ Batch {batch} processed successfully")
+    logger.info(f"  \u2713 Batch {batch} processed successfully")
     
     return batch_df, batch_metadata
 
