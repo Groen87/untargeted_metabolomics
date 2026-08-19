@@ -364,7 +364,7 @@ def process_batch(
     return batch_df, metadata
 
 
-def merge_batches(
+def merge_batch_results(
     batch_results: Dict[str, Tuple[pd.DataFrame, pd.DataFrame]],
     all_batches: List[str],
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
