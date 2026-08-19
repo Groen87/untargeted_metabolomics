@@ -181,10 +181,15 @@ def run_qc_analysis(
         metabolites_before_aligned = _safe_impute(metabolites_before_aligned)
     
     logger.info(f"Sample count for QC: {clinical_data_aligned.shape[0]}")
-    logger.info(f"Batch values: {sorted(clinical_data_aligned[batch_column].unique())}")
     
-    # Verify we have more than one batch
+    # Debug: Check batch column
     unique_batches = clinical_data_aligned[batch_column].nunique()
+    batch_value_counts = clinical_data_aligned[batch_column].value_counts()
+    logger.info(f"Batch column: '{batch_column}'")
+    logger.info(f"Batch dtype: {clinical_data_aligned[batch_column].dtype}")
+    logger.info(f"Unique batch values: {sorted(clinical_data_aligned[batch_column].unique())}")
+    logger.info(f"Batch value counts: {batch_value_counts.to_dict()}")
+    
     if unique_batches < 2:
         logger.error(f"QC analysis requires at least 2 batches, but found only {unique_batches}")
         raise ValueError(f"QC analysis requires at least 2 batches, but found only {unique_batches}")
@@ -195,12 +200,20 @@ def run_qc_analysis(
         return
     
     try:
+        # Debug: Print data shapes
+        logger.info(f"clinical_data_aligned shape: {clinical_data_aligned.shape}")
+        logger.info(f"metabolites_after_aligned shape: {metabolites_after_aligned.shape}")
+        
         cohort_qc = CohortMetric(
             clinical_df=clinical_data_aligned,
             batch_column=batch_column,
             data_expression_df=metabolites_after_aligned,
             data_expression_df_before=metabolites_before_aligned,
         )
+        
+        # Debug: Check cohort_qc batch info
+        logger.info(f"CohortMetric created successfully")
+        
         cohort_qc.process()
         
         qc_report = QCReport(cohort_qc)
@@ -212,4 +225,6 @@ def run_qc_analysis(
         
     except Exception as e:
         logger.error(f"QC failed: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise
