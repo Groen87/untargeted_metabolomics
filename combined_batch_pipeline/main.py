@@ -137,6 +137,11 @@ def run_full_pipeline(
     all_batches = sorted(batch_groups.keys())
     logger.info(f"Identified {len(all_batches)} batches: {all_batches}")
     
+    # Ensure injection_order is a dict (not None)
+    if injection_order is None:
+        injection_order = {}
+        logger.warning("No injection order loaded from metadata. Using column order.")
+    
     # Step 2: Process each batch
     logger.info(f"\n{'='*70}")
     logger.info(f"STEP 2: Processing batches")
@@ -188,7 +193,7 @@ def run_full_pipeline(
                     }
                 
                 # Use injection order from first original column
-                if first_orig in injection_order:
+                if injection_order and first_orig in injection_order:
                     updated_injection_order[new_col] = injection_order[first_orig]
                 else:
                     updated_injection_order[new_col] = -1
