@@ -183,13 +183,20 @@ def loess_drift_correction(
     # Use high-intensity features for drift estimation
     feature_means = df[sorted_samples].mean(axis=1)
     high_intensity_mask = feature_means > feature_means.quantile(0.9)
-    high_intensity_features = df.index[high_intensity_mask]
+    # Use unique features to avoid duplicate index issues
+    high_intensity_features = df.index[high_intensity_mask].unique()
     
     logger.info(f"Using {len(high_intensity_features)} high-intensity features for drift estimation")
     
     # Fit LOESS for each high-intensity feature
     for feature in high_intensity_features:
-        feature_data = df.loc[feature, sorted_samples].values
+        # Handle case where feature might have duplicate index entries
+        feature_values = df.loc[feature, sorted_samples]
+        if isinstance(feature_values, pd.DataFrame):
+            # If duplicate index, take the mean across duplicate rows
+            feature_data = feature_values.mean(axis=0).values
+        else:
+            feature_data = feature_values.values
         
         # Get QC sample positions in sorted_samples
         qc_positions = [position_idx[col] for col in qc_samples]
