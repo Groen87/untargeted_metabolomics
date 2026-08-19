@@ -15,7 +15,7 @@ import numpy as np
 import logging
 from pathlib import Path
 
-from .data_loader import extract_batch_from_filename, extract_sample_id_from_filename, extract_sample_type
+from .data_loader import extract_batch_from_filename, extract_sample_id_from_column, extract_sample_type
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def identify_qc_samples(
                 continue
         
         # Fallback to pattern matching
-        sample_id = extract_sample_id_from_filename(col)
+        sample_id = extract_sample_id_from_column(col)
         sample_type = extract_sample_type(sample_id)
         
         if qc_pattern in sample_id:
@@ -287,9 +287,9 @@ def process_batch(
     # Create batch metadata
     batch_metadata = pd.DataFrame([
         {
-            'sample_id': sample_info[col]['sample_id'] if sample_info and col in sample_info else extract_sample_id_from_filename(col),
+            'sample_id': sample_info[col]['sample_id'] if sample_info and col in sample_info else extract_sample_id_from_column(col),
             'batch': batch,
-            'sample_type': sample_info[col]['sample_type'] if sample_info and col in sample_info else extract_sample_type(extract_sample_id_from_filename(col)),
+            'sample_type': sample_info[col]['sample_type'] if sample_info and col in sample_info else extract_sample_type(extract_sample_id_from_column(col)),
             'original_col': col,
             'injection_order': sample_info[col]['injection_order'] if sample_info and col in sample_info else -1,
         }
