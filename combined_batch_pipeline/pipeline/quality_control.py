@@ -5,6 +5,8 @@ This module handles:
 1. Running QC analysis on corrected data
 2. Generating QC reports using inmoose (if available)
 3. Calculating QC metrics
+
+Based on metabolomics_pipeline's run_final_qc which works correctly.
 """
 
 from typing import Optional, List
@@ -12,7 +14,7 @@ import pandas as pd
 from pathlib import Path
 import logging
 import numpy as np
-import re
+import traceback
 
 try:
     from inmoose.cohort_qc.cohort_metric import CohortMetric
@@ -38,19 +40,6 @@ def _safe_impute(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _normalize_sample_id(sample_id: str) -> str:
-    """Normalize sample ID by removing common prefixes and suffixes."""
-    # Remove common prefixes
-    for prefix in ['Area: ', 'area: ', 'Area:', 'area:']:
-        if sample_id.startswith(prefix):
-            sample_id = sample_id[len(prefix):]
-    # Remove common suffixes
-    for suffix in ['.raw', '.RAW', '_raw', '_RAW']:
-        if sample_id.endswith(suffix):
-            sample_id = sample_id[:-len(suffix)]
-    return sample_id.strip()
-
-
 def run_qc_analysis(
     clinical_data: pd.DataFrame,
     metabolites_after: pd.DataFrame,
@@ -62,7 +51,7 @@ def run_qc_analysis(
     Run quality control analysis on corrected data.
     
     Args:
-        clinical_data: DataFrame with sample metadata
+        clinical_data: DataFrame with sample metadata (must have 'sample_id' or 'original_col' column)
         metabolites_after: DataFrame with corrected metabolomics data
         metabolites_before: DataFrame with data before correction (optional)
         batch_column: Name of batch column in clinical_data
@@ -78,146 +67,101 @@ def run_qc_analysis(
     if metabolites_before is not None:
         metabolites_before = metabolites_before.copy()
     
-    # Validate clinical data
-    if 'sample_id' not in clinical_data.columns:
+    # ------------------------------------------------------------------
+    # 1. Fix sample IDs - ensure we have sample_id column
+    # ------------------------------------------------------------------
+    if "sample_id" not in clinical_data.columns:
         if 'original_col' in clinical_data.columns:
+            # Use original_col as sample_id
             clinical_data['sample_id'] = clinical_data['original_col']
         else:
             raise ValueError("clinical_data must contain 'sample_id' or 'original_col' column")
     
     # Clean sample IDs - convert to string and strip
-    clinical_data['sample_id'] = clinical_data['sample_id'].astype(str).str.strip()
+    clinical_data["sample_id"] = clinical_data["sample_id"].astype(str).str.strip()
+    clinical_data = clinical_data.set_index("sample_id")
     
-    # Normalize clinical sample IDs (remove prefixes/suffixes for matching)
-    clinical_data['sample_id_normalized'] = clinical_data['sample_id'].apply(_normalize_sample_id)
-    clinical_data = clinical_data.set_index('sample_id')
-    
-    # Standardize metabolite column names - convert to string and strip
+    # Clean metabolite column names
     metabolites_after.columns = metabolites_after.columns.astype(str).str.strip()
-    
-    # Normalize metabolite column names for matching
-    metabolites_after_normalized = pd.DataFrame(
-        metabolites_after.values,
-        index=metabolites_after.index,
-        columns=metabolites_after.columns.map(_normalize_sample_id)
-    )
     
     if metabolites_before is not None:
         metabolites_before.columns = metabolites_before.columns.astype(str).str.strip()
-        metabolites_before_normalized = pd.DataFrame(
-            metabolites_before.values,
-            index=metabolites_before.index,
-            columns=metabolites_before.columns.map(_normalize_sample_id)
-        )
-    else:
-        metabolites_before_normalized = None
     
-    # Validate batch column
+    # ------------------------------------------------------------------
+    # 2. Batch column cleanup - must be numeric
+    # ------------------------------------------------------------------
     if batch_column not in clinical_data.columns:
         raise ValueError(f"Batch column '{batch_column}' not found in clinical_data.")
     
-    # Convert batch column to numeric if possible, otherwise keep as string
-    # inmoose expects numeric batch labels, so we need to map string batch names to numbers
-    batch_values = clinical_data[batch_column].unique()
-    
-    # Check if batch values are already numeric
+    # Convert to numeric - this will fail if batch values are strings
+    # which is what we want to catch
     try:
         clinical_data[batch_column] = pd.to_numeric(
             clinical_data[batch_column],
             errors="raise"
         )
-    except (ValueError, TypeError):
-        # Batch values are strings (like 'MZ25_36'), map them to numeric IDs
-        batch_to_num = {b: i+1 for i, b in enumerate(sorted(batch_values))}
-        clinical_data[batch_column] = clinical_data[batch_column].map(batch_to_num)
+    except (ValueError, TypeError) as e:
+        # If conversion fails, log the unique values for debugging
+        unique_batches = clinical_data[batch_column].unique()
+        logger.error(f"Batch column '{batch_column}' contains non-numeric values: {unique_batches[:10]}")
+        raise ValueError(f"Batch column must be numeric. Found values: {unique_batches[:10]}")
     
-    # Ensure batch column is integer type (not float or string)
-    clinical_data[batch_column] = clinical_data[batch_column].astype(int)
+    # ------------------------------------------------------------------
+    # 3. Align samples by direct intersection
+    # ------------------------------------------------------------------
+    common_samples = metabolites_after.columns.intersection(clinical_data.index)
     
-    # Align samples using normalized IDs
-    clinical_samples = set(clinical_data.index.map(_normalize_sample_id))
-    metabolite_samples = set(metabolites_after_normalized.columns)
-    common_samples = list(clinical_samples & metabolite_samples)
+    logger.info(f"Found {len(common_samples)} common samples")
     
-    if not common_samples:
-        # Debug: show first few samples from each
-        logger.error(f"No overlapping samples after normalization.")
-        logger.error(f"Clinical samples (first 5): {list(clinical_data.index.map(_normalize_sample_id))[:5]}")
-        logger.error(f"Metabolite samples (first 5): {list(metabolites_after_normalized.columns)[:5]}")
-        raise ValueError(
-            f"No overlapping samples between clinical ({len(clinical_data.index)}) "
-            f"and metabolomics data ({len(metabolites_after.columns)})"
-        )
+    if len(common_samples) == 0:
+        # Debug output
+        logger.error(f"No overlapping samples!")
+        logger.error(f"Clinical index (first 5): {list(clinical_data.index[:5])}")
+        logger.error(f"Metabolite columns (first 5): {list(metabolites_after.columns[:5])}")
+        raise ValueError("No overlapping samples between clinical and metabolomics data.")
     
-    # Get original column names for the common samples
-    clinical_original_cols = clinical_data.index.tolist()
-    metabolite_original_cols = metabolites_after.columns.tolist()
-    
-    # Find which original columns correspond to common normalized samples
-    common_original_cols = []
-    for norm_sample in common_samples:
-        # Find clinical column that normalizes to this
-        clinical_match = [col for col in clinical_original_cols 
-                        if _normalize_sample_id(col) == norm_sample]
-        # Find metabolite column that normalizes to this
-        metabolite_match = [col for col in metabolite_original_cols 
-                          if _normalize_sample_id(col) == norm_sample]
-        if clinical_match and metabolite_match:
-            common_original_cols.append((clinical_match[0], metabolite_match[0]))
-    
-    # Extract the matching columns
-    clinical_data_aligned = clinical_data.loc[[c[0] for c in common_original_cols]]
-    metabolites_after_aligned = metabolites_after[[c[1] for c in common_original_cols]]
+    clinical_data = clinical_data.loc[common_samples]
+    metabolites_after = metabolites_after.loc[:, common_samples]
     
     if metabolites_before is not None:
-        metabolites_before_aligned = metabolites_before[[c[1] for c in common_original_cols]]
-    else:
-        metabolites_before_aligned = None
+        metabolites_before = metabolites_before.loc[:, common_samples]
     
-    # Impute NaN/inf values
-    metabolites_after_aligned = _safe_impute(metabolites_after_aligned)
+    # ------------------------------------------------------------------
+    # 4. NaN + Inf cleanup (CRITICAL for PCA in inmoose)
+    # ------------------------------------------------------------------
+    metabolites_after = _safe_impute(metabolites_after)
     
-    if metabolites_before_aligned is not None:
-        metabolites_before_aligned = _safe_impute(metabolites_before_aligned)
+    if metabolites_before is not None:
+        metabolites_before = _safe_impute(metabolites_before)
     
-    logger.info(f"Sample count for QC: {clinical_data_aligned.shape[0]}")
+    # ------------------------------------------------------------------
+    # 5. Diagnostics
+    # ------------------------------------------------------------------
+    logger.info(f"Sample count for QC: {clinical_data.shape[0]}")
+    logger.info(f"Batch values: {sorted(clinical_data[batch_column].unique())}")
+    logger.info(f"Batch dtype: {clinical_data[batch_column].dtype}")
     
-    # Debug: Check batch column
-    unique_batches = clinical_data_aligned[batch_column].nunique()
-    batch_value_counts = clinical_data_aligned[batch_column].value_counts()
-    logger.info(f"Batch column: '{batch_column}'")
-    logger.info(f"Batch dtype: {clinical_data_aligned[batch_column].dtype}")
-    logger.info(f"Unique batch values: {sorted(clinical_data_aligned[batch_column].unique())}")
-    logger.info(f"Batch value counts: {batch_value_counts.to_dict()}")
-    
-    if unique_batches < 2:
-        logger.error(f"QC analysis requires at least 2 batches, but found only {unique_batches}")
-        raise ValueError(f"QC analysis requires at least 2 batches, but found only {unique_batches}")
-    
-    # Run inmoose QC if available
+    # ------------------------------------------------------------------
+    # 6. Run inmoose QC
+    # ------------------------------------------------------------------
     if not INMOOSE_AVAILABLE:
         logger.warning("Skipping QC report generation (inmoose not available).")
         return
     
     try:
-        # Debug: Print data shapes
-        logger.info(f"clinical_data_aligned shape: {clinical_data_aligned.shape}")
-        logger.info(f"metabolites_after_aligned shape: {metabolites_after_aligned.shape}")
-        
         cohort_qc = CohortMetric(
-            clinical_df=clinical_data_aligned,
+            clinical_df=clinical_data,
             batch_column=batch_column,
-            data_expression_df=metabolites_after_aligned,
-            data_expression_df_before=metabolites_before_aligned,
+            data_expression_df=metabolites_after,
+            data_expression_df_before=metabolites_before,
         )
-        
-        # Debug: Check cohort_qc batch info
-        logger.info(f"CohortMetric created successfully")
         
         cohort_qc.process()
         
         qc_report = QCReport(cohort_qc)
+        
         Path(output_path).mkdir(parents=True, exist_ok=True)
+        
         report_path = Path(output_path) / "qc_report.html"
         qc_report.save_report(output_path=str(report_path))
         
@@ -225,6 +169,4 @@ def run_qc_analysis(
         
     except Exception as e:
         logger.error(f"QC failed: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise
+        logger.error(traceback.format_exc())
