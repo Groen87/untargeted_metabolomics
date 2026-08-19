@@ -131,6 +131,9 @@ def run_qc_analysis(
         batch_to_num = {b: i+1 for i, b in enumerate(sorted(batch_values))}
         clinical_data[batch_column] = clinical_data[batch_column].map(batch_to_num)
     
+    # Ensure batch column is integer type (not float or string)
+    clinical_data[batch_column] = clinical_data[batch_column].astype(int)
+    
     # Align samples using normalized IDs
     clinical_samples = set(clinical_data.index.map(_normalize_sample_id))
     metabolite_samples = set(metabolites_after_normalized.columns)
@@ -179,6 +182,12 @@ def run_qc_analysis(
     
     logger.info(f"Sample count for QC: {clinical_data_aligned.shape[0]}")
     logger.info(f"Batch values: {sorted(clinical_data_aligned[batch_column].unique())}")
+    
+    # Verify we have more than one batch
+    unique_batches = clinical_data_aligned[batch_column].nunique()
+    if unique_batches < 2:
+        logger.error(f"QC analysis requires at least 2 batches, but found only {unique_batches}")
+        raise ValueError(f"QC analysis requires at least 2 batches, but found only {unique_batches}")
     
     # Run inmoose QC if available
     if not INMOOSE_AVAILABLE:
