@@ -35,6 +35,7 @@ class FeatureFilter:
         # Filter 2: Single batch features (gap-filled in others)
         filter_single_batch: bool = True,
         min_batches: int = 2,  # Features must be present in at least this many batches
+        single_batch_noise_quantile: float = 0.10,  # Noise threshold = this quantile * global median
         single_batch_noise_quantile: float = 0.10,  # Use this quantile of global median as noise threshold
         
         # Filter 3: Low intensity
@@ -88,6 +89,7 @@ class FeatureFilter:
             
             filter_single_batch=config.get('filter_single_batch', True),
             min_batches=config.get('min_batches', 2),
+            single_batch_noise_quantile=config.get('single_batch_noise_quantile', 0.10),
             single_batch_noise_quantile=config.get('single_batch_noise_quantile', 0.10),
             
             filter_low_intensity=config.get('filter_low_intensity', True),
@@ -401,14 +403,25 @@ class FeatureFilter:
         bio_mean = bio_df.mean(axis=1)
         
         # A feature is a contaminant if bio_mean is NOT at least threshold times higher than blank_mean
-        # i.e., bio_mean < (blank_mean * threshold)
-        contaminant_mask = (bio_mean < blank_mean * self.blank_ratio_threshold) & (blank_mean > 0)
+        # BUT: keep features where ANY biological sample has >= 10x blank_mean (rare high-signal features)
+        # i.e., contaminant if (bio_mean < blank_mean * threshold) AND (no bio sample >= 10 * blank_mean)
         
-        # Keep features that ARE at least threshold times higher than blanks
+        # Check if any biological sample has >= 10x the blank mean for this feature
+        blank_mean_series = pd.Series(blank_mean, index=df.index)
+        bio_df = df[non_blank_cols]
+        
+        # For each feature, check if any bio sample >= 10 * blank_mean
+        max_bio = bio_df.max(axis=1)
+        has_high_signal = (max_bio >= 10 * blank_mean_series)
+        
+        # Contaminant: bio_mean < threshold * blank_mean AND no high-signal bio sample
+        contaminant_mask = (bio_mean < blank_mean * self.blank_ratio_threshold) & (blank_mean > 0) & (~has_high_signal)
+        
+        # Keep features that are NOT contaminants
         keep_mask = ~contaminant_mask
         removed = contaminant_mask.sum()
         
-        logger.info(f"  Blank contaminant filter (bio < blank*{self.blank_ratio_threshold}): removed {removed} features")
+        logger.info(f"  Blank contaminant filter (bio < blank*{self.blank_ratio_threshold}, with 10x loophole): removed {removed} features")
         
         return df[keep_mask], removed
 
