@@ -218,3 +218,76 @@ def run_qc_analysis(
     except Exception as e:
         logger.error(f"QC failed: {e}")
         logger.error(traceback.format_exc())
+
+
+def log_qc_rsd_simple(
+    data_before: pd.DataFrame,
+    data_after: pd.DataFrame,
+    qc_patterns: List[str],
+    correction_name: str = "Correction",
+) -> None:
+    """
+    Log RSD (Relative Standard Deviation) for QC samples before and after correction.
+    
+    Args:
+        data_before: DataFrame with data before correction
+        data_after: DataFrame with data after correction
+        qc_patterns: List of patterns to identify QC samples (e.g., ['QC4', 'blaauw'])
+        correction_name: Name of the correction method for logging
+    """
+    import re
+    
+    # Find QC samples matching any of the patterns
+    qc_samples = []
+    for col in data_before.columns:
+        for pattern in qc_patterns:
+            if re.search(pattern, col, re.IGNORECASE):
+                qc_samples.append(col)
+                break
+    
+    if len(qc_samples) < 2:
+        logger.warning(f"Need at least 2 QC samples for RSD calculation. Found {len(qc_samples)}.")
+        return
+    
+    logger.info(f"\n--- QC RSD Analysis ({correction_name}) ---")
+    
+    # Calculate RSD for each feature across QC samples
+    # Before correction
+    qc_before = data_before[qc_samples]
+    means_before = qc_before.mean(axis=1)
+    stds_before = qc_before.std(axis=1)
+    rsds_before = (stds_before / means_before * 100).fillna(0)
+    
+    # After correction
+    qc_after = data_after[qc_samples]
+    means_after = qc_after.mean(axis=1)
+    stds_after = qc_after.std(axis=1)
+    rsds_after = (stds_after / means_after * 100).fillna(0)
+    
+    # Summary statistics
+    mean_rsd_before = rsds_before.mean()
+    median_rsd_before = rsds_before.median()
+    mean_rsd_after = rsds_after.mean()
+    median_rsd_after = rsds_after.median()
+    
+    logger.info(f"  QC samples used: {len(qc_samples)}")
+    logger.info(f"  Mean RSD before {correction_name}: {mean_rsd_before:.2f}%")
+    logger.info(f"  Median RSD before {correction_name}: {median_rsd_before:.2f}%")
+    logger.info(f"  Mean RSD after {correction_name}: {mean_rsd_after:.2f}%")
+    logger.info(f"  Median RSD after {correction_name}: {median_rsd_after:.2f}%")
+    
+    # Improvement
+    improvement = mean_rsd_before - mean_rsd_after
+    logger.info(f"  Mean RSD improvement: {improvement:.2f}%")
+    
+    # Features with improved RSD
+    features_improved = (rsds_after < rsds_before).sum()
+    total_features = len(rsds_before)
+    logger.info(f"  Features with improved RSD: {features_improved}/{total_features}")
+    
+    # Worst features after correction
+    worst_after = rsds_after.nlargest(5)
+    if len(worst_after) > 0:
+        logger.debug(f"  Top 5 features with highest RSD after {correction_name}:")
+        for feature, rsd in worst_after.items():
+            logger.debug(f"    {feature}: {rsd:.2f}%")

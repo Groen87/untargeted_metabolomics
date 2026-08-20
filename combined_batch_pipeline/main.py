@@ -54,7 +54,7 @@ from combined_batch_pipeline.pipeline.batch_processing import (
 )
 from combined_batch_pipeline.pipeline.feature_filtering import filter_features
 from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_merged_data
-from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis
+from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis, log_qc_rsd_simple
 from combined_batch_pipeline.pipeline.ralps_correction import run_ralps_correction
 from combined_batch_pipeline.pipeline.injection_order import clean_sample_name
 
