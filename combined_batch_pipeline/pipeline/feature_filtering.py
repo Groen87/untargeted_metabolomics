@@ -36,7 +36,6 @@ class FeatureFilter:
         filter_single_batch: bool = True,
         min_batches: int = 2,  # Features must be present in at least this many batches
         single_batch_noise_quantile: float = 0.10,  # Noise threshold = this quantile * global median
-        single_batch_noise_quantile: float = 0.10,  # Use this quantile of global median as noise threshold
         
         # Filter 3: Low intensity
         filter_low_intensity: bool = True,
@@ -89,7 +88,6 @@ class FeatureFilter:
             
             filter_single_batch=config.get('filter_single_batch', True),
             min_batches=config.get('min_batches', 2),
-            single_batch_noise_quantile=config.get('single_batch_noise_quantile', 0.10),
             single_batch_noise_quantile=config.get('single_batch_noise_quantile', 0.10),
             
             filter_low_intensity=config.get('filter_low_intensity', True),
