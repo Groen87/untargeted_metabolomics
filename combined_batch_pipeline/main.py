@@ -149,10 +149,13 @@ def run_full_pipeline(
         injection_order = {}
         logger.warning("No injection order loaded from metadata. Using column order.")
     
-    # Step 1.5: Global QC-based feature filtering (before batch processing)
-    # This ensures all batches have the same features for ComBat correction
-    logger.info(f"
 
+    # Step 1.5: Global feature filtering (before batch processing)
+    # This ensures all batches have the same features for ComBat correction
+    logger.info(f"\n{'='*70}")
+    logger.info("STEP 1.5: Global feature filtering")
+    logger.info(f"{'='*70}")
+    
     # Build filter config from main config
     filter_config = {
         'filter_low_variance': config.get('filter_low_variance', True),
@@ -194,6 +197,7 @@ def run_full_pipeline(
         logger.info(f"Global feature filtering complete. Data shape: {df.shape}")
     else:
         logger.warning("No Area: columns found. Skipping global feature filtering.")
+
     # Step 2: Process each batch
     logger.info(f"\n{'='*70}")
     logger.info(f"STEP 2: Processing batches")
