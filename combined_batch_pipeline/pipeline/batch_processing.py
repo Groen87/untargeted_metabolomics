@@ -196,27 +196,43 @@ def loess_drift_correction(
     # Get QC data for all features at once (vectorized)
     qc_df = df.loc[:, qc_samples]
     
-    # Check for significant time trend using linear regression (vectorized)
-    # For each feature, fit: intensity ~ position
+    # Select top 50% highest intensity features (by mean across QC samples)
+    qc_means = qc_df.mean(axis=1)
+    threshold_mean = np.percentile(qc_means, 50)
+    high_intensity_features = qc_means[qc_means >= threshold_mean].index
+    
+    logger.info(f"  Selecting top 50% features by intensity: {len(high_intensity_features)}/{len(qc_means)} features")
+    
+    # Check for significant time trend using linear regression (only on high-intensity features)
     slopes = []
     p_values = []
+    feature_list = []
     
     for feature in qc_df.index.unique():
+        if feature not in high_intensity_features:
+            # Skip low-intensity features
+            slopes.append(0)
+            p_values.append(1.0)
+            feature_list.append(feature)
+            continue
+            
         try:
             feature_qc = qc_df.loc[feature, qc_samples].values
             slope, intercept, r_value, p_value, std_err = linregress(qc_positions_array, feature_qc)
             slopes.append(slope)
             p_values.append(p_value)
+            feature_list.append(feature)
         except:
             slopes.append(0)
             p_values.append(1.0)
+            feature_list.append(feature)
     
     # Features with significant drift: p < 0.05 and |slope| > 1e-6
     has_drift = np.array([p < 0.05 and abs(s) > 1e-6 for s, p in zip(slopes, p_values)])
     features_with_drift = np.sum(has_drift)
     total_features = len(qc_df.index.unique())
     
-    logger.info(f"  Features with significant drift: {features_with_drift}/{total_features}")
+    logger.info(f"  Features with significant drift (from high-intensity): {features_with_drift}/{total_features}")
     
     # Calculate QC CV before correction for features with drift
     qc_means_before = qc_df.mean(axis=1)
