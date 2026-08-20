@@ -217,6 +217,8 @@ class FeatureFilter:
         which means they're not reliable measurements.
         
         Uses only non-blank samples for batch presence calculation.
+        A feature is considered "present" in a batch if its median intensity
+        is above a small threshold (to avoid noise).
         
         Returns:
             Filtered DataFrame and number of features removed.
@@ -232,28 +234,40 @@ class FeatureFilter:
                     batch_samples[batch] = []
                 batch_samples[batch].append(col)
         
-        # For each feature, count how many batches have non-zero/non-NaN values
-        feature_batch_counts = {}
-        for feature in df.index:
-            count = 0
-            for batch, cols in batch_samples.items():
-                if len(cols) == 0:
-                    continue
-                batch_values = df.loc[feature, cols]
-                # Consider feature present if median > 0 (not gap-filled)
-                median_val = batch_values.median()
-                # median_val might be a Series if cols has duplicates, take first value
-                if isinstance(median_val, pd.Series):
-                    median_val = median_val.iloc[0] if len(median_val) > 0 else 0
-                if pd.notna(median_val) and median_val > 0:
-                    count += 1
-            feature_batch_counts[feature] = count
+        if len(batch_samples) < 2:
+            logger.debug("  Single batch filter: skipped (need at least 2 batches)")
+            return df, 0
+        
+        # Vectorized approach: for each batch, compute median per feature
+        # This is much faster than looping through each feature
+        batch_medians = {}
+        for batch, cols in batch_samples.items():
+            if len(cols) == 0:
+                continue
+            batch_df = df[cols]
+            # Compute median per feature for this batch
+            medians = batch_df.median(axis=1)
+            # Handle case where median returns a Series with duplicate index
+            if isinstance(medians, pd.Series):
+                medians = medians.groupby(level=0).first()
+            batch_medians[batch] = medians
+        
+        # Combine into a DataFrame: features x batches
+        median_df = pd.DataFrame(batch_medians)
+        
+        # Count how many batches each feature has median > small threshold
+        # Use a small threshold to avoid noise (e.g., 1% of global median)
+        global_median = df[sample_cols].median().median()
+        noise_threshold = global_median * 0.01 if global_median > 0 else 1e-6
+        
+        present_mask = median_df > noise_threshold
+        feature_batch_counts = present_mask.sum(axis=1)
         
         # Keep features present in at least min_batches
-        mask = pd.Series(feature_batch_counts) >= self.min_batches
+        mask = feature_batch_counts >= self.min_batches
         removed = (~mask).sum()
         
-        logger.info(f"  Single batch filter (min_batches={self.min_batches}): removed {removed} features")
+        logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}): removed {removed} features")
         
         return df[mask], removed
     
@@ -387,8 +401,9 @@ class FeatureFilter:
         # Only consider features where bio_mean > 0
         valid_mask = bio_mean_safe > 0
         
-        # Features are contaminants if ratio > threshold
-        contaminant_mask = (ratio > self.blank_ratio_threshold) & valid_mask
+        # Features are contaminants if bio_mean is not significantly above blank_mean
+        # i.e., bio_mean <= blank_mean * threshold
+        contaminant_mask = (ratio <= self.blank_ratio_threshold) & valid_mask
         
         # Keep features that are NOT contaminants
         keep_mask = ~contaminant_mask
