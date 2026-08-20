@@ -456,9 +456,7 @@ class FeatureFilter:
         df, removed = self._filter_low_intensity(df, sample_cols, blank_samples)
         total_removed += removed
         
-        # Filter 5: QC present
-        df, removed = self._filter_qc_present(df, sample_cols, qc_samples)
-        total_removed += removed
+
         
 
         
