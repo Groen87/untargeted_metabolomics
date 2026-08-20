@@ -295,7 +295,6 @@ def run_full_pipeline(
             fallback_qc_pattern=fallback_qc_pattern,
             frac=frac,
             output_dir=output_dir / "batch_outputs" / batch,
-            filter_config=filter_config,
         )
         
         batch_results[batch] = (processed_df, batch_metadata)

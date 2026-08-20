@@ -259,7 +259,6 @@ def process_batch(
     fallback_qc_pattern: Optional[str] = "QC3",
     frac: float = 0.5,
     output_dir: Optional[Path] = None,
-    filter_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Process a single batch: feature filtering + median normalization + LOESS drift correction.
@@ -287,22 +286,6 @@ def process_batch(
     
     # Extract batch data
     batch_df = df[batch_samples].copy()
-    
-    # Step 0: Filter features (before normalization)
-    # Build batch_info for filtering (all samples in this batch belong to this batch)
-    batch_info = {col: batch for col in batch_samples}
-    
-    if filter_config is None:
-        filter_config = {}
-    
-    logger.info(f"  Applying feature filtering...")
-    batch_df = filter_features(
-        df=batch_df,
-        sample_cols=batch_samples,
-        batch_info=batch_info,
-        sample_info=sample_info,
-        config=filter_config,
-    )
     
     # Step 1: Median normalization
     logger.info(f"  Applying median normalization...")
