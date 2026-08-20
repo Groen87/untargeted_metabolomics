@@ -152,32 +152,48 @@ def run_full_pipeline(
     # Step 1.5: Global QC-based feature filtering (before batch processing)
     # This ensures all batches have the same features for ComBat correction
     logger.info(f"
-{'='*70}")
-    logger.info("STEP 1.5: Global QC-based feature filtering")
-    logger.info(f"{'='*70}")
+
+    # Build filter config from main config
+    filter_config = {
+        'filter_low_variance': config.get('filter_low_variance', True),
+        'variance_threshold': config.get('variance_threshold', 0.01),
+        'variance_quantile': config.get('variance_quantile', None),
+        'filter_single_batch': config.get('filter_single_batch', True),
+        'min_batches': config.get('min_batches', 2),
+        'filter_low_intensity': config.get('filter_low_intensity', True),
+        'intensity_threshold': config.get('intensity_threshold', 10000.0),
+        'intensity_quantile': config.get('intensity_quantile', None),
+        'filter_qc_present': config.get('filter_qc_present', True),
+        'filter_qc_intensity': config.get('filter_qc_intensity', True),
+        'qc_intensity_quantile': config.get('qc_intensity_quantile', 0.25),
+        'filter_blank_contaminants': config.get('filter_blank_contaminants', True),
+        'blank_pattern': config.get('blank_pattern', 'blanco'),
+        'blank_ratio_threshold': config.get('blank_ratio_threshold', 2.0),
+        'qc_pattern': qc_pattern,
+        'fallback_qc_pattern': fallback_qc_pattern,
+    }
     
-    # Get all QC samples across all batches
-    all_qc_samples = []
+    # Build batch_info for global filtering
+    batch_info = {}
     for batch in all_batches:
-        batch_samples_list = batch_groups[batch]
-        qc_samples, _ = identify_qc_samples(batch_samples_list, sample_info)
-        all_qc_samples.extend(qc_samples)
+        for col in batch_groups[batch]:
+            batch_info[col] = batch
     
-    if all_qc_samples:
-        from combined_batch_pipeline.pipeline.batch_processing import filter_features_by_qc_quality
-        # Get all sample columns (Area: columns)
-        area_cols = [col for col in df.columns if col.startswith('Area:')]
-        logger.info(f"Filtering features using {len(all_qc_samples)} QC samples across all batches")
-        df = filter_features_by_qc_quality(
-            df,
-            area_cols,
-            qc_pattern=qc_pattern,
-            fallback_qc_pattern=fallback_qc_pattern,
+    # Get all sample columns (Area: columns)
+    area_cols = [col for col in df.columns if col.startswith('Area:')]
+    
+    if area_cols:
+        logger.info(f"Applying global feature filtering to {len(df)} features...")
+        df = filter_features(
+            df=df,
+            sample_cols=area_cols,
+            batch_info=batch_info,
+            sample_info=sample_info,
+            config=filter_config,
         )
         logger.info(f"Global feature filtering complete. Data shape: {df.shape}")
     else:
-        logger.warning("No QC samples found. Skipping global QC-based feature filtering.")
-    
+        logger.warning("No Area: columns found. Skipping global feature filtering.")
     # Step 2: Process each batch
     logger.info(f"\n{'='*70}")
     logger.info(f"STEP 2: Processing batches")
