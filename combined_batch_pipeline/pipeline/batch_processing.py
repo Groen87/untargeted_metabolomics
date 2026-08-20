@@ -65,7 +65,7 @@ def identify_qc_samples(
     return qc_samples, bio_samples
 
 
-def median_normalize_batch(
+def pqn_normalize_batch(
     df: pd.DataFrame,
     sample_cols: List[str],
     sample_info: Optional[Dict[str, Dict]] = None,
@@ -73,10 +73,13 @@ def median_normalize_batch(
     fallback_qc_pattern: Optional[str] = "QC3",
 ) -> pd.DataFrame:
     """
-    Apply median normalization to a batch.
+    Apply PQN (Probabilistic Quotient Normalization) to a batch.
     
-    Uses QC samples as reference for normalization.
-    Formula: normalized_value = raw_value * (reference_median / sample_median)
+    PQN normalizes each sample to the median of QC samples.
+    Formula: normalized_value = raw_value * (qc_median / sample_median)
+    
+    This is more robust than simple median normalization as it uses
+    the QC sample median as the reference point.
     
     Args:
         df: DataFrame with features as rows, samples as columns
@@ -86,30 +89,36 @@ def median_normalize_batch(
         fallback_qc_pattern: Fallback QC pattern
         
     Returns:
-        DataFrame with median-normalized values
+        DataFrame with PQN-normalized values
     """
     # Identify QC samples
     qc_samples, _ = identify_qc_samples(sample_cols, sample_info, qc_pattern, fallback_qc_pattern)
     
     if not qc_samples:
-        logger.warning(f"No QC samples found. Skipping median normalization.")
+        logger.warning(f"No QC samples found. Skipping PQN normalization.")
         return df.copy()
     
-    logger.info(f"Using {len(qc_samples)} QC samples for median normalization: {qc_samples[:3]}...")
+    logger.info(f"Using {len(qc_samples)} QC samples for PQN normalization: {qc_samples[:3]}...")
     
-    # Calculate median for each sample
+    # Calculate median for each sample across all features
     sample_medians = df[sample_cols].median(axis=0)
     
-    # Calculate reference median (median of QC sample medians)
-    qc_medians = df[qc_samples].median(axis=0)
-    reference_median = qc_medians.median()
+    # Calculate QC median (median of all QC sample values across all features)
+    qc_values = df[qc_samples].values.flatten()
+    qc_median = np.median(qc_values[~np.isnan(qc_values)]) if len(qc_values) > 0 else 1.0
     
-    logger.info(f"Reference median: {reference_median:.2f}")
+    logger.info(f"QC median: {qc_median:.2f}")
     
-    # Apply normalization
+    # Apply PQN normalization
+    # Each sample is scaled so its median equals the QC median
     df_normalized = df.copy()
     for col in sample_cols:
-        df_normalized[col] = df[col] * (reference_median / sample_medians[col])
+        sample_median = sample_medians[col]
+        if sample_median > 0 and not np.isnan(sample_median):
+            df_normalized[col] = df[col] * (qc_median / sample_median)
+        else:
+            # If sample median is 0 or NaN, keep original values
+            df_normalized[col] = df[col]
     
     return df_normalized
 
@@ -324,7 +333,7 @@ def process_batch(
     
     # Step 2: Median normalization (AFTER drift correction)
     logger.info(f"  Applying median normalization...")
-    batch_df = median_normalize_batch(
+    batch_df = pqn_normalize_batch(
         batch_df,
         batch_samples,
         sample_info=sample_info,
