@@ -263,12 +263,30 @@ def loess_drift_correction(
             smoothed_values = smoothed[:, 1]
             smoothed_safe = np.where(smoothed_values > 0, smoothed_values, qc_mean)
             
+            # Apply correction to QC samples
             for i, col in enumerate(qc_samples):
                 correction = qc_mean / smoothed_safe[i]
                 df_corrected.loc[feature, col] *= correction
             
-            for bio_col in bio_samples:
-                df_corrected.loc[feature, bio_col] = df_corrected.loc[feature, bio_to_qc[bio_col]]
+            # Apply LOESS correction to biological samples by interpolating at their position
+            # Get all biological sample positions
+            bio_positions = np.array([position_idx[col] for col in bio_samples])
+            
+            # Use lowess with xvals to interpolate at biological sample positions
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    bio_smoothed = lowess(qc_intensities, qc_positions_array, frac=frac, xvals=bio_positions)
+                
+                for j, bio_col in enumerate(bio_samples):
+                    bio_smoothed_value = bio_smoothed[j, 1]
+                    bio_smoothed_safe = bio_smoothed_value if bio_smoothed_value > 0 else qc_mean
+                    bio_correction = qc_mean / bio_smoothed_safe
+                    df_corrected.loc[feature, bio_col] = feature_data[position_idx[bio_col]] * bio_correction
+            except:
+                # Fallback: use nearest QC sample for each biological sample
+                for bio_col in bio_samples:
+                    df_corrected.loc[feature, bio_col] = df_corrected.loc[feature, bio_to_qc[bio_col]]
             
             features_corrected += 1
             
@@ -291,6 +309,8 @@ def loess_drift_correction(
     
     logger.info(f"  Features corrected with LOESS: {features_corrected}/{features_with_drift}")
     logger.info(f"  Mean QC CV improvement (corrected features): {mean_cv_improvement:.4f}")
+    logger.info(f"  Mean QC RSD% before: {cv_before_drift.mean()*100:.2f}%")
+    logger.info(f"  Mean QC RSD% after: {cv_after_drift.mean()*100:.2f}%")
     logger.info(f"  Features with improved CV: {features_improved}/{features_corrected}")
     
     return df_corrected
