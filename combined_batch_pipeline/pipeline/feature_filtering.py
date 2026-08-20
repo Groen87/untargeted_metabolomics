@@ -370,11 +370,15 @@ class FeatureFilter:
         sample_cols: List[str],
         blank_samples: List[str],
     ) -> Tuple[pd.DataFrame, int]:
+
         """
         Remove features that are high in blank samples (contaminants).
         
-        A feature is considered a contaminant if its mean intensity in blanks
-        is significantly higher than in biological samples.
+        A feature is considered a contaminant if the average of biological samples
+        is NOT at least blank_ratio_threshold times higher than the average in blank samples.
+        
+        Formula: contaminant if bio_mean < (blank_mean * blank_ratio_threshold)
+        Default threshold=2.0: keeps features where bio_mean >= 2 * blank_mean
         
         Returns:
             Filtered DataFrame and number of features removed.
@@ -386,7 +390,7 @@ class FeatureFilter:
         blank_df = df[blank_samples]
         blank_mean = blank_df.mean(axis=1)
         
-        # Calculate mean intensity in non-blank samples
+        # Calculate mean intensity in non-blank (biological) samples
         non_blank_cols = [col for col in sample_cols if col not in blank_samples]
         
         if len(non_blank_cols) == 0:
@@ -396,28 +400,19 @@ class FeatureFilter:
         bio_df = df[non_blank_cols]
         bio_mean = bio_df.mean(axis=1)
         
-        # Avoid division by zero
-        bio_mean_safe = bio_mean.replace(0, np.nan)
+        # A feature is a contaminant if bio_mean is NOT at least threshold times higher than blank_mean
+        # i.e., bio_mean < (blank_mean * threshold)
+        contaminant_mask = (bio_mean < blank_mean * self.blank_ratio_threshold) & (blank_mean > 0)
         
-        # Calculate ratio: blank_mean / bio_mean
-        # Features with ratio > threshold are contaminants
-        ratio = blank_mean / bio_mean_safe
-        
-        # Only consider features where bio_mean > 0
-        valid_mask = bio_mean_safe > 0
-        
-        # Features are contaminants if bio_mean is not significantly above blank_mean
-        # i.e., bio_mean <= blank_mean * threshold
-        contaminant_mask = (ratio <= self.blank_ratio_threshold) & valid_mask
-        
-        # Keep features that are NOT contaminants
+        # Keep features that ARE at least threshold times higher than blanks
         keep_mask = ~contaminant_mask
         removed = contaminant_mask.sum()
         
-        logger.info(f"  Blank contaminant filter (ratio > {self.blank_ratio_threshold}): removed {removed} features")
+        logger.info(f"  Blank contaminant filter (bio < blank*{self.blank_ratio_threshold}): removed {removed} features")
         
         return df[keep_mask], removed
-    
+
+
     def filter(
         self,
         df: pd.DataFrame,
