@@ -52,6 +52,10 @@ class FeatureFilter:
         blank_pattern: str = "blanco",  # Pattern to identify blank samples
         blank_ratio_threshold: float = 2.0,  # Features with blank/sample ratio > this are removed
         
+        # QC3 RSD filter
+        filter_high_qc3_rsd: bool = True,
+        qc3_rsd_threshold: float = 30.0,  # RSD threshold in QC3 samples
+        
         # General
         qc_pattern: str = "expQC",
         fallback_qc_pattern: Optional[str] = "QC3",
@@ -75,6 +79,9 @@ class FeatureFilter:
         self.filter_blank_contaminants = filter_blank_contaminants
         self.blank_pattern = blank_pattern
         self.blank_ratio_threshold = blank_ratio_threshold
+        
+        self.filter_high_qc3_rsd = filter_high_qc3_rsd
+        self.qc3_rsd_threshold = qc3_rsd_threshold
         
         self.qc_pattern = qc_pattern
         self.fallback_qc_pattern = fallback_qc_pattern
@@ -102,6 +109,9 @@ class FeatureFilter:
             filter_blank_contaminants=config.get('filter_blank_contaminants', True),
             blank_pattern=config.get('blank_pattern', 'blanco'),
             blank_ratio_threshold=config.get('blank_ratio_threshold', 2.0),
+            
+            filter_high_qc3_rsd=config.get('filter_high_qc3_rsd', True),
+            qc3_rsd_threshold=config.get('qc3_rsd_threshold', 30.0),
             
             qc_pattern=config.get('qc_pattern', 'expQC'),
             fallback_qc_pattern=config.get('fallback_qc_pattern', 'QC3'),
@@ -317,6 +327,59 @@ class FeatureFilter:
         
         return df[mask], removed
     
+
+    def _filter_high_qc3_rsd(
+        self,
+        df: pd.DataFrame,
+        sample_cols: List[str],
+        qc_samples: List[str],
+    ) -> Tuple[pd.DataFrame, int]:
+        """
+        Filter 5: Remove features with high RSD in QC3 samples.
+        
+        Removes features where RSD > 30% across all QC3 samples.
+        This filters out features that are inconsistent in QC samples.
+        
+        Args:
+            df: DataFrame with features as rows, samples as columns
+            sample_cols: List of all sample column names
+            qc_samples: List of QC sample column names
+            
+        Returns:
+            Tuple of (filtered DataFrame, number of features removed)
+        """
+        if not self.filter_high_qc3_rsd or not qc_samples:
+            return df, 0
+        
+        # Identify QC3 samples specifically
+        qc3_samples = [col for col in qc_samples if 'QC3' in col]
+        
+        if len(qc3_samples) < 2:
+            logger.debug("  High QC3 RSD filter: skipped (need at least 2 QC3 samples)")
+            return df, 0
+        
+        # Calculate RSD for each feature across QC3 samples
+        qc3_df = df[qc3_samples]
+        feature_means = qc3_df.mean(axis=1)
+        feature_stds = qc3_df.std(axis=1)
+        feature_rsds = (feature_stds / feature_means * 100).fillna(0)
+        
+        # Features with RSD > threshold in QC3 samples
+        high_rsd_mask = feature_rsds > self.qc3_rsd_threshold
+        high_rsd_features = high_rsd_mask[high_rsd_mask].index
+        
+        if len(high_rsd_features) == 0:
+            logger.debug("  High QC3 RSD filter: no features removed")
+            return df, 0
+        
+        # Remove high RSD features
+        df_filtered = df.drop(index=high_rsd_features)
+        removed = len(high_rsd_features)
+        
+        logger.info(f"  High QC3 RSD filter (RSD > {self.qc3_rsd_threshold}%): removed {removed} features")
+        
+        return df_filtered, removed
+
     def _filter_qc_present(
         self,
         df: pd.DataFrame,
@@ -464,23 +527,27 @@ class FeatureFilter:
         
         # Apply filters in order
         
-        # Filter 1: Blank contaminants (do this first to remove contaminants before other filters)
+        # Filter 1: Low intensity (do this first to remove low-signal features)
+        df, removed = self._filter_low_intensity(df, sample_cols, blank_samples)
+        total_removed += removed
+        
+        # Filter 2: Blank contaminants (remove contaminants before other filters)
         df, removed = self._filter_blank_contaminants(df, sample_cols, blank_samples)
         total_removed += removed
         
-        # Filter 2: Low variance
+        # Filter 3: Low variance
         df, removed = self._filter_low_variance(df, sample_cols, blank_samples)
         total_removed += removed
         
-        # Filter 3: Single batch
+        # Filter 4: Single batch
         if batch_info:
             df, removed = self._filter_single_batch(df, sample_cols, batch_info, blank_samples)
             total_removed += removed
         else:
             logger.debug("  Single batch filter: skipped (no batch_info provided)")
         
-        # Filter 4: Low intensity
-        df, removed = self._filter_low_intensity(df, sample_cols, blank_samples)
+        # Filter 5: High RSD in QC3 samples (remove features with RSD > 30% in QC3)
+        df, removed = self._filter_high_qc3_rsd(df, sample_cols, qc_samples)
         total_removed += removed
         
 

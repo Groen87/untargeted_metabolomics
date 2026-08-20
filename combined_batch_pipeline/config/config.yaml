@@ -16,40 +16,45 @@ ref_batch: null
 # Set any filter to false to disable it.
 #
 # Filter order:
-# 1. Blank contaminants (removed first to avoid skewing other filters)
-# 2. Low variance (near-constant features)
-# 3. Single batch features (gap-filled in others)
-# 4. Low intensity
-# 5. QC present (missing in QC samples)
-# 6. QC intensity (low in QC samples)
+# 1. Low intensity (remove low-signal features first)
+# 2. Blank contaminants (removed to avoid skewing other filters)
+# 3. Low variance (near-constant features)
+# 4. Single batch features (gap-filled in others)
+# 5. High RSD in QC3 samples (remove features with RSD > 30% in QC3)
+# Note: QC present and QC intensity filters removed as per user request
 
-# Filter 1: Blank sample contaminants
-# Removes features that are high in blank samples (likely contaminants)
-filter_blank_contaminants: true
-blank_pattern: "blanco"  # Pattern to identify blank samples (case-insensitive)
-blank_ratio_threshold: 3.0  # Features with blank/bio ratio > this are removed
-
-# Filter 2: Low variance (near-constant features)
-# Removes features with almost no variation (uninformative or noise)
-filter_low_variance: true
-# variance_threshold: 0.01  # Absolute variance threshold (features with var < this are removed)
-# Alternative to threshold: use quantile to remove bottom N% by variance
-variance_quantile: 0.05  # Remove bottom 5% by variance
-
-# Filter 3: Single batch features
-# Removes features only present in a single batch (gap-filled in others)
-filter_single_batch: true
-min_batches: 2  # Features must be present in at least this many batches
-single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global median (default: 10%)
-                                        # Increase to 0.25 or 0.50 if gap-filled values are higher
-
-# Filter 4: Low intensity
+# Filter 1: Low intensity
 # Removes features with low mean intensity across all samples
 filter_low_intensity: true
 # Option A: Absolute threshold
 intensity_threshold: 100000.0  # Features with mean intensity < this are removed
 # Option B: Quantile-based (uncomment to use instead of absolute threshold)
 # intensity_quantile: 0.1  # Remove bottom N% by intensity
+
+# Filter 2: Blank sample contaminants
+# Removes features that are high in blank samples (likely contaminants)
+filter_blank_contaminants: true
+blank_pattern: "blanco"  # Pattern to identify blank samples (case-insensitive)
+blank_ratio_threshold: 3.0  # Features with blank/bio ratio > this are removed
+
+# Filter 3: Low variance (near-constant features)
+# Removes features with almost no variation (uninformative or noise)
+filter_low_variance: true
+# variance_threshold: 0.01  # Absolute variance threshold (features with var < this are removed)
+# Alternative to threshold: use quantile to remove bottom N% by variance
+variance_quantile: 0.05  # Remove bottom 5% by variance
+
+# Filter 4: Single batch features
+# Removes features only present in a single batch (gap-filled in others)
+filter_single_batch: true
+min_batches: 2  # Features must be present in at least this many batches
+single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global median (default: 10%)
+                                        # Increase to 0.25 or 0.50 if gap-filled values are higher
+
+# Filter 5: High RSD in QC3 samples
+# Removes features with RSD > 30% across all QC3 samples
+filter_high_qc3_rsd: true
+qc3_rsd_threshold: 30.0  # RSD threshold in QC3 samples (features with RSD > this are removed)
 
 # ============================================================================
 # QC Sample Detection
