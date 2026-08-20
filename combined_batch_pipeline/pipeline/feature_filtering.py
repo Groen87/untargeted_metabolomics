@@ -86,7 +86,6 @@ class FeatureFilter:
         self.qc_pattern = qc_pattern
         self.fallback_qc_pattern = fallback_qc_pattern
     
-    @classmethod
     def _is_hmdb_feature(self, feature_name: str) -> bool:
         """Check if a feature name contains 'HMDB' (should be preserved)."""
         return 'HMDB' in str(feature_name)
@@ -95,7 +94,7 @@ class FeatureFilter:
         """Get set of feature names that contain 'HMDB'."""
         return {idx for idx in df.index if self._is_hmdb_feature(idx)}
 
-
+    @classmethod
     def from_config(cls, config: Dict[str, Any]) -> 'FeatureFilter':
         """Create FeatureFilter from configuration dictionary."""
         return cls(
