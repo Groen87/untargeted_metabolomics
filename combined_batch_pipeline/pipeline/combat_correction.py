@@ -26,6 +26,24 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def identify_qc_samples_from_columns(sample_cols, qc_pattern="QC3"):
+    """Identify QC samples from column names using pattern matching."""
+    qc_samples = []
+    for col in sample_cols:
+        if qc_pattern in col:
+            qc_samples.append(col)
+    return qc_samples
+
+
+def identify_blank_samples_from_columns(sample_cols, blank_pattern="blanco"):
+    """Identify blank samples from column names."""
+    blank_samples = []
+    for col in sample_cols:
+        if blank_pattern.lower() in col.lower():
+            blank_samples.append(col)
+    return blank_samples
+
+
 def run_combat_on_merged_data(
     merged_data: pd.DataFrame,
     merged_metadata: pd.DataFrame,
@@ -402,4 +420,138 @@ def generate_combat_plots(
     except ImportError as e:
         logger.warning(f"sklearn not available: {e}. Skipping PCA plots.")
     
+    
+    # ========================================================================
+    # QC-ONLY PLOTS (for better batch effect assessment)
+    # ========================================================================
+    
+    # Identify QC3 samples
+    qc3_samples = identify_qc_samples_from_columns(data_after.columns, qc_pattern="QC3")
+    
+    if len(qc3_samples) >= 2:
+        logger.info(f"Generating QC-only plots with {len(qc3_samples)} QC3 samples")
+        
+        # Get batch labels for QC samples
+        qc_batch_vec = numeric_batch_vector[[col in qc3_samples for col in data_after.columns]]
+        qc_unique_batches = np.unique(qc_batch_vec)
+        
+        # UMAP for QC only
+        try:
+            import umap.umap_ as umap
+            
+            for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
+                qc_df = df[qc3_samples].copy()
+                qc_batch = numeric_batch_vector[[col in qc3_samples for col in df.columns]]
+                
+                # Handle NaN
+                if qc_df.isna().any().any():
+                    min_positive = qc_df[qc_df > 0].min().min()
+                    small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
+                    qc_df = qc_df.fillna(small_value)
+                
+                # UMAP
+                n_neighbors = min(30, len(qc3_samples) - 1)
+                emb = umap.UMAP(random_state=42, n_jobs=1, n_neighbors=n_neighbors, min_dist=0.1).fit_transform(qc_df.T)
+                
+                plt.figure(figsize=(14, 12))
+                for i, batch_label in enumerate(qc_unique_batches):
+                    batch_mask = qc_batch == (i + 1)
+                    if np.any(batch_mask):
+                        plt.scatter(
+                            emb[batch_mask, 0], emb[batch_mask, 1],
+                            c=[palette[i]], alpha=0.7, s=30,
+                            label=f'Batch {batch_label}', edgecolors='black', linewidth=0.3
+                        )
+                
+                plt.title(f"{label} - UMAP (QC3 samples only)")
+                plt.xlabel("UMAP 1")
+                plt.ylabel("UMAP 2")
+                plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+                plt.grid(True, alpha=0.2)
+                plt.tight_layout()
+                plt.savefig(output_dir / f"{label.lower().replace(' ', '_')}_umap_qc3_only.png", 
+                           dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                # Metrics
+                batch_asw = calculate_batch_asw(emb, qc_batch)
+                batch_entropy = calculate_batch_mixing_entropy(emb, qc_batch, n_neighbors=10)
+                logger.info(f"{label} UMAP (QC3 only) - Batch ASW: {batch_asw:.4f}, Mixing Entropy: {batch_entropy:.4f}")
+                
+                if batch_asw > 0.1:
+                    logger.info(f"  -> QC samples show batch separation (ASW={batch_asw:.4f})")
+                else:
+                    logger.info(f"  -> Batch effect removed in QC samples (ASW={batch_asw:.4f})")
+                
+                if not np.isnan(batch_entropy):
+                    max_entropy = np.log(len(qc_unique_batches))
+                    logger.info(f"  -> Mixing entropy: {batch_entropy:.4f} / {max_entropy:.4f}")
+        
+        except ImportError:
+            logger.warning("UMAP not available. Skipping QC-only UMAP plots.")
+        
+        # PCA for QC only
+        try:
+            from sklearn.decomposition import PCA
+            from sklearn.preprocessing import StandardScaler
+            
+            for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
+                qc_df = df[qc3_samples].copy()
+                qc_batch = numeric_batch_vector[[col in qc3_samples for col in df.columns]]
+                
+                # Handle NaN
+                if qc_df.isna().any().any():
+                    min_positive = qc_df[qc_df > 0].min().min()
+                    small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
+                    qc_df = qc_df.fillna(small_value)
+                
+                # Standardize and PCA
+                scaler = StandardScaler()
+                qc_scaled = scaler.fit_transform(qc_df.T)
+                pca = PCA(n_components=2, random_state=42)
+                emb = pca.fit_transform(qc_scaled)
+                
+                plt.figure(figsize=(14, 12))
+                for i, batch_label in enumerate(qc_unique_batches):
+                    batch_mask = qc_batch == (i + 1)
+                    if np.any(batch_mask):
+                        plt.scatter(
+                            emb[batch_mask, 0], emb[batch_mask, 1],
+                            c=[palette[i]], alpha=0.7, s=30,
+                            label=f'Batch {batch_label}', edgecolors='black', linewidth=0.3
+                        )
+                
+                plt.title(f"{label} - PCA (QC3 samples only)")
+                plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
+                plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
+                plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+                plt.grid(True, alpha=0.2)
+                plt.tight_layout()
+                plt.savefig(output_dir / f"{label.lower().replace(' ', '_')}_pca_qc3_only.png", 
+                           dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                # Metrics
+                batch_asw = calculate_batch_asw(emb, qc_batch)
+                batch_entropy = calculate_batch_mixing_entropy(emb, qc_batch, n_neighbors=10)
+                logger.info(f"{label} PCA (QC3 only) - Batch ASW: {batch_asw:.4f}, Mixing Entropy: {batch_entropy:.4f}")
+                
+                if batch_asw > 0.1:
+                    logger.info(f"  -> QC samples show batch separation (ASW={batch_asw:.4f})")
+                else:
+                    logger.info(f"  -> Batch effect removed in QC samples (ASW={batch_asw:.4f})")
+                
+                if not np.isnan(batch_entropy):
+                    max_entropy = np.log(len(qc_unique_batches))
+                    logger.info(f"  -> Mixing entropy: {batch_entropy:.4f} / {max_entropy:.4f}")
+        
+        except ImportError:
+            logger.warning("sklearn not available. Skipping QC-only PCA plots.")
+    else:
+        logger.warning(f"Need at least 2 QC3 samples for QC-only plots. Found {len(qc3_samples)}.")
+    
+    # ========================================================================
+    # END QC-ONLY PLOTS
+    # ========================================================================
+
     logger.info(f"Saved all plots to {output_dir}")

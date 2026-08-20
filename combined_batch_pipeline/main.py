@@ -149,6 +149,28 @@ def run_full_pipeline(
         injection_order = {}
         logger.warning("No injection order loaded from metadata. Using column order.")
     
+    # Remove blank samples from data to prevent contamination
+    blank_pattern = config.get('blank_pattern', 'blanco')
+    blank_samples = []
+    for col in df.columns:
+        if blank_pattern.lower() in col.lower():
+            blank_samples.append(col)
+    
+    if blank_samples:
+        logger.info(f"Removing {len(blank_samples)} blank samples from data")
+        logger.debug(f"Blank samples removed: {blank_samples[:5]}...")
+        df = df.drop(columns=blank_samples)
+        
+        # Also remove from batch_groups
+        for batch, samples in list(batch_groups.items()):
+            batch_groups[batch] = [s for s in samples if s not in blank_samples]
+        
+        # Remove from injection_order
+        for blank_col in blank_samples:
+            injection_order.pop(blank_col, None)
+        
+        logger.info(f"Data shape after removing blanks: {df.shape}")
+    
 
     # Step 1.5: Global feature filtering (before batch processing)
     # This ensures all batches have the same features for ComBat correction
