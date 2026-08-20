@@ -5,9 +5,6 @@ input_file: "data/combined_all_batches.csv"
 output_dir: "output/combined_batch_pipeline"
 
 # Processing parameters
-intensity_threshold: 10000
-qc_pattern: "expQC"
-fallback_qc_pattern: "QC3"
 frac: 0.5
 rt_threshold: 0.02
 ref_batch: null
@@ -17,20 +14,34 @@ ref_batch: null
 # ============================================================================
 # All filters are applied in order and are configurable.
 # Set any filter to false to disable it.
+#
+# Filter order:
+# 1. Blank contaminants (removed first to avoid skewing other filters)
+# 2. Low variance (near-constant features)
+# 3. Single batch features (gap-filled in others)
+# 4. Low intensity
+# 5. QC present (missing in QC samples)
+# 6. QC intensity (low in QC samples)
 
-# Filter 1: Low variance (near-constant features)
+# Filter 1: Blank sample contaminants
+# Removes features that are high in blank samples (likely contaminants)
+filter_blank_contaminants: true
+blank_pattern: "blanco"  # Pattern to identify blank samples (case-insensitive)
+blank_ratio_threshold: 2.0  # Features with blank/bio ratio > this are removed
+
+# Filter 2: Low variance (near-constant features)
 # Removes features with almost no variation (uninformative or noise)
 filter_low_variance: true
 variance_threshold: 0.01  # Absolute variance threshold (features with var < this are removed)
 # Alternative to threshold: use quantile to remove bottom N% by variance
 # variance_quantile: 0.05  # Uncomment to use quantile instead of absolute threshold
 
-# Filter 2: Single batch features
+# Filter 3: Single batch features
 # Removes features only present in a single batch (gap-filled in others)
 filter_single_batch: true
 min_batches: 2  # Features must be present in at least this many batches
 
-# Filter 3: Low intensity
+# Filter 4: Low intensity
 # Removes features with low mean intensity across all samples
 filter_low_intensity: true
 # Option A: Absolute threshold
@@ -38,23 +49,30 @@ intensity_threshold: 10000.0  # Features with mean intensity < this are removed
 # Option B: Quantile-based (uncomment to use instead of absolute threshold)
 # intensity_quantile: 0.1  # Remove bottom N% by intensity
 
-# Filter 4: QC present
+# Filter 5: QC present
 # Removes features not present (NaN) in all QC samples
 filter_qc_present: true
 
-# Filter 5: QC intensity
+# Filter 6: QC intensity
 # Removes features with low intensity in QC samples
 filter_qc_intensity: true
 qc_intensity_quantile: 0.25  # Remove bottom 25% by QC intensity
 
 # ============================================================================
-# Legacy QC-based feature filtering (kept for backwards compatibility)
-# These are now part of the main filtering system above
+# QC Sample Detection
 # ============================================================================
-# qc_rsd_threshold: 20.0  # % RSD in QC samples (DISABLED - removes too many features)
-# qc_intensity_quantile: 0.25  # 25th percentile for QC intensity
+qc_pattern: "expQC"
+fallback_qc_pattern: "QC3"
 
+# ============================================================================
+# Legacy parameters (kept for backwards compatibility)
+# ============================================================================
+intensity_threshold: 10000
+qc_intensity_threshold: 0.1
+
+# ============================================================================
 # Logging
+# ============================================================================
 log_level: "INFO"
 log_file: "logs/combined_batch_pipeline.log"
 

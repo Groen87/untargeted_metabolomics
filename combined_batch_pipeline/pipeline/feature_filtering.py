@@ -5,6 +5,7 @@ This module provides configurable filtering steps to remove:
 1. Features with almost no variation (low variance / near-constant)
 2. Features only present in a single batch (gap-filled in others)
 3. Features with low intensity
+4. Features high in blank samples (contaminants)
 
 All filters are configurable via YAML config.
 """
@@ -40,10 +41,15 @@ class FeatureFilter:
         intensity_threshold: float = 10000.0,  # Minimum mean intensity across all samples
         intensity_quantile: Optional[float] = None,  # Alternative: remove bottom N% by intensity
         
-        # Filter 4: QC-based filtering (from original)
+        # Filter 4: QC-based filtering
         filter_qc_present: bool = True,
         filter_qc_intensity: bool = True,
         qc_intensity_quantile: float = 0.25,
+        
+        # Filter 5: Blank sample filter (contaminants)
+        filter_blank_contaminants: bool = True,
+        blank_pattern: str = "blanco",  # Pattern to identify blank samples
+        blank_ratio_threshold: float = 2.0,  # Features with blank/sample ratio > this are removed
         
         # General
         qc_pattern: str = "expQC",
@@ -63,6 +69,10 @@ class FeatureFilter:
         self.filter_qc_present = filter_qc_present
         self.filter_qc_intensity = filter_qc_intensity
         self.qc_intensity_quantile = qc_intensity_quantile
+        
+        self.filter_blank_contaminants = filter_blank_contaminants
+        self.blank_pattern = blank_pattern
+        self.blank_ratio_threshold = blank_ratio_threshold
         
         self.qc_pattern = qc_pattern
         self.fallback_qc_pattern = fallback_qc_pattern
@@ -85,6 +95,10 @@ class FeatureFilter:
             filter_qc_present=config.get('filter_qc_present', True),
             filter_qc_intensity=config.get('filter_qc_intensity', True),
             qc_intensity_quantile=config.get('qc_intensity_quantile', 0.25),
+            
+            filter_blank_contaminants=config.get('filter_blank_contaminants', True),
+            blank_pattern=config.get('blank_pattern', 'blanco'),
+            blank_ratio_threshold=config.get('blank_ratio_threshold', 2.0),
             
             qc_pattern=config.get('qc_pattern', 'expQC'),
             fallback_qc_pattern=config.get('fallback_qc_pattern', 'QC3'),
@@ -120,10 +134,36 @@ class FeatureFilter:
         
         return qc_samples
     
+    def _identify_blank_samples(
+        self,
+        sample_cols: List[str],
+        sample_info: Optional[Dict[str, Dict]] = None,
+    ) -> List[str]:
+        """Identify blank samples from column names (contain 'blanco')."""
+        from .data_loader import extract_sample_id_from_column
+        
+        blank_samples = []
+        
+        for col in sample_cols:
+            if sample_info and col in sample_info:
+                sample_type = sample_info[col].get('sample_type', 'Sample')
+                sample_id = sample_info[col].get('sample_id', col)
+                if sample_type == "Blank" or self.blank_pattern.lower() in sample_id.lower():
+                    blank_samples.append(col)
+                    continue
+            
+            # Fallback to pattern matching on column name
+            sample_id = extract_sample_id_from_column(col)
+            if self.blank_pattern.lower() in sample_id.lower():
+                blank_samples.append(col)
+        
+        return blank_samples
+    
     def _filter_low_variance(
         self,
         df: pd.DataFrame,
         sample_cols: List[str],
+        blank_samples: List[str],
     ) -> Tuple[pd.DataFrame, int]:
         """
         Remove features with almost no variation.
@@ -132,14 +172,22 @@ class FeatureFilter:
         - Uninformative (constant or near-constant)
         - Noise
         
+        Uses only non-blank samples for variance calculation.
+        
         Returns:
             Filtered DataFrame and number of features removed.
         """
         if not self.filter_low_variance:
             return df, 0
         
-        # Calculate variance for each feature across all samples
-        variances = df[sample_cols].var(axis=1)
+        # Calculate variance for each feature across non-blank samples only
+        non_blank_cols = [col for col in sample_cols if col not in blank_samples]
+        
+        if len(non_blank_cols) == 0:
+            logger.warning("No non-blank samples for variance calculation. Skipping low variance filter.")
+            return df, 0
+        
+        variances = df[non_blank_cols].var(axis=1)
         
         if self.variance_quantile is not None:
             # Remove bottom N% by variance
@@ -160,6 +208,7 @@ class FeatureFilter:
         df: pd.DataFrame,
         sample_cols: List[str],
         batch_info: Dict[str, str],  # column -> batch mapping
+        blank_samples: List[str],
     ) -> Tuple[pd.DataFrame, int]:
         """
         Remove features only present in a single batch.
@@ -167,28 +216,29 @@ class FeatureFilter:
         These features are likely gap-filled (imputed) in all other batches,
         which means they're not reliable measurements.
         
+        Uses only non-blank samples for batch presence calculation.
+        
         Returns:
             Filtered DataFrame and number of features removed.
         """
         if not self.filter_single_batch:
             return df, 0
         
-        # For each feature, count how many batches have non-zero/non-NaN values
-        batch_counts = {}
-        
-        # Group samples by batch
+        # Group samples by batch, excluding blanks
         batch_samples = {}
         for col, batch in batch_info.items():
-            if col in sample_cols:
+            if col in sample_cols and col not in blank_samples:
                 if batch not in batch_samples:
                     batch_samples[batch] = []
                 batch_samples[batch].append(col)
         
-        # For each feature, count batches where it's present (non-zero median)
+        # For each feature, count how many batches have non-zero/non-NaN values
         feature_batch_counts = {}
         for feature in df.index:
             count = 0
             for batch, cols in batch_samples.items():
+                if len(cols) == 0:
+                    continue
                 batch_values = df.loc[feature, cols]
                 # Consider feature present if median > 0 (not gap-filled)
                 median_val = batch_values.median()
@@ -208,9 +258,12 @@ class FeatureFilter:
         self,
         df: pd.DataFrame,
         sample_cols: List[str],
+        blank_samples: List[str],
     ) -> Tuple[pd.DataFrame, int]:
         """
         Remove features with low intensity.
+        
+        Uses only non-blank samples for intensity calculation.
         
         Returns:
             Filtered DataFrame and number of features removed.
@@ -218,8 +271,14 @@ class FeatureFilter:
         if not self.filter_low_intensity:
             return df, 0
         
-        # Calculate mean intensity for each feature
-        mean_intensities = df[sample_cols].mean(axis=1)
+        # Calculate mean intensity for each feature across non-blank samples
+        non_blank_cols = [col for col in sample_cols if col not in blank_samples]
+        
+        if len(non_blank_cols) == 0:
+            logger.warning("No non-blank samples for intensity calculation. Skipping low intensity filter.")
+            return df, 0
+        
+        mean_intensities = df[non_blank_cols].mean(axis=1)
         
         if self.intensity_quantile is not None:
             # Remove bottom N% by intensity
@@ -283,6 +342,59 @@ class FeatureFilter:
         
         return df[mask], removed
     
+    def _filter_blank_contaminants(
+        self,
+        df: pd.DataFrame,
+        sample_cols: List[str],
+        blank_samples: List[str],
+    ) -> Tuple[pd.DataFrame, int]:
+        """
+        Remove features that are high in blank samples (contaminants).
+        
+        A feature is considered a contaminant if its mean intensity in blanks
+        is significantly higher than in biological samples.
+        
+        Returns:
+            Filtered DataFrame and number of features removed.
+        """
+        if not self.filter_blank_contaminants or not blank_samples:
+            return df, 0
+        
+        # Calculate mean intensity in blanks
+        blank_df = df[blank_samples]
+        blank_mean = blank_df.mean(axis=1)
+        
+        # Calculate mean intensity in non-blank samples
+        non_blank_cols = [col for col in sample_cols if col not in blank_samples]
+        
+        if len(non_blank_cols) == 0:
+            logger.warning("No non-blank samples for contaminant filter. Skipping.")
+            return df, 0
+        
+        bio_df = df[non_blank_cols]
+        bio_mean = bio_df.mean(axis=1)
+        
+        # Avoid division by zero
+        bio_mean_safe = bio_mean.replace(0, np.nan)
+        
+        # Calculate ratio: blank_mean / bio_mean
+        # Features with ratio > threshold are contaminants
+        ratio = blank_mean / bio_mean_safe
+        
+        # Only consider features where bio_mean > 0
+        valid_mask = bio_mean_safe > 0
+        
+        # Features are contaminants if ratio > threshold
+        contaminant_mask = (ratio > self.blank_ratio_threshold) & valid_mask
+        
+        # Keep features that are NOT contaminants
+        keep_mask = ~contaminant_mask
+        removed = contaminant_mask.sum()
+        
+        logger.info(f"  Blank contaminant filter (ratio > {self.blank_ratio_threshold}): removed {removed} features")
+        
+        return df[keep_mask], removed
+    
     def filter(
         self,
         df: pd.DataFrame,
@@ -311,34 +423,41 @@ class FeatureFilter:
         initial_count = len(df)
         total_removed = 0
         
-        # Identify QC samples
+        # Identify QC and blank samples
         qc_samples = self._identify_qc_samples(sample_cols, sample_info)
+        blank_samples = self._identify_blank_samples(sample_cols, sample_info)
         
         if qc_samples:
             logger.info(f"Found {len(qc_samples)} QC samples")
+        if blank_samples:
+            logger.info(f"Found {len(blank_samples)} blank samples")
         
         # Apply filters in order
         
-        # Filter 1: Low variance
-        df, removed = self._filter_low_variance(df, sample_cols)
+        # Filter 1: Blank contaminants (do this first to remove contaminants before other filters)
+        df, removed = self._filter_blank_contaminants(df, sample_cols, blank_samples)
         total_removed += removed
         
-        # Filter 2: Single batch
+        # Filter 2: Low variance
+        df, removed = self._filter_low_variance(df, sample_cols, blank_samples)
+        total_removed += removed
+        
+        # Filter 3: Single batch
         if batch_info:
-            df, removed = self._filter_single_batch(df, sample_cols, batch_info)
+            df, removed = self._filter_single_batch(df, sample_cols, batch_info, blank_samples)
             total_removed += removed
         else:
             logger.debug("  Single batch filter: skipped (no batch_info provided)")
         
-        # Filter 3: Low intensity
-        df, removed = self._filter_low_intensity(df, sample_cols)
+        # Filter 4: Low intensity
+        df, removed = self._filter_low_intensity(df, sample_cols, blank_samples)
         total_removed += removed
         
-        # Filter 4: QC present
+        # Filter 5: QC present
         df, removed = self._filter_qc_present(df, sample_cols, qc_samples)
         total_removed += removed
         
-        # Filter 5: QC intensity
+        # Filter 6: QC intensity
         df, removed = self._filter_qc_intensity(df, sample_cols, qc_samples)
         total_removed += removed
         
