@@ -27,7 +27,7 @@ ref_batch: null
 # Removes features that are high in blank samples (likely contaminants)
 filter_blank_contaminants: true
 blank_pattern: "blanco"  # Pattern to identify blank samples (case-insensitive)
-blank_ratio_threshold: 2.0  # Features with blank/bio ratio > this are removed
+blank_ratio_threshold: 3.0  # Features with blank/bio ratio > this are removed
 
 # Filter 2: Low variance (near-constant features)
 # Removes features with almost no variation (uninformative or noise)
