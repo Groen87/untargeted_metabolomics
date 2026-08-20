@@ -26,7 +26,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def identify_qc_samples_from_columns(sample_cols, qc_pattern="QC3"):
+def identify_qc_samples_from_columns(sample_cols, qc_pattern="QC4"):
     """Identify QC samples from column names using pattern matching."""
     qc_samples = []
     for col in sample_cols:
@@ -425,14 +425,14 @@ def generate_combat_plots(
     # QC-ONLY PLOTS (for better batch effect assessment)
     # ========================================================================
     
-    # Identify QC3 samples
-    qc3_samples = identify_qc_samples_from_columns(data_after.columns, qc_pattern="QC3")
+    # Identify QC4 samples
+    qc4_samples = identify_qc_samples_from_columns(data_after.columns, qc_pattern="QC4")
     
-    if len(qc3_samples) >= 2:
-        logger.info(f"Generating QC-only plots with {len(qc3_samples)} QC3 samples")
+    if len(qc4_samples) >= 2:
+        logger.info(f"Generating QC-only plots with {len(qc4_samples)} QC4 samples")
         
         # Get batch labels for QC samples
-        qc_batch_vec = numeric_batch_vector[[col in qc3_samples for col in data_after.columns]]
+        qc_batch_vec = numeric_batch_vector[[col in qc4_samples for col in data_after.columns]]
         qc_unique_batches = np.unique(qc_batch_vec)
         
         # UMAP for QC only
@@ -440,8 +440,8 @@ def generate_combat_plots(
             import umap.umap_ as umap
             
             for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
-                qc_df = df[qc3_samples].copy()
-                qc_batch = numeric_batch_vector[[col in qc3_samples for col in df.columns]]
+                qc_df = df[qc4_samples].copy()
+                qc_batch = numeric_batch_vector[[col in qc4_samples for col in df.columns]]
                 
                 # Handle NaN
                 if qc_df.isna().any().any():
@@ -463,7 +463,7 @@ def generate_combat_plots(
                             label=f'Batch {batch_label}', edgecolors='black', linewidth=0.3
                         )
                 
-                plt.title(f"{label} - UMAP (QC3 samples only)")
+                plt.title(f"{label} - UMAP (QC4 samples only)")
                 plt.xlabel("UMAP 1")
                 plt.ylabel("UMAP 2")
                 plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
@@ -521,7 +521,7 @@ def generate_combat_plots(
                             label=f'Batch {batch_label}', edgecolors='black', linewidth=0.3
                         )
                 
-                plt.title(f"{label} - PCA (QC3 samples only)")
+                plt.title(f"{label} - PCA (QC4 samples only)")
                 plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
                 plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
                 plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)

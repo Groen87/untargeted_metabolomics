@@ -366,10 +366,9 @@ def run_full_pipeline(
         show_plots=show_plots,
     )
     
-    # Check QC4 + QC_blaauw RSD before/after ComBat
+    # Check QC4 RSD before/after ComBat
     qc4_pattern = config.get('qc4_pattern', 'QC4')
-    blaauw_pattern = config.get('blaauw_pattern', 'blaauw')
-    log_qc_rsd_simple(merged_data, corrected_data, [qc4_pattern, blaauw_pattern], "ComBat")
+    log_qc_rsd_simple(merged_data, corrected_data, [qc4_pattern], "ComBat")
     
     # Step 5: RALPS correction (alternative to ComBat)
     run_ralps = config.get('run_ralps', True)
