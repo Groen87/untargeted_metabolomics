@@ -338,6 +338,20 @@ def run_full_pipeline(
     logger.info(f"Merged data shape: {merged_data.shape}")
     logger.info(f"Merged metadata shape: {merged_metadata.shape}")
     
+    # Update batch_groups to remove expQC/QC3 samples (they were removed during processing)
+    qc_pattern = config.get('qc_pattern', 'expQC')
+    fallback_qc_pattern = config.get('fallback_qc_pattern', 'QC3')
+    
+    for batch, samples in list(batch_groups.items()):
+        filtered_samples = []
+        for sample in samples:
+            if sample in merged_data.columns:
+                if qc_pattern not in sample and (fallback_qc_pattern is None or fallback_qc_pattern not in sample):
+                    filtered_samples.append(sample)
+        batch_groups[batch] = filtered_samples
+    
+    logger.info(f"Updated batch_groups to match processed data (removed expQC/QC3)")
+    
     # Step 4: ComBat correction
     logger.info(f"\n{'='*70}")
     logger.info(f"STEP 4: ComBat batch correction")
@@ -351,6 +365,11 @@ def run_full_pipeline(
         save_plots=save_plots,
         show_plots=show_plots,
     )
+    
+    # Check QC4 + QC_blaauw RSD before/after ComBat
+    qc4_pattern = config.get('qc4_pattern', 'QC4')
+    blaauw_pattern = config.get('blaauw_pattern', 'blaauw')
+    log_qc_rsd_simple(merged_data, corrected_data, [qc4_pattern, blaauw_pattern], "ComBat")
     
     # Step 5: RALPS correction (alternative to ComBat)
     run_ralps = config.get('run_ralps', True)
