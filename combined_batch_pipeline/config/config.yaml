@@ -40,6 +40,8 @@ variance_threshold: 0.01  # Absolute variance threshold (features with var < thi
 # Removes features only present in a single batch (gap-filled in others)
 filter_single_batch: true
 min_batches: 2  # Features must be present in at least this many batches
+single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global median (default: 10%)
+                                        # Increase to 0.25 or 0.50 if gap-filled values are higher
 
 # Filter 4: Low intensity
 # Removes features with low mean intensity across all samples

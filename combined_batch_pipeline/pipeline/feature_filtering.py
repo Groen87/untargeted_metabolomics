@@ -35,6 +35,7 @@ class FeatureFilter:
         # Filter 2: Single batch features (gap-filled in others)
         filter_single_batch: bool = True,
         min_batches: int = 2,  # Features must be present in at least this many batches
+        single_batch_noise_quantile: float = 0.10,  # Use this quantile of global median as noise threshold
         
         # Filter 3: Low intensity
         filter_low_intensity: bool = True,
@@ -87,6 +88,7 @@ class FeatureFilter:
             
             filter_single_batch=config.get('filter_single_batch', True),
             min_batches=config.get('min_batches', 2),
+            single_batch_noise_quantile=config.get('single_batch_noise_quantile', 0.10),
             
             filter_low_intensity=config.get('filter_low_intensity', True),
             intensity_threshold=config.get('intensity_threshold', 10000.0),
@@ -256,9 +258,9 @@ class FeatureFilter:
         median_df = pd.DataFrame(batch_medians)
         
         # Count how many batches each feature has median > small threshold
-        # Use a small threshold to avoid noise (e.g., 1% of global median)
+        # Use configurable quantile of global median as threshold to be above gap-filled noise
         global_median = df[sample_cols].median().median()
-        noise_threshold = global_median * 0.01 if global_median > 0 else 1e-6
+        noise_threshold = global_median * self.single_batch_noise_quantile if global_median > 0 else 1e-5
         
         present_mask = median_df > noise_threshold
         feature_batch_counts = present_mask.sum(axis=1)
