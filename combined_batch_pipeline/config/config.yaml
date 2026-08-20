@@ -32,9 +32,9 @@ blank_ratio_threshold: 3.0  # Features with blank/bio ratio > this are removed
 # Filter 2: Low variance (near-constant features)
 # Removes features with almost no variation (uninformative or noise)
 filter_low_variance: true
-variance_threshold: 0.01  # Absolute variance threshold (features with var < this are removed)
+# variance_threshold: 0.01  # Absolute variance threshold (features with var < this are removed)
 # Alternative to threshold: use quantile to remove bottom N% by variance
-# variance_quantile: 0.05  # Uncomment to use quantile instead of absolute threshold
+variance_quantile: 0.05  # Remove bottom 5% by variance
 
 # Filter 3: Single batch features
 # Removes features only present in a single batch (gap-filled in others)
