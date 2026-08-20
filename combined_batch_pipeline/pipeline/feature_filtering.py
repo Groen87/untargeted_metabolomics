@@ -267,6 +267,9 @@ class FeatureFilter:
         mask = feature_batch_counts >= self.min_batches
         removed = (~mask).sum()
         
+        # Ensure mask aligns with df.index
+        mask = mask.reindex(df.index, fill_value=True)
+        
         logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}): removed {removed} features")
         
         return df[mask], removed

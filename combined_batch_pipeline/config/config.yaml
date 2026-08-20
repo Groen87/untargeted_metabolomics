@@ -45,7 +45,7 @@ min_batches: 2  # Features must be present in at least this many batches
 # Removes features with low mean intensity across all samples
 filter_low_intensity: true
 # Option A: Absolute threshold
-intensity_threshold: 10000.0  # Features with mean intensity < this are removed
+intensity_threshold: 10000000.0  # Features with mean intensity < this are removed
 # Option B: Quantile-based (uncomment to use instead of absolute threshold)
 # intensity_quantile: 0.1  # Remove bottom N% by intensity
 
@@ -58,7 +58,7 @@ fallback_qc_pattern: "QC3"
 # ============================================================================
 # Legacy parameters (kept for backwards compatibility)
 # ============================================================================
-intensity_threshold: 10000
+intensity_threshold: 1000000
 qc_intensity_threshold: 0.1
 
 # ============================================================================
