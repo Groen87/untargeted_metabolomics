@@ -216,6 +216,22 @@ def process_batch(
         frac=frac,
     )
     
+    # Remove experiment QC samples (expQC, QC3) after drift correction
+    # These are used for within-batch LOESS correction and should NOT be used for inter-batch correction
+    # Identify which samples are experiment QC
+    exp_qc_samples = []
+    for col in batch_samples:
+        if col in batch_df.columns:
+            if qc_pattern in col or (fallback_qc_pattern and fallback_qc_pattern in col):
+                exp_qc_samples.append(col)
+    
+    if exp_qc_samples:
+        logger.info(f"  Removing {len(exp_qc_samples)} experiment QC samples (used for LOESS)")
+        logger.debug(f"  Removed: {exp_qc_samples[:5]}...")
+        batch_df = batch_df.drop(columns=exp_qc_samples)
+        # Also remove from batch_samples for subsequent processing
+        batch_samples = [s for s in batch_samples if s not in exp_qc_samples]
+    
     # Step 2: Median normalization (AFTER drift correction)
     logger.info(f"  Applying median normalization...")
     batch_df = pqn_normalize_batch(
