@@ -17,11 +17,13 @@ Workflow:
 3. Extract batch information from column names
 4. For each batch:
    a. Average duplicate samples (_1 + _2)
-   b. Apply median normalization
+   b. Apply PQN normalization
    c. Apply LOESS drift correction (using injection order from metadata)
 5. Merge all batches
 6. Run ComBat batch correction
-7. Generate QC reports (optional)
+7. Run RALPS batch correction (alternative method)
+8. Generate QC reports (optional)
+9. Generate comparison plots (ComBat vs RALPS)
 
 Usage:
     python combined_batch_pipeline/main.py --input data/combined_all_batches.csv --metadata metadata.csv
@@ -53,6 +55,7 @@ from combined_batch_pipeline.pipeline.batch_processing import (
 from combined_batch_pipeline.pipeline.feature_filtering import filter_features
 from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_merged_data
 from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis
+from combined_batch_pipeline.pipeline.ralps_correction import run_ralps_correction
 from combined_batch_pipeline.pipeline.injection_order import clean_sample_name
 
 # Configure logging - add DEBUG level for troubleshooting
@@ -348,10 +351,43 @@ def run_full_pipeline(
         show_plots=show_plots,
     )
     
-    # Step 5: QC analysis
+    # Step 5: RALPS correction (alternative to ComBat)
+    run_ralps = config.get('run_ralps', True)
+    if run_ralps:
+        logger.info(f"\n{'='*70}")
+        logger.info(f"STEP 5: RALPS batch correction (alternative method)")
+        logger.info(f"{'='*70}")
+        
+        try:
+            # Convert batch_groups to the format RALPS expects
+            # batch_groups is already a dict of {batch_name: [sample_cols]}
+            ralps_data, ralps_output_dir = run_ralps_correction(
+                df=corrected_data,  # Use ComBat-corrected data as input for RALPS
+                batch_groups=batch_groups,
+                sample_info=sample_info,
+                output_dir=output_dir / "ralps",
+                qc3_pattern=config.get('qc3_pattern', 'QC3'),
+                qc4_pattern=config.get('qc4_pattern', 'QC4'),
+                blanco_pattern=config.get('blank_pattern', 'blanco'),
+                blaauw_pattern=config.get('blaauw_pattern', 'blaauw'),
+            )
+            
+            # Save RALPS results
+            ralps_final = output_dir / "ralps_final"
+            ralps_final.mkdir(parents=True, exist_ok=True)
+            ralps_data.to_csv(ralps_final / "ralps_corrected_data.csv")
+            logger.info(f"RALPS corrected data saved to {ralps_final / 'ralps_corrected_data.csv'}")
+            
+        except Exception as e:
+            logger.error(f"RALPS correction failed: {e}", exc_info=True)
+            ralps_data = corrected_data  # Fall back to ComBat data
+    else:
+        ralps_data = corrected_data
+    
+    # Step 6: QC analysis
     if run_qc:
         logger.info(f"\n{'='*70}")
-        logger.info(f"STEP 5: QC analysis")
+        logger.info(f"STEP 6: QC analysis")
         logger.info(f"{'='*70}")
         
         try:
