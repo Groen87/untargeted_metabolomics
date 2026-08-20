@@ -263,28 +263,31 @@ def loess_drift_correction(
             smoothed_values = smoothed[:, 1]
             smoothed_safe = np.where(smoothed_values > 0, smoothed_values, qc_mean)
             
-            # Apply correction to QC samples
-            for i, col in enumerate(qc_samples):
-                correction = qc_mean / smoothed_safe[i]
-                df_corrected.loc[feature, col] *= correction
+            # Apply LOESS correction to ALL samples (QC and biological) based on injection position
+            # This is the standard approach: fit to QC, correct all samples
             
-            # Apply LOESS correction to biological samples by interpolating at their position
-            # Get all biological sample positions
-            bio_positions = np.array([position_idx[col] for col in bio_samples])
+            # Get positions for ALL samples (QC + biological)
+            all_samples_sorted = sorted_samples
+            all_positions = np.array([position_idx[col] for col in all_samples_sorted])
             
-            # Use lowess with xvals to interpolate at biological sample positions
+            # Interpolate LOESS at all sample positions
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    bio_smoothed = lowess(qc_intensities, qc_positions_array, frac=frac, xvals=bio_positions)
+                    all_smoothed = lowess(qc_intensities, qc_positions_array, frac=frac, xvals=all_positions)
                 
-                for j, bio_col in enumerate(bio_samples):
-                    bio_smoothed_value = bio_smoothed[j, 1]
-                    bio_smoothed_safe = bio_smoothed_value if bio_smoothed_value > 0 else qc_mean
-                    bio_correction = qc_mean / bio_smoothed_safe
-                    df_corrected.loc[feature, bio_col] = feature_data[position_idx[bio_col]] * bio_correction
+                # Apply correction to all samples
+                for k, col in enumerate(all_samples_sorted):
+                    smoothed_value = all_smoothed[k, 1]
+                    smoothed_safe = smoothed_value if smoothed_value > 0 else qc_mean
+                    correction = qc_mean / smoothed_safe
+                    df_corrected.loc[feature, col] = feature_data[position_idx[col]] * correction
+                    
             except:
-                # Fallback: use nearest QC sample for each biological sample
+                # Fallback: apply correction to QC samples only, bio samples use nearest QC
+                for i, col in enumerate(qc_samples):
+                    correction = qc_mean / smoothed_safe[i]
+                    df_corrected.loc[feature, col] *= correction
                 for bio_col in bio_samples:
                     df_corrected.loc[feature, bio_col] = df_corrected.loc[feature, bio_to_qc[bio_col]]
             
