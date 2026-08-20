@@ -53,11 +53,6 @@ intensity_threshold: 10000.0  # Features with mean intensity < this are removed
 # Removes features not present (NaN) in all QC samples
 filter_qc_present: true
 
-# Filter 6: QC intensity
-# Removes features with low intensity in QC samples
-filter_qc_intensity: true
-qc_intensity_quantile: 0.25  # Remove bottom 25% by QC intensity
-
 # ============================================================================
 # QC Sample Detection
 # ============================================================================

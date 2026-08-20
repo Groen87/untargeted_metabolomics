@@ -242,6 +242,9 @@ class FeatureFilter:
                 batch_values = df.loc[feature, cols]
                 # Consider feature present if median > 0 (not gap-filled)
                 median_val = batch_values.median()
+                # median_val might be a Series if cols has duplicates, take first value
+                if isinstance(median_val, pd.Series):
+                    median_val = median_val.iloc[0] if len(median_val) > 0 else 0
                 if pd.notna(median_val) and median_val > 0:
                     count += 1
             feature_batch_counts[feature] = count
@@ -457,9 +460,7 @@ class FeatureFilter:
         df, removed = self._filter_qc_present(df, sample_cols, qc_samples)
         total_removed += removed
         
-        # Filter 6: QC intensity
-        df, removed = self._filter_qc_intensity(df, sample_cols, qc_samples)
-        total_removed += removed
+
         
         # Summary
         if initial_count > 0:
