@@ -179,15 +179,8 @@ def loess_drift_correction(
         return df.copy()
     
     # For each feature, fit LOESS to QC samples and apply correction
+    # Apply to ALL features (not just high-intensity)
     df_corrected = df.copy()
-    
-    # Use high-intensity features for drift estimation
-    feature_means = df[sorted_samples].mean(axis=1)
-    high_intensity_mask = feature_means > feature_means.quantile(0.9)
-    # Use unique features to avoid duplicate index issues
-    high_intensity_features = df.index[high_intensity_mask].unique()
-    
-    logger.info(f"Using {len(high_intensity_features)} high-intensity features for drift estimation")
     
     # Pre-compute QC positions (constant for all features)
     qc_positions = [position_idx[col] for col in qc_samples]
@@ -201,8 +194,11 @@ def loess_drift_correction(
         nearest_qc_idx = qc_positions.index(nearest_qc_pos)
         bio_to_qc[bio_col] = qc_samples[nearest_qc_idx]
     
-    # Fit LOESS for each high-intensity feature
-    for feature in high_intensity_features:
+    # Fit LOESS for ALL features
+    all_features = df.index.unique()
+    logger.info(f"Applying LOESS drift correction to all {len(all_features)} features")
+    
+    for feature in all_features:
         # Handle case where feature might have duplicate index entries
         feature_values = df.loc[feature, sorted_samples]
         if isinstance(feature_values, pd.DataFrame):
@@ -237,14 +233,6 @@ def loess_drift_correction(
         except Exception as e:
             logger.debug(f"Failed to fit LOESS for feature {feature}: {e}")
             continue
-    
-    # For features not in high_intensity_features, use median correction
-    if len(high_intensity_features) < len(df):
-        # Vectorized median correction for all remaining features
-        remaining_features = [f for f in df.index.unique() if f not in high_intensity_features]
-        if remaining_features:
-            median_correction = df_corrected[sorted_samples].median(axis=0) / df[sorted_samples].median(axis=0)
-            df_corrected.loc[remaining_features] = df.loc[remaining_features] * median_correction.values
     
     return df_corrected
 
@@ -287,17 +275,7 @@ def process_batch(
     # Extract batch data
     batch_df = df[batch_samples].copy()
     
-    # Step 1: Median normalization
-    logger.info(f"  Applying median normalization...")
-    batch_df = median_normalize_batch(
-        batch_df,
-        batch_samples,
-        sample_info=sample_info,
-        qc_pattern=qc_pattern,
-        fallback_qc_pattern=fallback_qc_pattern,
-    )
-    
-    # Step 2: LOESS drift correction
+    # Step 1: LOESS drift correction (BEFORE normalization)
     logger.info(f"  Applying LOESS drift correction...")
     logger.debug(f"  Injection order keys (first 5): {list(injection_order.keys())[:5] if injection_order else 'None'}...")
     batch_df = loess_drift_correction(
@@ -308,6 +286,16 @@ def process_batch(
         qc_pattern=qc_pattern,
         fallback_qc_pattern=fallback_qc_pattern,
         frac=frac,
+    )
+    
+    # Step 2: Median normalization (AFTER drift correction)
+    logger.info(f"  Applying median normalization...")
+    batch_df = median_normalize_batch(
+        batch_df,
+        batch_samples,
+        sample_info=sample_info,
+        qc_pattern=qc_pattern,
+        fallback_qc_pattern=fallback_qc_pattern,
     )
     
     # Create batch metadata
