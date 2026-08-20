@@ -87,6 +87,15 @@ class FeatureFilter:
         self.fallback_qc_pattern = fallback_qc_pattern
     
     @classmethod
+    def _is_hmdb_feature(self, feature_name: str) -> bool:
+        """Check if a feature name contains 'HMDB' (should be preserved)."""
+        return 'HMDB' in str(feature_name)
+
+    def _get_hmdb_features(self, df: pd.DataFrame) -> set:
+        """Get set of feature names that contain 'HMDB'."""
+        return {idx for idx in df.index if self._is_hmdb_feature(idx)}
+
+
     def from_config(cls, config: Dict[str, Any]) -> 'FeatureFilter':
         """Create FeatureFilter from configuration dictionary."""
         return cls(
@@ -214,7 +223,13 @@ class FeatureFilter:
             removed = (variances < self.variance_threshold).sum()
             logger.info(f"  Low variance filter (threshold={self.variance_threshold}): removed {removed} features")
         
-        return df[mask], removed
+        # Preserve HMDB features by forcing them to pass the filter
+        mask_with_hmdb = mask.copy()
+        for feature in hmdb_features:
+            if feature in mask_with_hmdb.index:
+                mask_with_hmdb[feature] = True
+        
+        return df[mask_with_hmdb], removed
     
     def _filter_single_batch(
         self,
@@ -228,6 +243,7 @@ class FeatureFilter:
         
         These features are likely gap-filled (imputed) in all other batches,
         which means they're not reliable measurements.
+        Features with 'HMDB' in their name are preserved.
         
         Uses only non-blank samples for batch presence calculation.
         A feature is considered "present" in a batch if its median intensity
@@ -238,6 +254,9 @@ class FeatureFilter:
         """
         if not self.filter_single_batch:
             return df, 0
+        
+        # Preserve HMDB features
+        hmdb_features = self._get_hmdb_features(df)
         
         # Group samples by batch, excluding blanks
         batch_samples = {}
@@ -285,7 +304,13 @@ class FeatureFilter:
         
         logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}): removed {removed} features")
         
-        return df[mask], removed
+        # Preserve HMDB features by forcing them to pass the filter
+        mask_with_hmdb = mask.copy()
+        for feature in hmdb_features:
+            if feature in mask_with_hmdb.index:
+                mask_with_hmdb[feature] = True
+        
+        return df[mask_with_hmdb], removed
     
     def _filter_low_intensity(
         self,
@@ -297,12 +322,16 @@ class FeatureFilter:
         Remove features with low intensity.
         
         Uses only non-blank samples for intensity calculation.
+        Features with 'HMDB' in their name are preserved.
         
         Returns:
             Filtered DataFrame and number of features removed.
         """
         if not self.filter_low_intensity:
             return df, 0
+        
+        # Preserve HMDB features
+        hmdb_features = self._get_hmdb_features(df)
         
         # Calculate mean intensity for each feature across non-blank samples
         non_blank_cols = [col for col in sample_cols if col not in blank_samples]
@@ -339,6 +368,7 @@ class FeatureFilter:
         
         Removes features where RSD > 30% across all QC3 samples.
         This filters out features that are inconsistent in QC samples.
+        Features with 'HMDB' in their name are preserved.
         
         Args:
             df: DataFrame with features as rows, samples as columns
@@ -350,6 +380,9 @@ class FeatureFilter:
         """
         if not self.filter_high_qc3_rsd or not qc_samples:
             return df, 0
+        
+        # Preserve HMDB features
+        hmdb_features = self._get_hmdb_features(df)
         
         # Identify QC3 samples specifically
         qc3_samples = [col for col in qc_samples if 'QC3' in col]
@@ -372,9 +405,10 @@ class FeatureFilter:
             logger.debug("  High QC3 RSD filter: no features removed")
             return df, 0
         
-        # Remove high RSD features
-        df_filtered = df.drop(index=high_rsd_features)
-        removed = len(high_rsd_features)
+        # Remove high RSD features, but preserve HMDB features
+        high_rsd_features_to_remove = [f for f in high_rsd_features if f not in hmdb_features]
+        df_filtered = df.drop(index=high_rsd_features_to_remove)
+        removed = len(high_rsd_features_to_remove)
         
         logger.info(f"  High QC3 RSD filter (RSD > {self.qc3_rsd_threshold}%): removed {removed} features")
         
@@ -440,6 +474,7 @@ class FeatureFilter:
         
         A feature is considered a contaminant if the average of biological samples
         is NOT at least blank_ratio_threshold times higher than the average in blank samples.
+        Features with 'HMDB' in their name are preserved.
         
         Formula: contaminant if bio_mean < (blank_mean * blank_ratio_threshold)
         Default threshold=2.0: keeps features where bio_mean >= 2 * blank_mean
@@ -449,6 +484,9 @@ class FeatureFilter:
         """
         if not self.filter_blank_contaminants or not blank_samples:
             return df, 0
+        
+        # Preserve HMDB features
+        hmdb_features = self._get_hmdb_features(df)
         
         # Calculate mean intensity in blanks
         blank_df = df[blank_samples]
@@ -485,7 +523,13 @@ class FeatureFilter:
         
         logger.info(f"  Blank contaminant filter (bio < blank*{self.blank_ratio_threshold}, with 10x loophole): removed {removed} features")
         
-        return df[keep_mask], removed
+        # Preserve HMDB features by forcing them to pass the filter
+        keep_mask_with_hmdb = keep_mask.copy()
+        for feature in hmdb_features:
+            if feature in keep_mask_with_hmdb.index:
+                keep_mask_with_hmdb[feature] = True
+        
+        return df[keep_mask_with_hmdb], removed
 
 
     def filter(
@@ -512,6 +556,11 @@ class FeatureFilter:
         
         logger.info(f"\nApplying feature filters...")
         logger.info(f"Initial feature count: {len(df)}")
+        
+        # Count HMDB features (these will be preserved from filtering)
+        hmdb_count = sum(1 for idx in df.index if self._is_hmdb_feature(idx))
+        if hmdb_count > 0:
+            logger.info(f"Found {hmdb_count} HMDB features (will be preserved from filtering)")
         
         initial_count = len(df)
         total_removed = 0
