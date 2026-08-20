@@ -123,15 +123,17 @@ def loess_drift_correction(
     fallback_qc_pattern: Optional[str] = "QC3",
     frac: float = 0.5,
 ) -> pd.DataFrame:
+
     """
     Apply LOESS drift correction to a batch.
     
-    Uses injection order from metadata (creation dates) to properly order samples.
-    If no injection order is provided, uses column order as fallback.
+    Uses injection order from metadata to properly order samples.
+    Only applies LOESS to features with significant time-dependent trend in QC samples.
+    Reports QC CV before/after for features that were corrected.
     
     Args:
         df: DataFrame with features as rows, samples as columns
-        sample_cols: List of sample column names (will be reordered by injection order)
+        sample_cols: List of sample column names
         sample_info: Optional dictionary with sample metadata
         injection_order: Optional dictionary mapping columns to injection order index
         qc_pattern: Pattern to identify QC samples
@@ -142,6 +144,8 @@ def loess_drift_correction(
         DataFrame with drift-corrected values
     """
     from statsmodels.nonparametric.smoothers_lowess import lowess
+    from scipy.stats import linregress
+    import warnings
     
     # Identify QC samples
     qc_samples, bio_samples = identify_qc_samples(sample_cols, sample_info, qc_pattern, fallback_qc_pattern)
@@ -152,41 +156,27 @@ def loess_drift_correction(
     
     logger.info(f"Applying LOESS drift correction with {len(qc_samples)} QC samples")
     
-    # Sort samples by injection order if available, otherwise use column order
+    # Sort samples by injection order
     if injection_order:
-        # Sort all samples by injection order (global order from metadata)
         sorted_samples = sorted(sample_cols, key=lambda col: injection_order.get(col, float('inf')))
-        logger.debug(f"Sorted {len(sample_cols)} samples by injection order")
-        logger.debug(f"First 5 sorted samples: {sorted_samples[:5]}")
-        logger.debug(f"Injection order values for first 5: {[injection_order.get(c, -1) for c in sorted_samples[:5]]}")
     else:
         sorted_samples = sample_cols
         logger.warning("No injection order provided, using column order")
     
-    # Create position mapping (0-based within sorted_samples)
-    position_idx = {col: i for i, col in enumerate(sorted_samples)}
-    logger.debug(f"Position index: {position_idx}")
-    
-    # Filter QC and bio samples to only those in sorted_samples
-    qc_samples = [col for col in qc_samples if col in position_idx]
-    bio_samples = [col for col in bio_samples if col in position_idx]
-    
-    logger.debug(f"QC samples after filtering: {qc_samples}")
-    logger.debug(f"Bio samples after filtering: {bio_samples[:5]}...")
+    # Filter QC and bio samples
+    qc_samples = [col for col in qc_samples if col in sorted_samples]
+    bio_samples = [col for col in bio_samples if col in sorted_samples]
     
     if len(qc_samples) < 2:
-        logger.warning(f"After filtering, only {len(qc_samples)} QC samples remain. Skipping drift correction.")
+        logger.warning(f"After filtering, only {len(qc_samples)} QC samples remain. Skipping.")
         return df.copy()
     
-    # For each feature, fit LOESS to QC samples and apply correction
-    # Apply to ALL features (not just high-intensity)
-    df_corrected = df.copy()
-    
-    # Pre-compute QC positions (constant for all features)
+    # Create position mapping
+    position_idx = {col: i for i, col in enumerate(sorted_samples)}
     qc_positions = [position_idx[col] for col in qc_samples]
     qc_positions_array = np.array(qc_positions)
     
-    # Pre-compute nearest QC sample for each biological sample (constant for all features)
+    # Pre-compute nearest QC for each bio sample
     bio_to_qc = {}
     for bio_col in bio_samples:
         bio_pos = position_idx[bio_col]
@@ -194,45 +184,89 @@ def loess_drift_correction(
         nearest_qc_idx = qc_positions.index(nearest_qc_pos)
         bio_to_qc[bio_col] = qc_samples[nearest_qc_idx]
     
-    # Fit LOESS for ALL features
-    all_features = df.index.unique()
-    logger.info(f"Applying LOESS drift correction to all {len(all_features)} features")
+    # Get QC data for all features at once (vectorized)
+    qc_df = df.loc[:, qc_samples]
     
-    for feature in all_features:
-        # Handle case where feature might have duplicate index entries
+    # Check for significant time trend using linear regression (vectorized)
+    # For each feature, fit: intensity ~ position
+    slopes = []
+    p_values = []
+    
+    for feature in qc_df.index.unique():
+        try:
+            feature_qc = qc_df.loc[feature, qc_samples].values
+            slope, intercept, r_value, p_value, std_err = linregress(qc_positions_array, feature_qc)
+            slopes.append(slope)
+            p_values.append(p_value)
+        except:
+            slopes.append(0)
+            p_values.append(1.0)
+    
+    # Features with significant drift: p < 0.05 and |slope| > 1e-6
+    has_drift = np.array([p < 0.05 and abs(s) > 1e-6 for s, p in zip(slopes, p_values)])
+    features_with_drift = np.sum(has_drift)
+    total_features = len(qc_df.index.unique())
+    
+    logger.info(f"  Features with significant drift: {features_with_drift}/{total_features}")
+    
+    # Calculate QC CV before correction for features with drift
+    qc_means_before = qc_df.mean(axis=1)
+    qc_stds_before = qc_df.std(axis=1)
+    qc_cvs_before = (qc_stds_before / qc_means_before).fillna(0)
+    
+    df_corrected = df.copy()
+    features_corrected = 0
+    
+    # Apply LOESS only to features with significant drift
+    drift_features = qc_df.index.unique()[has_drift]
+    
+    for feature in drift_features:
         feature_values = df.loc[feature, sorted_samples]
         if isinstance(feature_values, pd.DataFrame):
-            # If duplicate index, take the mean across duplicate rows
             feature_data = feature_values.mean(axis=0).values
         else:
             feature_data = feature_values.values
         
-        # Get QC intensities using pre-computed positions
         qc_intensities = feature_data[qc_positions_array]
         
-        # Fit LOESS
         try:
-            smoothed = lowess(qc_intensities, qc_positions_array, frac=frac)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                smoothed = lowess(qc_intensities, qc_positions_array, frac=frac)
             
-            # Calculate correction factors
             qc_mean = np.mean(qc_intensities)
             smoothed_values = smoothed[:, 1]
-            
-            # Avoid division by zero
             smoothed_safe = np.where(smoothed_values > 0, smoothed_values, qc_mean)
             
-            # Apply corrections to QC samples
             for i, col in enumerate(qc_samples):
                 correction = qc_mean / smoothed_safe[i]
                 df_corrected.loc[feature, col] *= correction
             
-            # For biological samples, use pre-computed nearest QC
             for bio_col in bio_samples:
                 df_corrected.loc[feature, bio_col] = df_corrected.loc[feature, bio_to_qc[bio_col]]
-                
+            
+            features_corrected += 1
+            
         except Exception as e:
-            logger.debug(f"Failed to fit LOESS for feature {feature}: {e}")
+            logger.debug(f"Failed LOESS for {feature}: {e}")
             continue
+    
+    # Calculate QC CV after correction for corrected features only
+    qc_df_after = df_corrected[qc_samples]
+    qc_means_after = qc_df_after.mean(axis=1)
+    qc_stds_after = qc_df_after.std(axis=1)
+    qc_cvs_after = (qc_stds_after / qc_means_after).fillna(0)
+    
+    # CV improvement for features that were corrected
+    cv_before_drift = qc_cvs_before[has_drift]
+    cv_after_drift = qc_cvs_after.reindex(qc_cvs_before.index[has_drift])
+    cv_improvement = cv_before_drift - cv_after_drift
+    mean_cv_improvement = cv_improvement.mean()
+    features_improved = (cv_improvement > 0).sum()
+    
+    logger.info(f"  Features corrected with LOESS: {features_corrected}/{features_with_drift}")
+    logger.info(f"  Mean QC CV improvement (corrected features): {mean_cv_improvement:.4f}")
+    logger.info(f"  Features with improved CV: {features_improved}/{features_corrected}")
     
     return df_corrected
 
