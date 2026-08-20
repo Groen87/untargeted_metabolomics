@@ -62,6 +62,7 @@ class FeatureFilter:
         
         self.filter_single_batch = filter_single_batch
         self.min_batches = min_batches
+        self.single_batch_noise_quantile = single_batch_noise_quantile
         
         self.filter_low_intensity = filter_low_intensity
         self.intensity_threshold = intensity_threshold
