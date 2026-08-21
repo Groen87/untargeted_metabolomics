@@ -37,6 +37,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 import pandas as pd
+import numpy as np
 import re
 
 from combined_batch_pipeline.config.config import Config
@@ -56,6 +57,7 @@ from combined_batch_pipeline.pipeline.feature_filtering import filter_features
 from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_merged_data
 from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis, log_qc_rsd_simple
 from combined_batch_pipeline.pipeline.ralps_correction import run_ralps_correction
+from combined_batch_pipeline.pipeline.batch_effect_analysis import analyze_batch_effects
 from combined_batch_pipeline.pipeline.injection_order import clean_sample_name
 
 # Configure logging - add DEBUG level for troubleshooting
@@ -353,6 +355,24 @@ def run_full_pipeline(
     logger.info(f"Updated batch_groups to match processed data (removed expQC/QC3)")
     
     # Step 4: ComBat correction
+    # Step 3.5: Batch effect analysis (before correction)
+    logger.info(f"\n{'='*70}")
+    logger.info(f"STEP 3.5: Batch effect analysis (before ComBat)")
+    logger.info(f"{'='*70}")
+    
+    # Get batch labels from metadata
+    batch_dict = dict(zip(merged_metadata['original_col'], merged_metadata['batch']))
+    batch_vector = np.array([batch_dict.get(col, 'unknown') for col in merged_data.columns])
+    
+    # Analyze batch effects
+    pre_combat_batch_metrics = analyze_batch_effects(
+        data=merged_data,
+        batch_labels=batch_vector,
+        output_dir=output_dir / "batch_effect_analysis",
+        prefix="pre_combat"
+    )
+    
+    # Step 4: ComBat batch correction
     logger.info(f"\n{'='*70}")
     logger.info(f"STEP 4: ComBat batch correction")
     logger.info(f"{'='*70}")
