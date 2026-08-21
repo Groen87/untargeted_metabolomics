@@ -450,7 +450,7 @@ def generate_combat_plots(
                     qc_df = qc_df.fillna(small_value)
                 
                 # UMAP
-                n_neighbors = min(30, len(qc3_samples) - 1)
+                n_neighbors = min(30, len(qc4_samples) - 1)
                 emb = umap.UMAP(random_state=42, n_jobs=1, n_neighbors=n_neighbors, min_dist=0.1).fit_transform(qc_df.T)
                 
                 plt.figure(figsize=(14, 12))
@@ -496,8 +496,8 @@ def generate_combat_plots(
             from sklearn.preprocessing import StandardScaler
             
             for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
-                qc_df = df[qc3_samples].copy()
-                qc_batch = numeric_batch_vector[[col in qc3_samples for col in df.columns]]
+                qc_df = df[qc4_samples].copy()
+                qc_batch = numeric_batch_vector[[col in qc4_samples for col in df.columns]]
                 
                 # Handle NaN
                 if qc_df.isna().any().any():
@@ -548,7 +548,7 @@ def generate_combat_plots(
         except ImportError:
             logger.warning("sklearn not available. Skipping QC-only PCA plots.")
     else:
-        logger.warning(f"Need at least 2 QC3 samples for QC-only plots. Found {len(qc3_samples)}.")
+        logger.warning(f"Need at least 2 QC4 samples for QC-only plots. Found {len(qc4_samples)}.")
     
     # ========================================================================
     # END QC-ONLY PLOTS
