@@ -117,6 +117,7 @@ class FeatureFilter:
             filter_blank_contaminants=config.get('filter_blank_contaminants', True),
             blank_pattern=config.get('blank_pattern', 'blanco'),
             blank_ratio_threshold=config.get('blank_ratio_threshold', 2.0),
+            blank_high_signal_threshold=config.get('blank_high_signal_threshold', 10.0),
             
             filter_high_qc3_rsd=config.get('filter_high_qc3_rsd', True),
             qc3_rsd_threshold=config.get('qc3_rsd_threshold', 30.0),
@@ -512,9 +513,9 @@ class FeatureFilter:
         blank_mean_series = pd.Series(blank_mean, index=df.index)
         bio_df = df[non_blank_cols]
         
-        # For each feature, check if any bio sample >= 10 * blank_mean
+        # For each feature, check if any bio sample >= high_signal_threshold * blank_mean
         max_bio = bio_df.max(axis=1)
-        has_high_signal = (max_bio >= 10 * blank_mean_series)
+        has_high_signal = (max_bio >= self.blank_high_signal_threshold * blank_mean_series)
         
         # Contaminant: bio_mean < threshold * blank_mean AND no high-signal bio sample
         contaminant_mask = (bio_mean < blank_mean * self.blank_ratio_threshold) & (blank_mean > 0) & (~has_high_signal)
@@ -523,7 +524,7 @@ class FeatureFilter:
         keep_mask = ~contaminant_mask
         removed = contaminant_mask.sum()
         
-        logger.info(f"  Blank contaminant filter (bio < blank*{self.blank_ratio_threshold}, with 10x loophole): removed {removed} features")
+        logger.info(f"  Blank contaminant filter (bio < blank*{self.blank_ratio_threshold}, with {self.blank_high_signal_threshold}x loophole): removed {removed} features")
         
         # Preserve HMDB features by forcing them to pass the filter
         keep_mask_with_hmdb = keep_mask.copy()
