@@ -159,12 +159,23 @@ def calculate_batch_variance_ratio(
     
     ratios = np.array(ratios)
     
+    # Get feature names with high ratios
+    features_above_2_list = []
+    features_above_5_list = []
+    for i, ratio in enumerate(ratios):
+        if ratio > 2:
+            features_above_2_list.append(data.index[i])
+        if ratio > 5:
+            features_above_5_list.append(data.index[i])
+    
     return {
         'mean_ratio': float(np.mean(ratios)),
         'median_ratio': float(np.median(ratios)),
         'features_above_2': int(np.sum(ratios > 2)),
         'features_above_5': int(np.sum(ratios > 5)),
         'max_ratio': float(np.max(ratios)) if len(ratios) > 0 else 0.0,
+        'features_above_2_list': features_above_2_list,
+        'features_above_5_list': features_above_5_list,
     }
 
 
@@ -234,7 +245,7 @@ def calculate_batch_contribution_to_pcs(
                     ss_within += np.sum((pc[mask] - np.mean(pc[mask]))**2)
             
             # Total variance
-            ss_total = ss_between + ss_between
+            ss_total = ss_between + ss_within
             
             if ss_total > 0:
                 r2 = ss_between / ss_total
@@ -270,7 +281,8 @@ def calculate_permanova_p_value(
         PERMANOVA p-value (float)
     """
     try:
-        from skbio.diversity.beta import permanova
+        from skbio.stats.distance import permanova
+        from skbio import DistanceMatrix
         
         # Convert to distance matrix
         df_filled = data.copy()
@@ -279,9 +291,10 @@ def calculate_permanova_p_value(
             small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
             df_filled = df_filled.fillna(small_value)
         
-        # Use Euclidean distance
+        # Use Euclidean distance - skbio requires DistanceMatrix
         from scipy.spatial.distance import pdist, squareform
-        dist_matrix = squareform(pdist(df_filled.T, 'euclidean'))
+        dist_array = squareform(pdist(df_filled.T, 'euclidean'))
+        dist_matrix = DistanceMatrix(dist_array)
         
         # PERMANOVA
         results = permanova(dist_matrix, batch_labels, permutations=n_permutations)
@@ -458,6 +471,14 @@ def analyze_batch_effects(
     logger.info(f"  Features with ratio > 2: {var_results['features_above_2']}")
     logger.info(f"  Features with ratio > 5: {var_results['features_above_5']}")
     
+    
+    # Show features with ratio > 2
+    if var_results.get('features_above_2_list') and len(var_results['features_above_2_list']) > 0:
+        logger.info(f"\n  Features with ratio > 2:")
+        for feat in var_results['features_above_2_list'][:10]:
+            logger.info(f"    - {feat}")
+        if len(var_results['features_above_2_list']) > 10:
+            logger.info(f"    ... and {len(var_results['features_above_2_list']) - 10} more")
     if var_results['mean_ratio'] > 1.0:
         logger.info("  -> Significant batch effects detected (mean ratio > 1)")
     
@@ -501,6 +522,15 @@ def analyze_batch_effects(
         f.write(f"  Max ratio: {results.get('max_ratio', 'N/A'):.2f}\n")
         f.write(f"  Features > 2: {results.get('features_above_2', 'N/A')}\n")
         f.write(f"  Features > 5: {results.get('features_above_5', 'N/A')}\n\n")
+        
+        # Add feature names with ratio > 2
+        features_above_2_list = results.get('features_above_2_list', [])
+        if features_above_2_list:
+            f.write("  Features with ratio > 2:\n")
+            for feat in features_above_2_list[:10]:
+                f.write(f"    - {feat}\n")
+            if len(features_above_2_list) > 10:
+                f.write(f"    ... and {len(features_above_2_list) - 10} more\n")
         
         f.write("PC Batch Contribution:\n")
         for pc, contrib in results.get('pc_batch_contribution', {}).items():

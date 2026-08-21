@@ -177,6 +177,8 @@ def run_full_pipeline(
         'filter_blank_contaminants': config.get('filter_blank_contaminants', True),
         'blank_pattern': config.get('blank_pattern', 'blanco'),
         'blank_ratio_threshold': config.get('blank_ratio_threshold', 2.0),
+        'filter_high_qc3_rsd': config.get('filter_high_qc3_rsd', True),
+        'qc3_rsd_threshold': config.get('qc3_rsd_threshold', 30.0),
         'qc_pattern': qc_pattern,
         'fallback_qc_pattern': fallback_qc_pattern,
     }
@@ -340,19 +342,32 @@ def run_full_pipeline(
     logger.info(f"Merged data shape: {merged_data.shape}")
     logger.info(f"Merged metadata shape: {merged_metadata.shape}")
     
-    # Update batch_groups to remove expQC/QC3 samples (they were removed during processing)
+    # Clean batch_groups to only include samples that are in merged_data
+    # (some samples may have been removed during processing)
+    # Keep ALL samples including QC for RALPS
+    cleaned_batch_groups = {}
+    for batch, samples in batch_groups.items():
+        cleaned_samples = [s for s in samples if s in merged_data.columns]
+        if cleaned_samples:
+            cleaned_batch_groups[batch] = cleaned_samples
+    
+    # Create a copy for ComBat (without QC samples)
     qc_pattern = config.get('qc_pattern', 'expQC')
     fallback_qc_pattern = config.get('fallback_qc_pattern', 'QC3')
     
-    for batch, samples in list(batch_groups.items()):
+    combat_batch_groups = {}
+    for batch, samples in cleaned_batch_groups.items():
         filtered_samples = []
         for sample in samples:
-            if sample in merged_data.columns:
-                if qc_pattern not in sample and (fallback_qc_pattern is None or fallback_qc_pattern not in sample):
-                    filtered_samples.append(sample)
-        batch_groups[batch] = filtered_samples
+            if qc_pattern not in sample and (fallback_qc_pattern is None or fallback_qc_pattern not in sample):
+                filtered_samples.append(sample)
+        combat_batch_groups[batch] = filtered_samples
     
-    logger.info(f"Updated batch_groups to match processed data (removed expQC/QC3)")
+    # Use cleaned_batch_groups for RALPS (has QC samples, only samples in merged_data)
+    batch_groups = cleaned_batch_groups
+    
+    logger.info(f"Cleaned batch_groups to match merged data ({len(merged_data.columns)} columns)")
+    logger.info(f"Created combat_batch_groups (QC samples removed for ComBat)")
     
     # Step 4: ComBat correction
     # Step 3.5: Batch effect analysis (before correction)
