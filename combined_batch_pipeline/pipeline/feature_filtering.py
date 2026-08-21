@@ -51,6 +51,7 @@ class FeatureFilter:
         filter_blank_contaminants: bool = True,
         blank_pattern: str = "blanco",  # Pattern to identify blank samples
         blank_ratio_threshold: float = 2.0,  # Features with blank/sample ratio > this are removed
+        blank_high_signal_threshold: float = 10.0,  # Keep features if any bio sample >= this * blank_mean
         
         # QC3 RSD filter
         filter_high_qc3_rsd: bool = True,
@@ -79,6 +80,7 @@ class FeatureFilter:
         self.filter_blank_contaminants = filter_blank_contaminants
         self.blank_pattern = blank_pattern
         self.blank_ratio_threshold = blank_ratio_threshold
+        self.blank_high_signal_threshold = blank_high_signal_threshold
         
         self.filter_high_qc3_rsd = filter_high_qc3_rsd
         self.qc3_rsd_threshold = qc3_rsd_threshold
