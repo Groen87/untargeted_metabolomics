@@ -421,7 +421,107 @@ def generate_combat_plots(
         logger.warning(f"sklearn not available: {e}. Skipping PCA plots.")
     
     
+        # ========================================================================
+    # PCA PLOTS WITH QC HIGHLIGHTING
     # ========================================================================
+    
+    try:
+        from sklearn.decomposition import PCA
+        from sklearn.preprocessing import StandardScaler
+        import re
+        
+        # Identify QC samples of different types
+        qc3_samples = [col for col in data_after.columns if 'QC3' in col]
+        qc4_samples = [col for col in data_after.columns if 'QC4' in col]
+        blaauw_samples = [col for col in data_after.columns if 'blaauw' in col.lower()]
+        
+        all_qc_samples = qc3_samples + qc4_samples + blaauw_samples
+        
+        if len(all_qc_samples) >= 2:
+            logger.info(f"Generating PCA plots with QC highlighting (QC3: {len(qc3_samples)}, QC4: {len(qc4_samples)}, blaauw: {len(blaauw_samples)})")
+            
+            # Create a color and marker mapping for QC types
+            qc_colors = {'QC3': 'red', 'QC4': 'blue', 'blaauw': 'green'}
+            qc_markers = {'QC3': 'o', 'QC4': 's', 'blaauw': '^'}
+            qc_labels = {'QC3': 'QC3', 'QC4': 'QC4', 'blaauw': 'blaauw'}
+            
+            def get_qc_type(col):
+                if 'QC3' in col:
+                    return 'QC3'
+                elif 'QC4' in col:
+                    return 'QC4'
+                elif 'blaauw' in col.lower():
+                    return 'blaauw'
+                return None
+            
+            # Generate PCA plots for before and after with QC highlighting
+            for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
+                # Handle NaN values
+                df_filled = df.copy()
+                if df_filled.isna().any().any():
+                    min_positive = df_filled[df_filled > 0].min().min()
+                    small_value = min_positive / 2 if not pd.isna(min_positive) else 1e-10
+                    df_filled = df_filled.fillna(small_value)
+                
+                # Standardize data
+                scaler = StandardScaler()
+                df_scaled = scaler.fit_transform(df_filled.T)
+                
+                # Generate PCA
+                pca = PCA(n_components=2, random_state=42)
+                emb = pca.fit_transform(df_scaled)
+                explained_variance = pca.explained_variance_ratio_
+                
+                # Create figure
+                plt.figure(figsize=(14, 12))
+                
+                # Plot all samples in gray
+                plt.scatter(
+                    emb[:, 0],
+                    emb[:, 1],
+                    c='gray',
+                    alpha=0.3,
+                    s=20,
+                    label='Other samples',
+                    edgecolors='none'
+                )
+                
+                # Overlay QC samples with special colors and markers
+                for col_idx, col in enumerate(df.columns):
+                    qc_type = get_qc_type(col)
+                    if qc_type:
+                        plt.scatter(
+                            emb[col_idx, 0],
+                            emb[col_idx, 1],
+                            c=qc_colors[qc_type],
+                            marker=qc_markers[qc_type],
+                            s=80,
+                            label=qc_labels[qc_type],
+                            edgecolors='black',
+                            linewidth=1,
+                            alpha=0.9
+                        )
+                
+                plt.title(f"{label} - PCA with QC Highlighting\nExplained Variance: PC1={explained_variance[0]:.2%}, PC2={explained_variance[1]:.2%}")
+                plt.xlabel(f"PC1 ({explained_variance[0]:.1%})")
+                plt.ylabel(f"PC2 ({explained_variance[1]:.1%})")
+                plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+                plt.grid(True, alpha=0.2)
+                plt.tight_layout()
+                plt.savefig(output_dir / f"{label.lower().replace(' ', '_')}_pca_qc_highlighted.png", 
+                           dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                logger.info(f"Saved {label} PCA with QC highlighting")
+        else:
+            logger.warning(f"Need at least 2 QC samples for PCA with QC highlighting. Found {len(all_qc_samples)}.")
+            
+    except ImportError as e:
+        logger.warning(f"sklearn not available: {e}. Skipping PCA with QC highlighting plots.")
+
+
+
+# ========================================================================
     # QC-ONLY PLOTS (for better batch effect assessment)
     # ========================================================================
     
