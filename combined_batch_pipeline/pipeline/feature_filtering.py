@@ -201,6 +201,9 @@ class FeatureFilter:
         if not self.filter_low_variance:
             return df, 0
         
+        # Preserve HMDB features
+        hmdb_features = self._get_hmdb_features(df)
+        
         # Calculate variance for each feature across non-blank samples only
         non_blank_cols = [col for col in sample_cols if col not in blank_samples]
         
