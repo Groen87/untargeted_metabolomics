@@ -322,6 +322,8 @@ def merge_batch_results(
         merged_data_transposed = merged_data_cleaned.T
         
         # Save cleaned and transposed data
+        # Add "Sample" as the header for the first column (which contains sample names)
+        merged_data_transposed.index.name = "Sample"
         merged_data_transposed.to_csv(output_dir / "merged_data.csv")
         merged_metadata.to_csv(output_dir / "merged_metadata.csv", index=False)
         logger.info(f"  Saved merged data (cleaned and transposed) to {output_dir}")
