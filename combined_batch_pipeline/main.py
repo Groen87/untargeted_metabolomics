@@ -474,30 +474,8 @@ def run_full_pipeline(
     # Save final results
     final_output = output_dir / "final"
     final_output.mkdir(parents=True, exist_ok=True)
+    corrected_data.to_csv(final_output / "final_corrected_data.csv")
     
-    # Clean sample column names and transpose for final_corrected_data.csv
-    cleaned_columns = []
-    for col in corrected_data.columns:
-        # Remove "Area: " prefix
-        name = col.split('Area: ')[1] if 'Area: ' in col else col
-        # Remove .raw suffix
-        name = name.replace('.raw', '')
-        # Extract the last part that is all digits
-        parts = name.split('_')
-        sample_id = None
-        for part in reversed(parts):
-            if part.isdigit():
-                sample_id = part
-                break
-        if sample_id is None:
-            sample_id = parts[-1]
-        cleaned_columns.append(sample_id)
-    
-    corrected_data_cleaned = corrected_data.copy()
-    corrected_data_cleaned.columns = cleaned_columns
-    corrected_data_transposed = corrected_data_cleaned.T
-    corrected_data_transposed.index.name = "Sample"
-    corrected_data_transposed.to_csv(final_output / "final_corrected_data.csv")
     merged_metadata.to_csv(final_output / "final_metadata.csv", index=False)
     
     logger.info(f"\n{'='*70}")

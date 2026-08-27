@@ -295,37 +295,8 @@ def merge_batch_results(
     # Save if output_dir provided
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Clean sample column names: remove "Area: posneg_MZ25_36_" prefix and ".raw" suffix
-        # Pattern: "Area: posneg_MZ25_36_26220950731.raw" -> "26220950731"
-        cleaned_columns = []
-        for col in merged_data.columns:
-            # Remove "Area: " prefix
-            name = col.split('Area: ')[1] if 'Area: ' in col else col
-            # Remove .raw suffix
-            name = name.replace('.raw', '')
-            # Remove the batch prefix (posneg_MZ25_36_ or similar)
-            # Extract the last part that is all digits
-            parts = name.split('_')
-            sample_id = None
-            for part in reversed(parts):
-                if part.isdigit():
-                    sample_id = part
-                    break
-            if sample_id is None:
-                sample_id = parts[-1]
-            cleaned_columns.append(sample_id)
-        
-        # Create cleaned and transposed DataFrame
-        merged_data_cleaned = merged_data.copy()
-        merged_data_cleaned.columns = cleaned_columns
-        merged_data_transposed = merged_data_cleaned.T
-        
-        # Save cleaned and transposed data
-        # Add "Sample" as the header for the first column (which contains sample names)
-        merged_data_transposed.index.name = "Sample"
-        merged_data_transposed.to_csv(output_dir / "merged_data.csv")
+        merged_data.to_csv(output_dir / "merged_data.csv")
         merged_metadata.to_csv(output_dir / "merged_metadata.csv", index=False)
-        logger.info(f"  Saved merged data (cleaned and transposed) to {output_dir}")
+        logger.info(f"  Saved to {output_dir}")
     
     return merged_data, merged_metadata
