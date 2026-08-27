@@ -476,6 +476,50 @@ def run_full_pipeline(
     final_output.mkdir(parents=True, exist_ok=True)
     corrected_data.to_csv(final_output / "final_corrected_data.csv")
     
+    # Create final_corrected_data_for_analysis.csv
+    # 1. Clean sample column names: extract numeric ID from "Area: posneg_MZ26_16_26110696333.raw" -> "26110696333"
+    cleaned_columns = []
+    for col in corrected_data.columns:
+        name = col.split('Area: ')[1] if 'Area: ' in col else col
+        name = name.replace('.raw', '')
+        parts = name.split('_')
+        sample_id = None
+        for part in reversed(parts):
+            if part.isdigit():
+                sample_id = part
+                break
+        if sample_id is None:
+            sample_id = parts[-1]
+        cleaned_columns.append(sample_id)
+    
+    # 2. Remove QC samples
+    non_qc_columns = [col for col in corrected_data.columns if 'QC' not in col]
+    corrected_data_no_qc = corrected_data[non_qc_columns].copy()
+    
+    # 3. Apply cleaned column names to non-QC data
+    cleaned_non_qc_columns = []
+    for col in corrected_data_no_qc.columns:
+        name = col.split('Area: ')[1] if 'Area: ' in col else col
+        name = name.replace('.raw', '')
+        parts = name.split('_')
+        sample_id = None
+        for part in reversed(parts):
+            if part.isdigit():
+                sample_id = part
+                break
+        if sample_id is None:
+            sample_id = parts[-1]
+        cleaned_non_qc_columns.append(sample_id)
+    
+    corrected_data_no_qc.columns = cleaned_non_qc_columns
+    
+    # 4. Transpose (rows become columns, columns become rows)
+    corrected_data_for_analysis = corrected_data_no_qc.T
+    corrected_data_for_analysis.index.name = "Sample"
+    
+    # Save final_corrected_data_for_analysis.csv
+    corrected_data_for_analysis.to_csv(final_output / "final_corrected_data_for_analysis.csv")
+    
     merged_metadata.to_csv(final_output / "final_metadata.csv", index=False)
     
     logger.info(f"\n{'='*70}")
