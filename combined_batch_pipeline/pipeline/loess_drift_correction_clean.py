@@ -36,11 +36,11 @@ def identify_qc_samples(
                 qc_samples.append(col)
                 continue
         
-        if qc_pattern in col:
+        if qc_pattern.lower() in col.lower():
             qc_samples.append(col)
             continue
         
-        if fallback_pattern and fallback_pattern in col:
+        if fallback_pattern and fallback_pattern.lower() in col.lower():
             qc_samples.append(col)
             continue
         
