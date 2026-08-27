@@ -296,6 +296,51 @@ def merge_batch_results(
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
         merged_data.to_csv(output_dir / "merged_data.csv")
+        
+        # Create merged_data_for_analysis.csv
+        # 1. Clean sample column names: extract numeric ID
+        cleaned_columns = []
+        for col in merged_data.columns:
+            name = col.split('Area: ')[1] if 'Area: ' in col else col
+            name = name.replace('.raw', '')
+            parts = name.split('_')
+            sample_id = None
+            for part in reversed(parts):
+                if part.isdigit():
+                    sample_id = part
+                    break
+            if sample_id is None:
+                sample_id = parts[-1]
+            cleaned_columns.append(sample_id)
+        
+        # 2. Remove QC samples
+        non_qc_columns = [col for col in merged_data.columns if 'QC' not in col]
+        merged_data_no_qc = merged_data[non_qc_columns].copy()
+        
+        # 3. Apply cleaned column names to non-QC data
+        cleaned_non_qc_columns = []
+        for col in merged_data_no_qc.columns:
+            name = col.split('Area: ')[1] if 'Area: ' in col else col
+            name = name.replace('.raw', '')
+            parts = name.split('_')
+            sample_id = None
+            for part in reversed(parts):
+                if part.isdigit():
+                    sample_id = part
+                    break
+            if sample_id is None:
+                sample_id = parts[-1]
+            cleaned_non_qc_columns.append(sample_id)
+        
+        merged_data_no_qc.columns = cleaned_non_qc_columns
+        
+        # 4. Transpose (rows become columns, columns become rows)
+        merged_data_for_analysis = merged_data_no_qc.T
+        merged_data_for_analysis.index.name = "Sample"
+        
+        # Save merged_data_for_analysis.csv
+        merged_data_for_analysis.to_csv(output_dir / "merged_data_for_analysis.csv")
+        
         merged_metadata.to_csv(output_dir / "merged_metadata.csv", index=False)
         logger.info(f"  Saved to {output_dir}")
     
