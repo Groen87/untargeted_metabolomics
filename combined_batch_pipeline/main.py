@@ -405,6 +405,22 @@ def run_full_pipeline(
     qc4_pattern = config.get('qc4_pattern', 'QC4')
     log_qc_rsd_simple(merged_data, corrected_data, [qc4_pattern], "ComBat")
     
+    # Step 4.5: Post-ComBat batch effect analysis
+    logger.info(f"\n{'='*70}")
+    logger.info(f"STEP 4.5: Post-ComBat batch effect analysis")
+    logger.info(f"{'='*70}")
+    
+    # Get batch labels for corrected data (same as before ComBat)
+    batch_dict_corrected = dict(zip(merged_metadata['original_col'], merged_metadata['batch']))
+    batch_vector_corrected = np.array([batch_dict_corrected.get(col, 'unknown') for col in corrected_data.columns])
+    
+    post_combat_batch_metrics = analyze_batch_effects(
+        data=corrected_data,
+        batch_labels=batch_vector_corrected,
+        output_dir=output_dir / "batch_effect_analysis",
+        prefix="post_combat"
+    )
+    
     # Step 5: RALPS correction (alternative to ComBat)
     run_ralps = config.get('run_ralps', True)
     if run_ralps:
