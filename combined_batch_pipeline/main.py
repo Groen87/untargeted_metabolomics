@@ -39,6 +39,7 @@ from typing import Dict, Tuple, Optional, List
 import pandas as pd
 import numpy as np
 import re
+from sklearn.preprocessing import RobustScaler
 
 from combined_batch_pipeline.config.config import Config
 from combined_batch_pipeline.pipeline.data_loader import (
@@ -512,6 +513,40 @@ def run_full_pipeline(
         cleaned_non_qc_columns.append(sample_id)
     
     corrected_data_no_qc.columns = cleaned_non_qc_columns
+    
+    # 3.5. Apply transformations before final output
+    # Replace zeros with half the minimum non-zero value per feature
+    logger.info(f"\n{'='*70}")
+    logger.info(f"STEP 3.5: Applying transformations to final data")
+    logger.info(f"{'='*70}")
+    
+    # Replace zeros with half the minimum non-zero value for each feature (row)
+    logger.info("Replacing zeros with half the minimum non-zero value per feature...")
+    for feature in corrected_data_no_qc.index:
+        row = corrected_data_no_qc.loc[feature]
+        non_zero_values = row[row > 0]
+        if len(non_zero_values) > 0:
+            min_non_zero = non_zero_values.min()
+            half_min = min_non_zero / 2.0
+            corrected_data_no_qc.loc[feature, row == 0] = half_min
+    
+    logger.info("Zero replacement complete.")
+    
+    # Apply log10 transformation
+    logger.info("Applying log10 transformation...")
+    corrected_data_no_qc = np.log10(corrected_data_no_qc)
+    logger.info("Log10 transformation complete.")
+    
+    # Apply RobustScaler (less sensitive to outliers) per feature
+    logger.info("Applying RobustScaler (scaling per feature, robust to outliers)...")
+    scaler = RobustScaler()
+    corrected_data_no_qc_scaled = scaler.fit_transform(corrected_data_no_qc.T)
+    corrected_data_no_qc = pd.DataFrame(
+        corrected_data_no_qc_scaled.T,
+        index=corrected_data_no_qc.index,
+        columns=corrected_data_no_qc.columns
+    )
+    logger.info("RobustScaler complete.")
     
     # 4. Transpose (rows become columns, columns become rows)
     corrected_data_for_analysis = corrected_data_no_qc.T
