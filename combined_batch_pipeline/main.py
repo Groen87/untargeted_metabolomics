@@ -400,6 +400,8 @@ def run_full_pipeline(
         ref_batch=ref_batch,
         save_plots=save_plots,
         show_plots=show_plots,
+        gamma=config.get('combat_gamma', 0.5),
+        parametric=config.get('combat_parametric', True),
     )
     
     # Check QC4 RSD before/after ComBat

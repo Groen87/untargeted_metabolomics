@@ -51,6 +51,8 @@ def run_combat_on_merged_data(
     ref_batch: Optional[int] = None,
     show_plots: bool = False,
     save_plots: bool = True,
+    gamma: Optional[float] = None,
+    parametric: bool = True,
 ) -> Tuple[pd.DataFrame, Dict]:
     """
     Run ComBat batch correction on merged data.
@@ -62,6 +64,8 @@ def run_combat_on_merged_data(
         ref_batch: Reference batch for ComBat (optional)
         show_plots: Whether to display plots
         save_plots: Whether to save plots
+        gamma: Shrinkage parameter (0 = no correction, 1 = full correction)
+        parametric: Use parametric ComBat (True) or non-parametric (False)
         
     Returns:
         Tuple of:
@@ -111,12 +115,15 @@ def run_combat_on_merged_data(
     
     # Run ComBat
     logger.info("Running pycombat_norm...")
+    logger.info(f"ComBat parameters - gamma: {gamma}, parametric: {parametric}")
     combat_result = pycombat_norm(
         data_for_combat,
         numeric_batch_vector,
         covar_mod=np.zeros((len(numeric_batch_vector), 0)),
         ref_batch=ref_batch,
-        na_cov_action="na.omit"
+        na_cov_action="na.omit",
+        gamma=gamma,
+        parametric=parametric
     )
     
     # Create corrected DataFrame

@@ -10,6 +10,19 @@ rt_threshold: 0.02
 ref_batch: null
 
 # ============================================================================
+# ComBat Configuration
+# ============================================================================
+# Controls for ComBat batch correction strength
+#
+# gamma: Shrinkage parameter (0 = no correction, 1 = full correction)
+#   Lower values (0.3-0.7) make correction milder, preventing overcorrection
+combat_gamma: 0.5
+
+# parametric: Use parametric ComBat (True) or non-parametric (False)
+#   Parametric is more conservative and less likely to overcorrect
+combat_parametric: true
+
+# ============================================================================
 # Feature Filtering Configuration
 # ============================================================================
 # All filters are applied in order and are configurable.
