@@ -242,10 +242,29 @@ def save_realistic_results(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Convert numpy types to Python types for JSON serialization
+    def make_serializable(obj):
+        if isinstance(obj, dict):
+            return {k: make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [make_serializable(item) for item in obj]
+        elif hasattr(obj, 'item'):  # numpy types
+            return obj.item() if hasattr(obj, 'item') else float(obj)
+        elif isinstance(obj, (np.integer, np.floating)):
+            return int(obj) if isinstance(obj, np.integer) else float(obj)
+        elif isinstance(obj, pd.Timestamp):
+            return str(obj)
+        elif isinstance(obj, pd.Index):
+            return obj.tolist()
+        else:
+            return obj
+    
+    serializable_results = make_serializable(results)
+    
     # Save aggregated metrics
     metrics_path = output_dir / "realistic_metrics.json"
     with open(metrics_path, 'w') as f:
-        json.dump(results, f, indent=2)
+        json.dump(serializable_results, f, indent=2)
     logger.info(f"Realistic metrics saved to {metrics_path}")
     
     # Save per-iteration results as CSV
