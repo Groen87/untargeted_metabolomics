@@ -197,17 +197,25 @@ class SparsePCAWrapper:
         return X_transformed, explained_var_ratio
     
 
-    def fit(self, X: pd.DataFrame) -> "SparsePCAWrapper":
+    def fit(self, X: Union[pd.DataFrame, np.ndarray]) -> "SparsePCAWrapper":
         """
         Fit PCA without transforming data.
         
         Args:
-            X: Input features (n_samples, n_features)
+            X: Input features (n_samples, n_features) as DataFrame or numpy array
             
         Returns:
             self
         """
-        n_samples, n_features = X.shape
+        # Convert to numpy if DataFrame
+        if isinstance(X, pd.DataFrame):
+            X_index = X.index
+            X_values = X.values
+        else:
+            X_index = None
+            X_values = X
+        
+        n_samples, n_features = X_values.shape
         estimated_time = self._estimate_compute_time(n_samples, n_features)
         
         logger.info(f"Fitting {self.method} PCA with {self.n_components} components...")
@@ -217,13 +225,13 @@ class SparsePCAWrapper:
         start_time = time.time()
         
         if self.method == "regular":
-            X_transformed, explained_variance = self._fit_regular_pca(X)
+            X_transformed, explained_variance = self._fit_regular_pca(X_values)
         elif self.method == "sparse":
-            X_transformed, explained_variance = self._fit_sparse_pca(X)
+            X_transformed, explained_variance = self._fit_sparse_pca(X_values)
         elif self.method == "mini_batch_sparse":
-            X_transformed, explained_variance = self._fit_mini_batch_sparse_pca(X)
+            X_transformed, explained_variance = self._fit_mini_batch_sparse_pca(X_values)
         elif self.method == "two_phase":
-            X_transformed, explained_variance = self._fit_two_phase_pca(X)
+            X_transformed, explained_variance = self._fit_two_phase_pca(X_values)
         else:
             raise ValueError(f"Unknown PCA method: {self.method}. Use 'regular', 'sparse', 'mini_batch_sparse', or 'two_phase'.")
         
@@ -235,28 +243,36 @@ class SparsePCAWrapper:
         
         return self
 
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, X: Union[pd.DataFrame, np.ndarray]) -> pd.DataFrame:
         """
         Transform new data using fitted PCA.
         
         Args:
-            X: Input features (n_samples, n_features)
+            X: Input features (n_samples, n_features) as DataFrame or numpy array
             
         Returns:
             Transformed features (n_samples, n_components)
         """
         if not self.is_fitted:
-            raise RuntimeError("PCA not fitted. Call fit_transform() first.")
+            raise RuntimeError("PCA not fitted. Call fit() or fit_transform() first.")
+        
+        # Convert to numpy if DataFrame
+        if isinstance(X, pd.DataFrame):
+            X_index = X.index
+            X_values = X.values
+        else:
+            X_index = None
+            X_values = X
         
         if self.method == "two_phase":
             # Apply both phases
-            X_intermediate = self.pca_phase1.transform(X)
+            X_intermediate = self.pca_phase1.transform(X_values)
             X_transformed = self.pca.transform(X_intermediate)
         else:
-            X_transformed = self.pca.transform(X)
+            X_transformed = self.pca.transform(X_values)
         
         column_names = [f"PC_{i+1}" for i in range(self.n_components)]
-        return pd.DataFrame(X_transformed, index=X.index, columns=column_names)
+        return pd.DataFrame(X_transformed, index=X_index, columns=column_names)
     
     def save(self, path: Path) -> None:
         """Save PCA model to file."""

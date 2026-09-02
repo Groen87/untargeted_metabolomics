@@ -228,20 +228,13 @@ def run_pipeline(
             intermediate_components=intermediate_components,
         )
         
-        # Fit PCA on training data only (using numpy arrays to avoid sklearn feature name validation)
-        pca.fit(X_train.values)
+        # Fit PCA on training data only
+        # Pass DataFrames to pca.fit() - it will handle numpy conversion internally
+        pca.fit(X_train)
         
         # Transform train and test separately using the fitted PCA
-        X_train = pd.DataFrame(
-            pca.transform(X_train.values),
-            index=X_train.index,
-            columns=[f"PC_{i+1}" for i in range(pca.n_components)]
-        )
-        X_test = pd.DataFrame(
-            pca.transform(X_test.values),
-            index=X_test.index,
-            columns=[f"PC_{i+1}" for i in range(pca.n_components)]
-        )
+        X_train = pca.transform(X_train)
+        X_test = pca.transform(X_test)
         
         logger.info(f"Features reduced from original to {X_train.shape[1]} components")
         
