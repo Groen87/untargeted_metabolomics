@@ -65,8 +65,10 @@ class LOFModel:
         self.n_jobs = n_jobs
         self.random_state = random_state
         
-        # If novelty=True, contamination must be a float, not 'auto'
-        if self.novelty and self.contamination == 'auto':
+        # LOF requires novelty=True for predict/decision_function on new data
+        # Force novelty=True and ensure contamination is a float
+        self.novelty = True
+        if self.contamination == 'auto':
             self.contamination = 0.1  # Default contamination for novelty detection
         
         self.model = None
