@@ -305,6 +305,8 @@ def run_pipeline(
             n_iterations=realistic_n_iterations,
             random_seed=random_state,
             outlier_classes=outlier_classes,
+            X_normal_train=X_train[y_train == normal_class],
+            y_normal_train=y_train[y_train == normal_class],
         )
         
         # Save realistic results

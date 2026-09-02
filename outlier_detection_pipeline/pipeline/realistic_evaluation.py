@@ -44,19 +44,21 @@ def run_realistic_evaluation(
     n_iterations: int = 50,
     random_seed: int = 42,
     outlier_classes: Optional[List[int]] = None,
+    X_normal_train: Optional[pd.DataFrame] = None,
+    y_normal_train: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
     """
     Run realistic LOO evaluation with target contamination rate.
     
     For each iteration:
     1. Select 1 abnormal sample (randomly from abnormal pool)
-    2. Combine with ALL normal samples from test set
-    3. This creates a test set with ~2% contamination (1 abnormal / ~50 total)
+    2. Combine with ALL normal samples (train + test) for better distribution
+    3. This creates a test set with ~2% contamination (1 abnormal / ~all normals)
     4. Get outlier scores from model
     5. Check if abnormal sample is in top N% (where N = target_contamination * 100)
     
     Args:
-        model: Trained ExtendedIsolationForestModel
+        model: Trained ExtendedIsolationForestModel (trained on normals only)
         X_normal_test: Normal test samples features
         X_abnormal_test: Abnormal test samples features
         y_normal_test: Normal test samples labels
@@ -65,6 +67,8 @@ def run_realistic_evaluation(
         n_iterations: Number of LOO iterations
         random_seed: Random seed for reproducibility
         outlier_classes: List of classification values that are outliers
+        X_normal_train: Normal training samples (optional, for larger normal pool)
+        y_normal_train: Normal training labels (optional)
         
     Returns:
         Dictionary with:
@@ -79,7 +83,15 @@ def run_realistic_evaluation(
     
     np.random.seed(random_seed)
     
-    n_normal = len(X_normal_test)
+    # Use ALL normals (train + test) for better distribution
+    if X_normal_train is not None:
+        X_normal_combined = pd.concat([X_normal_train, X_normal_test])
+        y_normal_combined = pd.concat([y_normal_train, y_normal_test])
+    else:
+        X_normal_combined = X_normal_test
+        y_normal_combined = y_normal_test
+    
+    n_normal = len(X_normal_combined)
     n_abnormal = len(X_abnormal_test)
     n_top = int(target_contamination * n_normal)  # Number of top outliers to flag
     
@@ -89,15 +101,11 @@ def run_realistic_evaluation(
     logger.info(f"\n{'='*70}")
     logger.info("REALISTIC EVALUATION (LOO Abnormal)")
     logger.info(f"{'='*70}")
-    logger.info(f"Normal test samples: {n_normal}")
+    logger.info(f"Normal samples (train + test): {n_normal}")
     logger.info(f"Abnormal test samples: {n_abnormal}")
     logger.info(f"Target contamination: {target_contamination:.2%}")
     logger.info(f"Top N outliers to flag: {n_top}")
     logger.info(f"Iterations: {n_iterations}")
-    
-    # Combine all normal samples (they stay the same in each iteration)
-    X_normal_combined = X_normal_test
-    y_normal_combined = y_normal_test
     
     # Store results for each iteration
     per_iteration_results = []

@@ -184,33 +184,30 @@ class ExtendedIsolationForestModel:
         X_scaled = self.scaler.fit_transform(X)
         
         # For unsupervised CV: we need custom logic
-        # Split normal samples into K folds
-        # Each fold: train on K-1 normal folds, validate on held-out normal fold + all abnormalities
+        # Split ALL samples (normals + abnormalities) into K folds
+        # Each fold: train on normal samples from K-1 folds, validate on held-out fold (normals + abnormalities)
         
-        from sklearn.model_selection import KFold
+        from sklearn.model_selection import StratifiedKFold
         
-        kf = KFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
+        # Create labels for stratified splitting (0=normal, 1=abnormal)
+        y_binary = (y != normal_classification).astype(int)
         
-        # Get normal sample indices as array for KFold
-        normal_idx_array = np.where(normal_mask)[0]
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
         
         fold_scores = []
         fold_predictions = []
         
-        for fold_num, (train_fold_idx, val_fold_idx) in enumerate(kf.split(normal_idx_array)):
+        for fold_num, (train_fold_idx, val_fold_idx) in enumerate(skf.split(X_scaled, y_binary)):
             logger.info(f"Fold {fold_num + 1}/{n_splits}")
             
             # Get indices for this fold
-            # train_fold_idx and val_fold_idx are indices into normal_idx_array
-            train_normal_positions = normal_idx_array[train_fold_idx]
-            val_normal_positions = normal_idx_array[val_fold_idx]
+            X_train_fold = X_scaled[train_fold_idx]
+            X_val_fold = X_scaled[val_fold_idx]
             
-            # Train on normal samples from training positions
+            # From training fold, extract only normal samples for training
+            train_y_binary = y_binary[train_fold_idx]
+            train_normal_positions = train_fold_idx[train_y_binary == 0]  # Only normals
             X_train_fold = X_scaled[train_normal_positions]
-            
-            # Validate on: held-out normal samples + all abnormal samples
-            X_val_fold_indices = np.concatenate([val_normal_positions, np.where(~normal_mask)[0]])
-            X_val_fold = X_scaled[X_val_fold_indices]
             
             # Train model on this fold
             fold_model = IsolationForest(
@@ -234,7 +231,7 @@ class ExtendedIsolationForestModel:
             
             logger.debug(f"  Fold {fold_num + 1}: {len(X_train_fold)} train, {len(X_val_fold)} val samples")
         
-        # After all folds, train final model on ALL normal samples
+        # After all folds, train final model on ALL normal samples from training set
         X_normal_all = X_scaled[normal_mask]
         
         self.model = IsolationForest(
@@ -249,11 +246,12 @@ class ExtendedIsolationForestModel:
         self.model.fit(X_normal_all)
         self.is_fitted_ = True
         
-        # Get final scores and predictions on full X
+        # Get final scores and predictions on full X (training set)
         scores = self.model.decision_function(X_scaled)
         predictions = self.model.predict(X_scaled)
         
         logger.info("Cross-validation complete.")
+        logger.info(f"Final model trained on {len(X_normal_all)} normal samples from training set")
         return predictions, scores, np.concatenate(fold_scores)
     
     def save(self, path: str) -> None:
