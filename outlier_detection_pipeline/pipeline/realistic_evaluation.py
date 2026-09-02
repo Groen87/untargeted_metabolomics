@@ -131,10 +131,11 @@ def run_realistic_evaluation(
         # Get scores (lower = more anomalous for IsolationForest)
         scores = model.decision_function(X_test_iter)
         
-        # Get predictions based on threshold (top N by score)
-        # Since lower scores = more anomalous, we sort ascending
-        sorted_indices = np.argsort(scores)
-        top_outlier_indices = sorted_indices[:n_top]
+        # Get predictions based on threshold
+        # For IsolationForest: lower score = more anomalous
+        # We flag the top n_top most anomalous samples (lowest scores)
+        sorted_indices = np.argsort(scores)  # ascending: lowest scores first
+        top_outlier_indices = sorted_indices[:max(n_top, 1)]  # Always at least 1
         
         # Create binary predictions: 1 for top outliers, 0 otherwise
         y_pred_iter = np.zeros(len(scores), dtype=int)
@@ -144,7 +145,7 @@ def run_realistic_evaluation(
         y_true_binary = (y_test_iter.isin(outlier_classes)).astype(int)
         
         # Check if abnormal sample was detected
-        # The abnormal sample is at position n_normal (last position)
+        # The abnormal sample is at position n_normal (last position in X_test_iter)
         abnormal_position = n_normal
         abnormal_detected = y_pred_iter[abnormal_position] == 1
         
@@ -203,6 +204,8 @@ def run_realistic_evaluation(
         f1 = float('nan')
     
     try:
+        # For ROC AUC: higher values should indicate more anomalous
+        # Since IsolationForest gives lower scores for anomalies, we negate
         roc_auc = roc_auc_score(all_true_labels, -np.array(all_scores))
     except:
         roc_auc = float('nan')

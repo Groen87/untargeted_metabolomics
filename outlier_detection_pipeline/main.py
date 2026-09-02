@@ -228,11 +228,11 @@ def run_pipeline(
             intermediate_components=intermediate_components,
         )
         
-        # Fit PCA on training data only
-        # Pass DataFrames to pca.fit() - it will handle numpy conversion internally
-        pca.fit(X_train)
+        # Fit PCA on NORMAL training data only (no data leakage from abnormalities)
+        X_train_normals = X_train[y_train == normal_class]
+        pca.fit(X_train_normals)
         
-        # Transform train and test separately using the fitted PCA
+        # Transform both train and test using the fitted PCA
         X_train = pca.transform(X_train)
         X_test = pca.transform(X_test)
         
