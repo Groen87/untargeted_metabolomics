@@ -39,6 +39,7 @@ import numpy as np
 from outlier_detection_pipeline.config.config import Config
 from outlier_detection_pipeline.pipeline.data_loader import load_data, split_data
 from outlier_detection_pipeline.pipeline.model import ExtendedIsolationForestModel
+from outlier_detection_pipeline.pipeline.pca import SparsePCAWrapper
 from outlier_detection_pipeline.pipeline.evaluation import (
     evaluate_model,
     print_metrics,
@@ -116,6 +117,32 @@ def run_pipeline(
     
     logger.info(f"Loaded {len(features)} samples with {len(features.columns)} features")
     logger.info(f"Classification distribution: {classification.value_counts().to_dict()}")
+    
+    # Step 1.5: Optional Sparse PCA for dimensionality reduction
+    use_sparse_pca = config.get('use_sparse_pca', False)
+    if use_sparse_pca:
+        n_components = config.get('n_components', 100)
+        alpha = config.get('alpha', 1.0)
+        max_iter = config.get('max_iter', 1000)
+        pca_random_state = config.get('pca_random_state', 42)
+        save_pca_model = config.get('save_pca_model', True)
+        
+        logger.info(f"\n{'='*70}")
+        logger.info("STEP 1.5: Sparse PCA Dimensionality Reduction")
+        logger.info(f"{'='*70}")
+        
+        pca = SparsePCAWrapper(
+            n_components=n_components,
+            alpha=alpha,
+            max_iter=max_iter,
+            random_state=pca_random_state,
+        )
+        features = pca.fit_transform(features)
+        
+        logger.info(f"Features reduced from original to {features.shape[1]} components")
+        
+        if save_pca_model:
+            pca.save(output_dir / "pca_model.joblib")
     
     # Step 2: Split data (stratified train-test split)
     logger.info(f"\n{'='*70}")

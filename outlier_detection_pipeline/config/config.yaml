@@ -37,6 +37,16 @@ test_ratio: 0.2            # 20% for test
 random_seed: 42
 
 # ============================================================================
+# Sparse PCA for Dimensionality Reduction
+# ============================================================================
+use_sparse_pca: false      # Toggle sparse PCA on/off
+n_components: 100          # Number of principal components to keep
+alpha: 1.0                # Sparsity controlling parameter (higher = more sparse)
+max_iter: 1000            # Maximum iterations for sparse PCA
+random_state: 42          # Random seed for sparse PCA
+save_pca_model: true      # Save the fitted PCA model
+
+# ============================================================================
 # Extended Isolation Forest Parameters
 # ============================================================================
 n_estimators: 100         # Number of trees in the forest
