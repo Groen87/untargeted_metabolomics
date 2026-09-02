@@ -30,20 +30,22 @@ def evaluate_model(
     y_scores: Optional[np.ndarray] = None,
     metrics: Optional[list] = None,
     pos_label: int = -1,
+    outlier_classes: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
     Evaluate model predictions against ground truth.
     
     For outlier detection:
-    - Inliers (normal) = 1
-    - Outliers = -1
+    - Inliers (normal, Classification=0) = 1
+    - Outliers (Classification=1,2,3) = -1
     
     Args:
-        y_true: True labels (Classification values)
+        y_true: True labels (Classification values: 0=normal, 1,2,3=outliers)
         y_pred: Predicted labels (-1 for outliers, 1 for inliers)
         y_scores: Anomaly scores (lower = more anomalous)
         metrics: List of metrics to compute
         pos_label: Positive class label (default: -1 for outliers)
+        outlier_classes: List of classification values that are outliers (default: [1,2,3])
         
     Returns:
         Dictionary with computed metrics
@@ -52,11 +54,16 @@ def evaluate_model(
         metrics = ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 
                    'roc_auc', 'confusion_matrix', 'classification_report']
     
+    if outlier_classes is None:
+        outlier_classes = [1, 2, 3]
+    
     results = {}
     
-    # Convert predictions to binary (0=inlier, 1=outlier) for sklearn metrics
-    # sklearn expects binary labels: 0 for negative class, 1 for positive class
-    y_true_binary = (y_true == pos_label).astype(int)
+    # Convert ground truth to binary: 0=inlier (classification 0), 1=outlier (classification 1,2,3)
+    y_true_binary = (y_true.isin(outlier_classes)).astype(int)
+    
+    # Convert predictions to binary: 0=inlier (pred=1), 1=outlier (pred=-1)
+    # IsolationForest returns: -1 for outliers, 1 for inliers
     y_pred_binary = (y_pred == pos_label).astype(int)
     
     if 'accuracy' in metrics:
