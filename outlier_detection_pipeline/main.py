@@ -44,6 +44,8 @@ from outlier_detection_pipeline.pipeline.evaluation import (
     print_metrics,
     save_metrics,
     save_predictions,
+    plot_confusion_matrix,
+    plot_precision_recall_curve,
 )
 
 # Configure logging (stream handler only, file handler added later)
@@ -245,6 +247,23 @@ def run_pipeline(
     
     # Save metrics
     save_metrics(test_metrics, output_dir / "test")
+    
+    # Generate and save plots
+    if save_plots:
+        plot_confusion_matrix(
+            y_true=y_test,
+            y_pred=test_preds,
+            output_dir=output_dir,
+            outlier_classes=[1, 2, 3],
+            pos_label=-1,
+        )
+        plot_precision_recall_curve(
+            y_true=y_test,
+            y_scores=test_scores,
+            output_dir=output_dir,
+            outlier_classes=[1, 2, 3],
+            pos_label=-1,
+        )
     
     # Save CV fold scores for analysis
     if save_preds:

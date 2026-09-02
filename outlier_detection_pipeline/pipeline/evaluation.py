@@ -16,10 +16,19 @@ from sklearn.metrics import (
     confusion_matrix,
     classification_report,
     f1_score as sklearn_f1_score,
+    precision_recall_curve,
+    average_precision_score,
 )
 import logging
 import json
 from pathlib import Path
+
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 
 logger = logging.getLogger(__name__)
 
@@ -192,3 +201,85 @@ def save_predictions(
     df.to_csv(output_path, index=False)
     
     logger.info(f"Predictions saved to {output_path}")
+
+
+def plot_confusion_matrix(
+    y_true: pd.Series,
+    y_pred: np.ndarray,
+    output_dir: Path,
+    outlier_classes: Optional[list] = None,
+    pos_label: int = -1,
+) -> None:
+    """Plot a seaborn confusion matrix."""
+    if not HAS_MATPLOTLIB:
+        logger.warning("matplotlib/seaborn not available. Skipping confusion matrix plot.")
+        return
+    
+    if outlier_classes is None:
+        outlier_classes = [1, 2, 3]
+    
+    # Convert to binary
+    y_true_binary = (y_true.isin(outlier_classes)).astype(int)
+    y_pred_binary = (y_pred == pos_label).astype(int)
+    
+    cm = confusion_matrix(y_true_binary, y_pred_binary)
+    
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=['Inlier', 'Outlier'],
+                yticklabels=['Inlier', 'Outlier'])
+    plt.title('Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "confusion_matrix.png"
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Confusion matrix plot saved to {output_path}")
+
+
+def plot_precision_recall_curve(
+    y_true: pd.Series,
+    y_scores: np.ndarray,
+    output_dir: Path,
+    outlier_classes: Optional[list] = None,
+    pos_label: int = -1,
+) -> None:
+    """Plot a seaborn precision-recall curve."""
+    if not HAS_MATPLOTLIB:
+        logger.warning("matplotlib/seaborn not available. Skipping PR curve plot.")
+        return
+    
+    if outlier_classes is None:
+        outlier_classes = [1, 2, 3]
+    
+    # Convert to binary
+    y_true_binary = (y_true.isin(outlier_classes)).astype(int)
+    
+    # IsolationForest: lower scores = more anomalous, so negate for PR curve
+    # (higher values should indicate more likely to be positive class)
+    y_scores_for_pr = -y_scores
+    
+    precision, recall, thresholds = precision_recall_curve(y_true_binary, y_scores_for_pr)
+    avg_precision = average_precision_score(y_true_binary, y_scores_for_pr)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(recall, precision, color='blue', lw=2,
+             label=f'PR curve (AP = {avg_precision:.2f})')
+    plt.fill_between(recall, precision, step='post', alpha=0.2, color='blue')
+    plt.xlabel('Recall', fontsize=12)
+    plt.ylabel('Precision', fontsize=12)
+    plt.title('Precision-Recall Curve', fontsize=14)
+    plt.legend(loc='best')
+    plt.grid(True, alpha=0.3)
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "precision_recall_curve.png"
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Precision-Recall curve saved to {output_path}")
