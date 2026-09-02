@@ -139,6 +139,30 @@ def run_pipeline(
         n_filtered = original_n_features - len(features.columns)
         logger.info(f"Filtered features: {n_filtered} removed, {len(features.columns)} remaining (filter: {feature_filter})")
     
+    # Step 2: Split data (stratified train-test split)
+    logger.info(f"\n{'='*70}")
+    logger.info("STEP 2: Splitting data (stratified train-test)")
+    logger.info(f"{'='*70}")
+    
+    normal_class = config.get('normal_classification', 0)
+    outlier_classes = config.get_list('outlier_classifications', [1, 2, 3])
+    train_ratio = config.get('train_ratio', 0.8)
+    test_ratio = config.get('test_ratio', 0.2)
+    random_seed = config.get('random_seed', 42)
+    
+    splits = split_data(
+        features=features,
+        classification=classification,
+        normal_classification=normal_class,
+        outlier_classifications=outlier_classes,
+        train_ratio=train_ratio,
+        test_ratio=test_ratio,
+        random_seed=random_seed,
+    )
+    
+    X_train, y_train = splits['train']
+
+    # Step 1.5: Optional PCA for dimensionality reduction
     # Step 1.5: Optional PCA for dimensionality reduction
     use_sparse_pca = config.get('use_sparse_pca', False)
     if use_sparse_pca:
@@ -195,29 +219,9 @@ def run_pipeline(
         
         if save_pca_model:
             pca.save(output_dir / "pca_model.joblib")
-    
-    # Step 2: Split data (stratified train-test split)
-    logger.info(f"\n{'='*70}")
-    logger.info("STEP 2: Splitting data (stratified train-test)")
-    logger.info(f"{'='*70}")
-    
-    normal_class = config.get('normal_classification', 0)
-    outlier_classes = config.get_list('outlier_classifications', [1, 2, 3])
-    train_ratio = config.get('train_ratio', 0.8)
-    test_ratio = config.get('test_ratio', 0.2)
-    random_seed = config.get('random_seed', 42)
-    
-    splits = split_data(
-        features=features,
-        classification=classification,
-        normal_classification=normal_class,
-        outlier_classifications=outlier_classes,
-        train_ratio=train_ratio,
-        test_ratio=test_ratio,
-        random_seed=random_seed,
-    )
-    
-    X_train, y_train = splits['train']
+        pca.fit(features)  # Fit on ALL features (train + test indices)
+        X_train = pca.transform(X_train)  # Transform training set
+        X_test = pca.transform(X_test)  # Transform test set with same PCA
     X_test, y_test = splits['test']
     
     logger.info(f"Train: {len(X_train)} samples")
