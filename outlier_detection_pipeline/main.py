@@ -46,13 +46,12 @@ from outlier_detection_pipeline.pipeline.evaluation import (
     save_predictions,
 )
 
-# Configure logging
+# Configure logging (stream handler only, file handler added later)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("logs/outlier_detection.log")
     ],
 )
 logger = logging.getLogger(__name__)
@@ -84,7 +83,14 @@ def run_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Create logs directory
-    (output_dir / "logs").mkdir(parents=True, exist_ok=True)
+    logs_dir = output_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Add file handler for logging
+    file_handler = logging.FileHandler(logs_dir / "outlier_detection.log")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(file_handler)
     
     logger.info(f"\n{'='*70}")
     logger.info("OUTLIER DETECTION PIPELINE")
@@ -260,12 +266,10 @@ def run_pipeline(
     logger.info(f"{'='*70}")
     
     return {
-        'val_metrics': val_metrics,
         'test_metrics': test_metrics,
         'model': model,
         'splits': {
             'train': len(X_train),
-            'validation': len(X_val),
             'test': len(X_test),
         },
     }
