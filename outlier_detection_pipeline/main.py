@@ -103,7 +103,7 @@ def run_pipeline(
     logger.info("STEP 1: Loading data")
     logger.info(f"{'='*70}")
     
-    non_feature_cols = config.get_list('non_feature_columns', ['Oordeel trageted', 'Classification'])
+    non_feature_cols = config.get_list('non_feature_columns', ['Oordeel targeted', 'Classification'])
     patient_id_col = config.get('patient_id_column', None)
     
     features, classification, oordeel = load_data(

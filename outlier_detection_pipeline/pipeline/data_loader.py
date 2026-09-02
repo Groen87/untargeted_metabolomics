@@ -49,7 +49,7 @@ def load_data(
     
     # Extract non-feature columns
     classification = df['Classification']
-    oordeel = df['Oordeel trageted']
+    oordeel = df['Oordeel targeted']
     
     # Get feature columns (all columns except non-feature columns)
     feature_cols = [col for col in df.columns if col not in non_feature_columns]
