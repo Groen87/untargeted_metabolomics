@@ -232,8 +232,16 @@ def run_pipeline(
         X_train_normals = X_train[y_train == normal_class]
         pca.fit(X_train_normals)
         
-        # Transform both train and test using the fitted PCA
-        X_train = pca.transform(X_train)
+        # Transform normals and abnormalities separately using the fitted PCA
+        X_train = pca.transform(X_train_normals)
+        X_train_abnormals = pca.transform(X_train[y_train != normal_class])
+        
+        # Combine back for training (normals first, then abnormalities)
+        # This maintains the original structure for CV
+        X_train = pd.concat([X_train, X_train_abnormals])
+        y_train = pd.concat([y_train[y_train == normal_class], y_train[y_train != normal_class]])
+        
+        # Transform test set
         X_test = pca.transform(X_test)
         
         logger.info(f"Features reduced from original to {X_train.shape[1]} components")
