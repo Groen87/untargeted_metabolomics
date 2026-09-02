@@ -95,6 +95,16 @@ tuning_scoring: f1              # Metric to optimize ('f1', 'precision', 'recall
 # Parameter grid for tuning (used if use_hyperparameter_tuning is true)
 # If null, uses default grid
 param_grid: null
+
+# ============================================================================
+# Optuna Configuration (for Bayesian optimization)
+# ============================================================================
+use_optuna: false          # Use Optuna for hyperparameter tuning (requires optuna package)
+n_trials: 100              # Number of Optuna trials
+optuna_sampler: tpe       # Sampler type: 'tpe', 'random', 'cmaes'
+optuna_pruner: median      # Pruner type: 'median', 'halving', or null for no pruning
+optuna_storage_url: null   # Storage URL for Optuna study (e.g., 'sqlite:///optuna.db')
+optuna_study_name: null    # Name for Optuna study (null = auto-generated)
 # Example custom grid:
 # param_grid:
 #   n_estimators: [50, 100, 200]

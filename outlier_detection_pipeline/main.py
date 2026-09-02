@@ -293,6 +293,14 @@ def run_pipeline(
         n_splits_tuning = config.get('n_splits_tuning', 5)
         tuning_scoring = config.get('tuning_scoring', 'f1')
         
+        # Optuna configuration
+        use_optuna = config.get('use_optuna', False)
+        n_trials = config.get('n_trials', 100)
+        optuna_sampler = config.get('optuna_sampler', 'tpe')
+        optuna_pruner = config.get('optuna_pruner', 'median')
+        optuna_storage_url = config.get('optuna_storage_url', None)
+        optuna_study_name = config.get('optuna_study_name', None)
+        
         # Run hyperparameter tuning
         best_model, scaler, best_params, tuning_results = tune_and_train(
             X_train=X_train,
@@ -304,6 +312,12 @@ def run_pipeline(
             n_jobs=n_jobs,
             scoring=tuning_scoring,
             output_dir=output_dir,
+            use_optuna=use_optuna,
+            n_trials=n_trials,
+            optuna_sampler=optuna_sampler,
+            optuna_pruner=optuna_pruner,
+            study_name=optuna_study_name,
+            storage_url=optuna_storage_url,
         )
         
         # Create ExtendedIsolationForestModel wrapper with best parameters
