@@ -126,10 +126,35 @@ def run_pipeline(
         max_iter = config.get('max_iter', 1000)
         pca_random_state = config.get('pca_random_state', 42)
         save_pca_model = config.get('save_pca_model', True)
+        nan_strategy = config.get('pca_nan_strategy', 'drop_columns')
         
         logger.info(f"\n{'='*70}")
         logger.info("STEP 1.5: Sparse PCA Dimensionality Reduction")
         logger.info(f"{'='*70}")
+        
+        # Handle NaN values before PCA (SparsePCA doesn't support NaN)
+        nan_count = features.isna().sum().sum()
+        if nan_count > 0:
+            logger.warning(f"Found {nan_count} NaN values in features. Strategy: {nan_strategy}")
+            
+            if nan_strategy == 'drop_columns':
+                cols_with_nan = features.columns[features.isna().any()].tolist()
+                n_dropped = len(cols_with_nan)
+                features = features.dropna(axis=1)
+                logger.warning(f"Dropped {n_dropped} columns with NaN values: {cols_with_nan[:5]}{'...' if len(cols_with_nan) > 5 else ''}")
+            elif nan_strategy == 'drop_rows':
+                rows_with_nan = features.index[features.isna().any(axis=1)].tolist()
+                n_dropped = len(rows_with_nan)
+                features = features.dropna(axis=0)
+                classification = classification[features.index]
+                logger.warning(f"Dropped {n_dropped} rows with NaN values: {rows_with_nan[:5]}{'...' if len(rows_with_nan) > 5 else ''}")
+            elif nan_strategy == 'impute_mean':
+                features = features.fillna(features.mean())
+                logger.warning("Imputed NaN values with column means")
+            else:
+                raise ValueError(f"Unknown nan_strategy: {nan_strategy}. Use 'drop_columns', 'drop_rows', or 'impute_mean'.")
+        
+        logger.info(f"Features shape after NaN handling: {features.shape}")
         
         pca = SparsePCAWrapper(
             n_components=n_components,
