@@ -381,6 +381,20 @@ def run_pipeline(
             split_name="test",
         )
     
+    
+    # Compute test_metrics if not already done (for realistic evaluation path)
+    if evaluation_strategy == 'realistic':
+        metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
+        test_metrics = evaluate_model(
+            y_true=y_test,
+            y_pred=test_preds,
+            y_scores=test_scores,
+            metrics=metrics_list,
+            pos_label=-1,
+            outlier_classes=outlier_classes,
+        )
+        print_metrics(test_metrics)
+    
     # Save metrics
     save_metrics(test_metrics, output_dir / "test")
     
