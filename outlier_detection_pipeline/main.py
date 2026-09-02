@@ -219,9 +219,15 @@ def run_pipeline(
         
         if save_pca_model:
             pca.save(output_dir / "pca_model.joblib")
-        pca.fit(features)  # Fit on ALL features (train + test indices)
-        X_train = pca.transform(X_train)  # Transform training set
-        X_test = pca.transform(X_test)  # Transform test set with same PCA
+        # Fit PCA on training data (convert to numpy for sklearn)        pca.fit(features.values)  # Fit on all features using numpy array
+        
+        # Transform both train and test using the fitted PCA
+        X_train = pd.DataFrame(pca.transform(X_train.values), 
+                             index=X_train.index, 
+                             columns=[f"PC_{i+1}" for i in range(pca.n_components)])
+        X_test = pd.DataFrame(pca.transform(X_test.values), 
+                            index=X_test.index, 
+                            columns=[f"PC_{i+1}" for i in range(pca.n_components)])
     X_test, y_test = splits['test']
     
     logger.info(f"Train: {len(X_train)} samples")
