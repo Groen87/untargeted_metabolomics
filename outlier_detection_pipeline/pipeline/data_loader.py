@@ -94,12 +94,16 @@ def split_data(
         Each value is a tuple of (features, classification)
     """
     # Check for NaN in classification and drop if present
+    # Combine features and classification into a DataFrame for consistent filtering
+    df_combined = pd.concat([features, classification.rename('Classification')], axis=1)
+    df_combined = df_combined.dropna(subset=['Classification'])
+    
     if classification.isna().any():
-        logger.warning(f"Found {classification.isna().sum()} NaN values in Classification. Dropping these samples.")
-        # Drop rows with NaN classification from both features and classification
-        valid_indices = classification[~classification.isna()].index
-        features = features.loc[valid_indices]
-        classification = classification.loc[valid_indices]
+        n_dropped = classification.isna().sum()
+        logger.warning(f"Found {n_dropped} NaN values in Classification. Dropping these samples.")
+    
+    features = df_combined[features.columns]
+    classification = df_combined['Classification']
     
     # Stratified train-test split (maintains class distribution)
     X_for_split = pd.DataFrame(index=features.index)
