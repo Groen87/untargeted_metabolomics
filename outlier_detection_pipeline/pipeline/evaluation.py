@@ -123,7 +123,7 @@ def evaluate_model(
     
     # Add additional info
     results['n_samples'] = len(y_true)
-    results['n_outliers_true'] = int((y_true == pos_label).sum())
+    results['n_outliers_true'] = int(y_true_binary.sum())
     results['n_outliers_predicted'] = int((y_pred == pos_label).sum())
     
     return results
