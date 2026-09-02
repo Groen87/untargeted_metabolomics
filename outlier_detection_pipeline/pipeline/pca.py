@@ -128,17 +128,22 @@ class SparsePCAWrapper:
         
         return result
     
-    def _fit_regular_pca(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    def _fit_regular_pca(self, X: Union[pd.DataFrame, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Fit regular PCA."""
         self.pca = PCA(
             n_components=self.n_components,
             random_state=self.random_state,
         )
-        X_transformed = self.pca.fit_transform(X)
+        # Use .values to avoid sklearn feature name validation
+        if isinstance(X, pd.DataFrame):
+            X_array = X.values
+        else:
+            X_array = X
+        X_transformed = self.pca.fit_transform(X_array)
         self.components_ = self.pca.components_
         return X_transformed, self.pca.explained_variance_ratio_
     
-    def _fit_sparse_pca(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    def _fit_sparse_pca(self, X: Union[pd.DataFrame, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Fit SparsePCA."""
         self.pca = SparsePCA(
             n_components=self.n_components,
@@ -146,14 +151,19 @@ class SparsePCAWrapper:
             max_iter=self.max_iter,
             random_state=self.random_state,
         )
-        X_transformed = self.pca.fit_transform(X)
+        # Use .values to avoid sklearn feature name validation
+        if isinstance(X, pd.DataFrame):
+            X_array = X.values
+        else:
+            X_array = X
+        X_transformed = self.pca.fit_transform(X_array)
         self.components_ = self.pca.components_
         # SparsePCA doesn't have explained_variance_ratio_, compute it
         explained_var = np.var(X_transformed, axis=0)
         explained_var_ratio = explained_var / explained_var.sum()
         return X_transformed, explained_var_ratio
     
-    def _fit_mini_batch_sparse_pca(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    def _fit_mini_batch_sparse_pca(self, X: Union[pd.DataFrame, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Fit MiniBatchSparsePCA."""
         self.pca = MiniBatchSparsePCA(
             n_components=self.n_components,
@@ -162,23 +172,34 @@ class SparsePCAWrapper:
             batch_size=self.batch_size,
             random_state=self.random_state,
         )
-        X_transformed = self.pca.fit_transform(X)
+        # Use .values to avoid sklearn feature name validation
+        if isinstance(X, pd.DataFrame):
+            X_array = X.values
+        else:
+            X_array = X
+        X_transformed = self.pca.fit_transform(X_array)
         self.components_ = self.pca.components_
         # Compute explained variance ratio
         explained_var = np.var(X_transformed, axis=0)
         explained_var_ratio = explained_var / explained_var.sum()
         return X_transformed, explained_var_ratio
     
-    def _fit_two_phase_pca(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    def _fit_two_phase_pca(self, X: Union[pd.DataFrame, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Two-phase PCA: Regular PCA first, then SparsePCA."""
         logger.info(f"  Phase 1: Regular PCA to {self.intermediate_components} components")
+        
+        # Use .values to avoid sklearn feature name validation
+        if isinstance(X, pd.DataFrame):
+            X_array = X.values
+        else:
+            X_array = X
         
         # Phase 1: Regular PCA to reduce dimensionality
         self.pca_phase1 = PCA(
             n_components=self.intermediate_components,
             random_state=self.random_state,
         )
-        X_intermediate = self.pca_phase1.fit_transform(X)
+        X_intermediate = self.pca_phase1.fit_transform(X_array)
         
         # Phase 2: Sparse PCA on intermediate results
         logger.info(f"  Phase 2: Sparse PCA to {self.n_components} components")
