@@ -93,7 +93,22 @@ def run_realistic_evaluation(
     
     n_normal = len(X_normal_combined)
     n_abnormal = len(X_abnormal_test)
-    n_top = int(target_contamination * n_normal)  # Number of top outliers to flag
+    
+    # For realistic evaluation: we use the model's decision threshold
+    # The model was trained with contamination matching the training data
+    # For testing, we want to use a threshold that corresponds to target_contamination
+    # With n_normal normals + 1 abnormal in each iteration test set:
+    # We expect ~target_contamination * (n_normal + 1) outliers
+    # But we only have 1 actual abnormal, so we check if it's among the most anomalous
+    
+    # Calculate expected number of outliers at target contamination
+    n_test_total = n_normal + 1
+    expected_outliers = target_contamination * n_test_total
+    
+    # We'll use the model's predict() which uses its trained contamination
+    # But for evaluation, we also want to check at the target contamination threshold
+    # Use max(1, ceil(expected_outliers)) to always flag at least 1
+    n_top = max(1, int(np.ceil(expected_outliers)))
     
     if n_top < 1:
         n_top = 1  # Always flag at least 1
@@ -131,23 +146,31 @@ def run_realistic_evaluation(
         # Get scores (lower = more anomalous for IsolationForest)
         scores = model.decision_function(X_test_iter)
         
-        # Get predictions based on threshold
-        # For IsolationForest: lower score = more anomalous
-        # We flag the top n_top most anomalous samples (lowest scores)
+        # Get predictions using model's trained threshold
+        # Also check if abnormal is in top n_top most anomalous
+        raw_preds = model.predict(X_test_iter)
+        
+        # For evaluation: flag the n_top most anomalous samples (lowest scores)
         sorted_indices = np.argsort(scores)  # ascending: lowest scores first
-        top_outlier_indices = sorted_indices[:max(n_top, 1)]  # Always at least 1
+        top_outlier_indices = sorted_indices[:n_top]
         
         # Create binary predictions: 1 for top outliers, 0 otherwise
         y_pred_iter = np.zeros(len(scores), dtype=int)
         y_pred_iter[top_outlier_indices] = 1
         
+        # Also check what model.predict() gives us
+        model_preds_binary = np.where(raw_preds == -1, 1, 0)  # -1 = outlier, 1 = inlier
+        
         # Convert ground truth to binary (0=normal, 1=outlier)
         y_true_binary = (y_test_iter.isin(outlier_classes)).astype(int)
         
-        # Check if abnormal sample was detected
+        # Check if abnormal sample was detected by threshold method
         # The abnormal sample is at position n_normal (last position in X_test_iter)
         abnormal_position = n_normal
         abnormal_detected = y_pred_iter[abnormal_position] == 1
+        
+        # Also track model's raw prediction
+        abnormal_detected_by_model = model_preds_binary[abnormal_position] == 1
         
         if abnormal_detected:
             detected_count += 1
@@ -157,13 +180,18 @@ def run_realistic_evaluation(
         fp_count += fp_iter
         total_normal_samples += n_normal
         
+        # Also track model's raw predictions for comparison
+        model_fp_iter = np.sum(model_preds_binary[:n_normal] == 1)
+        
         # Compute metrics for this iteration
         iter_results = {
             'iteration': iteration,
             'abnormal_sample_id': X_abnormal_test.index[abnormal_idx],
             'abnormal_class': y_abnormal_selected.iloc[0],
             'abnormal_detected': bool(abnormal_detected),
+            'abnormal_detected_by_model': bool(abnormal_detected_by_model),
             'abnormal_score': float(scores[abnormal_position]),
+            'model_threshold': float(model.threshold_) if hasattr(model, 'threshold_') else float('nan'),
             'false_positives': int(fp_iter),
             'n_top': n_top,
         }
