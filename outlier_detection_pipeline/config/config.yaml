@@ -26,10 +26,12 @@ outlier_classifications:    # Other classifications are split between val/test
 # ============================================================================
 # Data Splitting
 # ============================================================================
-# Split ratios for Classification 0 samples
-train_ratio: 0.8           # 80% for training
-test_ratio: 0.1            # 10% for test
-val_ratio: 0.1             # 10% for validation
+# Stratified train-test split (maintains class distribution)
+# Train set: 80% of all samples (normal + abnormal)
+# Test set: 20% of all samples (normal + abnormal)
+# During CV: train on normal samples only, validate on full folds (normal + abnormal)
+train_ratio: 0.8           # 80% for training (stratified)
+test_ratio: 0.2            # 20% for test
 
 # Random seed for reproducibility
 random_seed: 42

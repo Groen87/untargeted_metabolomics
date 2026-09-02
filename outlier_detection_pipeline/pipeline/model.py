@@ -148,28 +148,96 @@ class ExtendedIsolationForestModel:
         self,
         X: pd.DataFrame,
         y: pd.Series,
+        normal_classification: int = 0,
         n_splits: int = 5,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Perform cross-validated predictions.
+        Perform cross-validated predictions for unsupervised outlier detection.
+        
+        Special handling for Extended Isolation Forest:
+        - Train folds: Only use normal samples (Classification == normal_classification)
+        - Validation folds: Use full fold (including abnormalities)
         
         Args:
-            X: Features
-            y: Labels (for stratification)
+            X: Features (train set with both normal and abnormal samples)
+            y: Labels/classification (for identifying normal samples)
+            normal_classification: Value indicating normal samples
             n_splits: Number of CV folds
             
         Returns:
-            Tuple of (predictions, scores)
+            Tuple of (predictions, scores, fold_scores)
+            - predictions: Final predictions from model trained on all normal samples
+            - scores: Final anomaly scores
+            - fold_scores: Scores from each CV fold (for analysis)
         """
-        logger.info(f"Performing {n_splits}-fold cross-validation...")
+        logger.info(f"Performing {n_splits}-fold cross-validation (unsupervised)...")
+        logger.info(f"Training on normal samples only, validating on full folds")
         
+        # Identify normal and abnormal samples in train set
+        normal_mask = (y == normal_classification).values
+        normal_indices = X.index[normal_mask]
+        abnormal_indices = X.index[~normal_mask]
+        
+        logger.info(f"Train set: {len(X)} samples ({len(normal_indices)} normal, {len(abnormal_indices)} abnormal)")
+        
+        # Scale all data first
         X_scaled = self.scaler.fit_transform(X)
         
-        # Use StratifiedKFold for consistent splits
-        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
+        # For unsupervised CV: we need custom logic
+        # Split normal samples into K folds
+        # Each fold: train on K-1 normal folds, validate on held-out normal fold + all abnormalities
         
-        # Initialize model for CV
-        cv_model = IsolationForest(
+        from sklearn.model_selection import KFold
+        
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
+        
+        # Get normal sample indices as array for KFold
+        normal_idx_array = np.where(normal_mask)[0]
+        
+        fold_scores = []
+        fold_predictions = []
+        
+        for fold_num, (train_fold_idx, val_fold_idx) in enumerate(kf.split(normal_idx_array)):
+            logger.info(f"Fold {fold_num + 1}/{n_splits}")
+            
+            # Get indices for this fold
+            # train_fold_idx and val_fold_idx are indices into normal_idx_array
+            train_normal_positions = normal_idx_array[train_fold_idx]
+            val_normal_positions = normal_idx_array[val_fold_idx]
+            
+            # Train on normal samples from training positions
+            X_train_fold = X_scaled[train_normal_positions]
+            
+            # Validate on: held-out normal samples + all abnormal samples
+            X_val_fold_indices = np.concatenate([val_normal_positions, np.where(~normal_mask)[0]])
+            X_val_fold = X_scaled[X_val_fold_indices]
+            
+            # Train model on this fold
+            fold_model = IsolationForest(
+                n_estimators=self.n_estimators,
+                max_samples=self.max_samples,
+                max_features=self.max_features,
+                bootstrap=self.bootstrap,
+                n_jobs=self.n_jobs,
+                random_state=self.random_state + fold_num,  # Different seed per fold
+                contamination=self.contamination,
+            )
+            fold_model.fit(X_train_fold)
+            
+            # Get scores for validation fold
+            val_scores = fold_model.decision_function(X_val_fold)
+            fold_scores.append(val_scores)
+            
+            # Get predictions for validation fold
+            val_preds = fold_model.predict(X_val_fold)
+            fold_predictions.append(val_preds)
+            
+            logger.debug(f"  Fold {fold_num + 1}: {len(X_train_fold)} train, {len(X_val_fold)} val samples")
+        
+        # After all folds, train final model on ALL normal samples
+        X_normal_all = X_scaled[normal_mask]
+        
+        self.model = IsolationForest(
             n_estimators=self.n_estimators,
             max_samples=self.max_samples,
             max_features=self.max_features,
@@ -178,25 +246,15 @@ class ExtendedIsolationForestModel:
             random_state=self.random_state,
             contamination=self.contamination,
         )
-        
-        # Cross-validated predictions
-        cv_predictions = cross_val_predict(
-            cv_model,
-            X_scaled,
-            y,
-            cv=skf,
-            n_jobs=self.n_jobs,
-        )
-        
-        # Fit final model on all data
-        self.model = cv_model.fit(X_scaled)
+        self.model.fit(X_normal_all)
         self.is_fitted_ = True
         
-        # Get scores from final model
+        # Get final scores and predictions on full X
         scores = self.model.decision_function(X_scaled)
+        predictions = self.model.predict(X_scaled)
         
         logger.info("Cross-validation complete.")
-        return cv_predictions, scores
+        return predictions, scores, np.concatenate(fold_scores)
     
     def save(self, path: str) -> None:
         """Save model to file."""

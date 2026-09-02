@@ -109,16 +109,15 @@ def run_pipeline(
     logger.info(f"Loaded {len(features)} samples with {len(features.columns)} features")
     logger.info(f"Classification distribution: {classification.value_counts().to_dict()}")
     
-    # Step 2: Split data
+    # Step 2: Split data (stratified train-test split)
     logger.info(f"\n{'='*70}")
-    logger.info("STEP 2: Splitting data")
+    logger.info("STEP 2: Splitting data (stratified train-test)")
     logger.info(f"{'='*70}")
     
     normal_class = config.get('normal_classification', 0)
     outlier_classes = config.get_list('outlier_classifications', [1, 2, 3])
     train_ratio = config.get('train_ratio', 0.8)
-    test_ratio = config.get('test_ratio', 0.1)
-    val_ratio = config.get('val_ratio', 0.1)
+    test_ratio = config.get('test_ratio', 0.2)
     random_seed = config.get('random_seed', 42)
     
     splits = split_data(
@@ -128,17 +127,16 @@ def run_pipeline(
         outlier_classifications=outlier_classes,
         train_ratio=train_ratio,
         test_ratio=test_ratio,
-        val_ratio=val_ratio,
         random_seed=random_seed,
     )
     
     X_train, y_train = splits['train']
-    X_val, y_val = splits['validation']
     X_test, y_test = splits['test']
     
     logger.info(f"Train: {len(X_train)} samples")
-    logger.info(f"Validation: {len(X_val)} samples")
     logger.info(f"Test: {len(X_test)} samples")
+    logger.info(f"Train class distribution: {y_train.value_counts().to_dict()}")
+    logger.info(f"Test class distribution: {y_test.value_counts().to_dict()}")
     
     # Step 3: Train model with cross-validation
     logger.info(f"\n{'='*70}")
@@ -164,42 +162,37 @@ def run_pipeline(
         contamination=contamination,
     )
     
-    # Train with cross-validation
-    cv_preds_train, train_scores = model.cross_val_predict(
+    # Train with cross-validation (unsupervised: train on normals only)
+    logger.info(f"\n{'='*70}")
+    logger.info("STEP 3: Training with CV (train on normals, validate on full)")
+    logger.info(f"{'='*70}")
+    
+    n_splits = config.get('n_splits', 5)
+    
+    # Note: For Extended Isolation Forest (unsupervised):
+    # - We do CV on the train set
+    # - Each fold: train on normal samples only, validate on full fold (normals + abnormalities)
+    # - Final model: trained on ALL normal samples from train set
+    
+    cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
         X=X_train,
         y=y_train,
+        normal_classification=normal_class,
         n_splits=n_splits,
     )
     
     logger.info("Training with cross-validation complete.")
+    logger.info(f"Final model trained on all {len(y_train[y_train == normal_class])} normal samples from train set")
     
-    # Step 4: Evaluate on validation set
+    # Step 4: Evaluate on test set
     logger.info(f"\n{'='*70}")
-    logger.info("STEP 4: Evaluating on validation set")
-    logger.info(f"{'='*70}")
-    
-    val_preds = model.predict(X_val)
-    val_scores = model.decision_function(X_val)
-    
-    metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
-    
-    val_metrics = evaluate_model(
-        y_true=y_val,
-        y_pred=val_preds,
-        y_scores=val_scores,
-        metrics=metrics_list,
-        pos_label=-1,  # Outliers are -1
-    )
-    
-    print_metrics(val_metrics)
-    
-    # Step 5: Evaluate on test set
-    logger.info(f"\n{'='*70}")
-    logger.info("STEP 5: Evaluating on test set")
+    logger.info("STEP 4: Evaluating on test set")
     logger.info(f"{'='*70}")
     
     test_preds = model.predict(X_test)
     test_scores = model.decision_function(X_test)
+    
+    metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
     
     test_metrics = evaluate_model(
         y_true=y_test,
@@ -211,9 +204,9 @@ def run_pipeline(
     
     print_metrics(test_metrics)
     
-    # Step 6: Save outputs
+    # Step 5: Save outputs
     logger.info(f"\n{'='*70}")
-    logger.info("STEP 6: Saving outputs")
+    logger.info("STEP 5: Saving outputs")
     logger.info(f"{'='*70}")
     
     save_plots = config.get('save_plots', True)
@@ -224,16 +217,6 @@ def run_pipeline(
         model.save(output_dir / "model.joblib")
     
     if save_preds:
-        # Save validation predictions
-        save_predictions(
-            predictions=val_preds,
-            scores=val_scores,
-            patient_ids=X_val.index,
-            true_labels=y_val,
-            output_dir=output_dir,
-            split_name="validation",
-        )
-        
         # Save test predictions
         save_predictions(
             predictions=test_preds,
@@ -255,8 +238,22 @@ def run_pipeline(
         )
     
     # Save metrics
-    save_metrics(val_metrics, output_dir / "validation")
     save_metrics(test_metrics, output_dir / "test")
+    
+    # Save CV fold scores for analysis
+    if save_preds:
+        cv_results = pd.DataFrame({
+            'patient_id': X_train.index,
+            'true_label': y_train.values,
+            'final_prediction': cv_preds_train,
+            'final_score': train_scores,
+        })
+        # Add fold scores
+        for i in range(n_splits):
+            cv_results[f'fold_{i}_score'] = fold_scores[i] if i < len(fold_scores) else np.nan
+        
+        cv_results.to_csv(output_dir / "train_cv_detailed.csv", index=False)
+        logger.info(f"Detailed CV results saved to {output_dir / 'train_cv_detailed.csv'}")
     
     logger.info(f"\n{'='*70}")
     logger.info("PIPELINE COMPLETE")

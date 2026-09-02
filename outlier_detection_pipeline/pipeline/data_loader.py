@@ -67,75 +67,61 @@ def split_data(
     normal_classification: int,
     outlier_classifications: List[int],
     train_ratio: float = 0.8,
-    test_ratio: float = 0.1,
-    val_ratio: float = 0.1,
+    test_ratio: float = 0.2,
     random_seed: int = 42,
-) -> Dict[str, Tuple[pd.DataFrame, pd.Series, pd.Series]]:
+) -> Dict[str, Tuple[pd.DataFrame, pd.Series]]:
     """
-    Split data into train, validation, and test sets.
+    Split data into train and test sets using stratified split.
     
-    Logic:
-    - Samples with Classification == normal_classification: 
-        - 80% to train
-        - 10% to validation
-        - 10% to test
-    - Samples with Classification in outlier_classifications:
-        - Split evenly between validation and test
-        
+    For Extended Isolation Forest (unsupervised):
+    - Stratified train-test split (80-20) to maintain class distribution
+    - Train set contains both normal and abnormal samples
+    - Test set contains both normal and abnormal samples
+    - During CV: train only on normal samples from training folds
+    - Validate on full validation folds (including abnormalities)
+    
     Args:
         features: DataFrame of features
         classification: Series with Classification values
         normal_classification: Classification value for normal samples
         outlier_classifications: List of outlier classification values
-        train_ratio: Ratio for training set (from normal samples)
-        test_ratio: Ratio for test set (from normal samples)
-        val_ratio: Ratio for validation set (from normal samples)
+        train_ratio: Ratio for training set (default: 0.8)
+        test_ratio: Ratio for test set (default: 0.2)
         random_seed: Random seed for reproducibility
         
     Returns:
-        Dictionary with keys: 'train', 'validation', 'test'
-        Each value is a tuple of (features, classification, oordeel)
+        Dictionary with keys: 'train', 'test'
+        Each value is a tuple of (features, classification)
     """
-    # Separate normal and outlier samples
-    normal_mask = classification == normal_classification
-    outlier_mask = classification.isin(outlier_classifications)
+    # Stratified train-test split (maintains class distribution)
+    X_for_split = pd.DataFrame(index=features.index)
+    X_for_split['classification'] = classification.values
     
-    normal_indices = classification[normal_mask].index
-    outlier_indices = classification[outlier_mask].index
-    
-    logger.info(f"Normal samples: {len(normal_indices)}")
-    logger.info(f"Outlier samples: {len(outlier_indices)}")
-    
-    # Split normal samples into train/val/test
-    # First split: train vs temp (val+test)
-    train_indices, temp_indices = train_test_split(
-        normal_indices,
-        train_size=train_ratio / (train_ratio + test_ratio + val_ratio),
+    train_df, test_df = train_test_split(
+        X_for_split,
+        train_size=train_ratio,
+        test_size=test_ratio,
         random_state=random_seed,
-        stratify=classification[normal_mask],
+        stratify=classification,
     )
     
-    # Second split: val vs test from temp
-    val_size = val_ratio / (val_ratio + test_ratio)
-    val_indices, test_indices = train_test_split(
-        temp_indices,
-        train_size=val_size,
-        random_state=random_seed,
-        stratify=classification[temp_indices],
-    )
+    train_indices = train_df.index
+    test_indices = test_df.index
     
-    # Split outlier samples between validation and test
-    outlier_val_indices, outlier_test_indices = train_test_split(
-        outlier_indices,
-        test_size=0.5,
-        random_state=random_seed,
-        stratify=classification[outlier_mask],
-    )
+    logger.info(f"Train set: {len(train_indices)} samples")
+    logger.info(f"Test set: {len(test_indices)} samples")
+    logger.info(f"Train class distribution: {classification[train_indices].value_counts().to_dict()}")
+    logger.info(f"Test class distribution: {classification[test_indices].value_counts().to_dict()}")
     
-    # Combine indices
-    final_train_indices = train_indices
-    final_val_indices = pd.Index(list(val_indices) + list(outlier_val_indices))
-    final_test_indices = pd.Index(list(test_indices) + list(outlier_test_indices))
+    # Create splits
+    splits = {}
+    for name, indices in [('train', train_indices), ('test', test_indices)]:
+        splits[name] = (
+            features.loc[indices].copy(),
+            classification.loc[indices].copy(),
+        )
+    
+    return splits
     
     logger.info(f"Train set: {len(final_train_indices)} samples")
     logger.info(f"Validation set: {len(final_val_indices)} samples")
