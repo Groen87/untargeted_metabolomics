@@ -47,6 +47,21 @@ def load_data(
     logger.info(f"Loaded data with shape: {df.shape}")
     logger.info(f"Columns: {list(df.columns)}")
     
+    # Data cleaning: Remove ambiguous samples
+    # Remove samples where Classification is 2 or 3 but Oordeel targeted is 0
+    # (unclear whether these should be outliers)
+    classification_col = df['Classification']
+    oordeel_col = df['Oordeel targeted']
+    
+    ambiguous_mask = ((classification_col.isin([2, 3])) & (oordeel_col == 0))
+    n_ambiguous = ambiguous_mask.sum()
+    
+    if n_ambiguous > 0:
+        ambiguous_indices = df.index[ambiguous_mask]
+        logger.warning(f"Found {n_ambiguous} ambiguous samples (Classification 2/3 with Oordeel targeted=0). Removing these.")
+        df = df[~ambiguous_mask]
+        logger.warning(f"Removed samples: {list(ambiguous_indices[:5])}{'...' if n_ambiguous > 5 else ''}")
+    
     # Extract non-feature columns
     classification = df['Classification']
     oordeel = df['Oordeel targeted']
