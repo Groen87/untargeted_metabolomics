@@ -83,32 +83,28 @@ def run_realistic_evaluation(
     
     np.random.seed(random_seed)
     
-    # Use ALL normals (train + test) for better distribution
-    if X_normal_train is not None:
-        X_normal_combined = pd.concat([X_normal_train, X_normal_test])
-        y_normal_combined = pd.concat([y_normal_train, y_normal_test])
-    else:
-        X_normal_combined = X_normal_test
-        y_normal_combined = y_normal_test
+    # For realistic evaluation: use ONLY test normals (unseen during training)
+    # The model was trained on X_normal_train only
+    # So we test with X_normal_test + 1 abnormal (truly unseen data)
+    X_normal_combined = X_normal_test
+    y_normal_combined = y_normal_test
     
     n_normal = len(X_normal_combined)
     n_abnormal = len(X_abnormal_test)
     
-    # For realistic evaluation: we use the model's decision threshold
-    # The model was trained with contamination matching the training data
-    # For testing, we want to use a threshold that corresponds to target_contamination
-    # With n_normal normals + 1 abnormal in each iteration test set:
-    # We expect ~target_contamination * (n_normal + 1) outliers
-    # But we only have 1 actual abnormal, so we check if it's among the most anomalous
+    # For realistic evaluation: we use a threshold corresponding to target contamination
+    # Each iteration: n_normal test normals + 1 abnormal = n_test_total samples
+    # At target_contamination, we expect to flag ~target_contamination * n_test_total outliers
+    # Since we have exactly 1 abnormal, we check if it's among the most anomalous
     
-    # Calculate expected number of outliers at target contamination
     n_test_total = n_normal + 1
     expected_outliers = target_contamination * n_test_total
     
-    # We'll use the model's predict() which uses its trained contamination
-    # But for evaluation, we also want to check at the target contamination threshold
-    # Use max(1, ceil(expected_outliers)) to always flag at least 1
+    # Use ceil to ensure we flag enough, but at minimum 1
     n_top = max(1, int(np.ceil(expected_outliers)))
+    
+    # Also ensure n_top doesn't exceed total samples
+    n_top = min(n_top, n_test_total)
     
     if n_top < 1:
         n_top = 1  # Always flag at least 1
