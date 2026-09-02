@@ -191,7 +191,7 @@ def run_realistic_evaluation(
             'abnormal_detected': bool(abnormal_detected),
             'abnormal_detected_by_model': bool(abnormal_detected_by_model),
             'abnormal_score': float(scores[abnormal_position]),
-            'model_threshold': float(model.threshold_) if hasattr(model, 'threshold_') else float('nan'),
+            'model_threshold': float(model.threshold_) if hasattr(model, 'threshold_') and model.threshold_ is not None else float('nan'),
             'false_positives': int(fp_iter),
             'n_top': n_top,
         }
