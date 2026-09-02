@@ -224,7 +224,7 @@ class LOFModel:
             fold_scores.append(val_scores)
             
             # Get predictions for validation fold
-            val_preds = fold_model.predict(X_val_fold)
+            val_preds = fold_model.fit_predict(X_val_fold)
             fold_predictions.append(val_preds)
             
             logger.debug(f"  Fold {fold_num + 1}: {len(X_train_fold)} train, {len(X_val_fold)} val samples")
