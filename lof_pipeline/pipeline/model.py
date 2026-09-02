@@ -129,7 +129,7 @@ class LOFModel:
             raise RuntimeError("Model not fitted. Call fit() first.")
         
         X_scaled = self.scaler.transform(X)
-        return self.model.predict(X_scaled)
+        return self.model.fit_predict(X_scaled)
     
     def decision_function(self, X: pd.DataFrame) -> np.ndarray:
         """

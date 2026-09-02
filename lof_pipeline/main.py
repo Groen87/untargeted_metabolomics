@@ -296,7 +296,7 @@ def run_pipeline(
         threshold = sorted_scores[threshold_idx]
         test_preds = np.where(test_scores <= threshold, -1, 1)
     else:
-        test_preds = model.predict(X_test)
+        test_preds = model.fit_predict(X_test)
     
     logger.info(f"Flagging {np.sum(test_preds == -1)} outliers (expected ~{n_outliers_expected})")
     
