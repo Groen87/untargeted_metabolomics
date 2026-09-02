@@ -48,6 +48,11 @@ from outlier_detection_pipeline.pipeline.evaluation import (
     plot_confusion_matrix,
     plot_precision_recall_curve,
 )
+from outlier_detection_pipeline.pipeline.realistic_evaluation import (
+    run_realistic_evaluation,
+    save_realistic_results,
+    plot_realistic_results,
+)
 
 # Configure logging (stream handler only, file handler added later)
 logging.basicConfig(
@@ -266,25 +271,85 @@ def run_pipeline(
     logger.info("Training with cross-validation complete.")
     logger.info(f"Final model trained on all {len(y_train[y_train == normal_class])} normal samples from train set")
     
-    # Step 4: Evaluate on test set
-    logger.info(f"\n{'='*70}")
-    logger.info("STEP 4: Evaluating on test set")
-    logger.info(f"{'='*70}")
-    
-    test_preds = model.predict(X_test)
-    test_scores = model.decision_function(X_test)
-    
-    metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
-    
-    test_metrics = evaluate_model(
-        y_true=y_test,
-        y_pred=test_preds,
-        y_scores=test_scores,
-        metrics=metrics_list,
-        pos_label=-1,  # Outliers are -1
-    )
-    
-    print_metrics(test_metrics)
+
+    # Step 4: Evaluation (Standard or Realistic)
+    evaluation_strategy = config.get('evaluation_strategy', 'standard')
+    save_realistic_results_flag = config.get('save_realistic_results', True)
+
+    if evaluation_strategy == 'realistic':
+        # Realistic evaluation: LOO abnormal with target contamination
+        realistic_contamination = config.get('realistic_test_contamination', 0.02)
+        realistic_n_iterations = config.get('realistic_n_iterations', 50)
+        
+        # Separate test set into normal and abnormal
+        X_test_normal = X_test[y_test == normal_class]
+        y_test_normal = y_test[y_test == normal_class]
+        X_test_abnormal = X_test[y_test.isin(outlier_classes)]
+        y_test_abnormal = y_test[y_test.isin(outlier_classes)]
+        
+        logger.info(f"\n{'='*70}")
+        logger.info("STEP 4: Realistic Evaluation (LOO Abnormal)")
+        logger.info(f"{'='*70}")
+        
+        # Train final model on ALL training data (both normal and abnormal)
+        # Use contamination matching the training set
+        train_contamination = float((y_train.isin(outlier_classes)).mean())
+        logger.info(f"Training contamination: {train_contamination:.4f}")
+        
+        # Retrain model on full training set with proper contamination
+        model_final = ExtendedIsolationForestModel(
+            n_estimators=n_estimators,
+            max_samples=max_samples,
+            max_features=max_features,
+            bootstrap=bootstrap,
+            n_jobs=n_jobs,
+            random_state=random_state,
+            contamination=train_contamination,
+        )
+        model_final.fit(X_train, y_train)
+        
+        # Run realistic evaluation
+        realistic_results = run_realistic_evaluation(
+            model=model_final,
+            X_normal_test=X_test_normal,
+            X_abnormal_test=X_test_abnormal,
+            y_normal_test=y_test_normal,
+            y_abnormal_test=y_test_abnormal,
+            target_contamination=realistic_contamination,
+            n_iterations=realistic_n_iterations,
+            random_seed=random_state,
+            outlier_classes=outlier_classes,
+        )
+        
+        # Save realistic results
+        if save_realistic_results_flag:
+            save_realistic_results(realistic_results, output_dir)
+            plot_realistic_results(realistic_results, output_dir)
+        
+        # Also run standard evaluation for comparison
+        test_preds = model_final.predict(X_test)
+        test_scores = model_final.decision_function(X_test)
+        
+    else:
+        # Standard evaluation (original behavior)
+        logger.info(f"\n{'='*70}")
+        logger.info("STEP 4: Evaluating on test set")
+        logger.info(f"{'='*70}")
+        
+        test_preds = model.predict(X_test)
+        test_scores = model.decision_function(X_test)
+
+        # Compute metrics for standard evaluation
+        metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
+        test_metrics = evaluate_model(
+            y_true=y_test,
+            y_pred=test_preds,
+            y_scores=test_scores,
+            metrics=metrics_list,
+            pos_label=-1,
+            outlier_classes=outlier_classes,
+        )
+        print_metrics(test_metrics)
     
     # Step 5: Save outputs
     logger.info(f"\n{'='*70}")
@@ -296,7 +361,10 @@ def run_pipeline(
     save_preds = config.get('save_predictions', True)
     
     if save_model:
-        model.save(output_dir / "model.joblib")
+        if evaluation_strategy == 'realistic':
+            model_final.save(output_dir / "model.joblib")
+        else:
+            model.save(output_dir / "model.joblib")
     
     if save_preds:
         # Save test predictions
@@ -308,16 +376,6 @@ def run_pipeline(
             output_dir=output_dir,
             split_name="test",
         )
-        
-        # Save training CV predictions
-        save_predictions(
-            predictions=cv_preds_train,
-            scores=train_scores,
-            patient_ids=X_train.index,
-            true_labels=y_train,
-            output_dir=output_dir,
-            split_name="train_cv",
-        )
     
     # Save metrics
     save_metrics(test_metrics, output_dir / "test")
@@ -328,43 +386,25 @@ def run_pipeline(
             y_true=y_test,
             y_pred=test_preds,
             output_dir=output_dir,
-            outlier_classes=[1, 2, 3],
+            outlier_classes=outlier_classes,
             pos_label=-1,
         )
         plot_precision_recall_curve(
             y_true=y_test,
             y_scores=test_scores,
             output_dir=output_dir,
-            outlier_classes=[1, 2, 3],
+            outlier_classes=outlier_classes,
             pos_label=-1,
         )
     
-    # Save CV fold scores for analysis
-    if save_preds:
-        cv_results = pd.DataFrame({
-            'patient_id': X_train.index,
-            'true_label': y_train.values,
-            'final_prediction': cv_preds_train,
-            'final_score': train_scores,
-        })
-        # Add fold scores
-        for i in range(n_splits):
-            cv_results[f'fold_{i}_score'] = fold_scores[i] if i < len(fold_scores) else np.nan
-        
-        cv_results.to_csv(output_dir / "train_cv_detailed.csv", index=False)
-        logger.info(f"Detailed CV results saved to {output_dir / 'train_cv_detailed.csv'}")
-    
-    logger.info(f"\n{'='*70}")
-    logger.info("PIPELINE COMPLETE")
-    logger.info(f"{'='*70}")
-    
     return {
         'test_metrics': test_metrics,
-        'model': model,
+        'model': model_final if evaluation_strategy == 'realistic' else model,
         'splits': {
             'train': len(X_train),
             'test': len(X_test),
         },
+        'realistic_results': realistic_results if evaluation_strategy == 'realistic' else None,
     }
 
 

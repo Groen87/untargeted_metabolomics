@@ -70,6 +70,22 @@ contamination: "auto"     # Expected proportion of outliers (auto or float)
 n_splits: 5              # Number of CV folds (for training set)
 
 # ============================================================================
+# Evaluation Strategy
+# ============================================================================
+evaluation_strategy: realistic  # 'standard' or 'realistic'
+# 'standard': Original stratified train-test split (current behavior)
+# 'realistic': LOO abnormal evaluation with 2% contamination (recommended)
+
+realistic_test_contamination: 0.02  # Target contamination rate for realistic testing (e.g., 0.02 = 2%)
+realistic_n_iterations: 50  # Number of LOO iterations for realistic evaluation
+
+# ============================================================================
+# Cross-Validation
+# ============================================================================
+n_splits: 5              # Number of CV folds (for training set)
+use_cv_with_abnormal: true  # Include abnormal samples in CV folds for realistic evaluation
+
+# ============================================================================
 # Evaluation Metrics
 # ============================================================================
 # Metrics to compute (all standard classification metrics)
@@ -88,3 +104,4 @@ metrics:
 save_predictions: true    # Save predictions to CSV
 save_model: true          # Save trained model
 save_plots: true          # Save evaluation plots
+save_realistic_results: true  # Save per-iteration results for realistic evaluation
