@@ -53,6 +53,10 @@ from outlier_detection_pipeline.pipeline.realistic_evaluation import (
     save_realistic_results,
     plot_realistic_results,
 )
+from outlier_detection_pipeline.pipeline.hyperparameter_tuning import (
+    tune_and_train,
+    tune_hyperparameters,
+)
 
 # Configure logging (stream handler only, file handler added later)
 logging.basicConfig(
@@ -265,43 +269,112 @@ def run_pipeline(
     logger.info("STEP 3: Training Extended Isolation Forest with CV")
     logger.info(f"{'='*70}")
     
-    n_estimators = config.get('n_estimators', 100)
-    max_samples = config.get('max_samples', 'auto')
-    max_features = config.get('max_features', 1.0)
-    bootstrap = config.get('bootstrap', False)
-    n_jobs = config.get('n_jobs', -1)
-    random_state = config.get('random_state', 42)
-    contamination = config.get('contamination', 'auto')
-    n_splits = config.get('n_splits', 5)
+    # Step 3: Hyperparameter tuning or use config defaults
+    use_hyperparameter_tuning = config.get('use_hyperparameter_tuning', False)
     
-    model = ExtendedIsolationForestModel(
-        n_estimators=n_estimators,
-        max_samples=max_samples,
-        max_features=max_features,
-        bootstrap=bootstrap,
-        n_jobs=n_jobs,
-        random_state=random_state,
-        contamination=contamination,
-    )
-    
-    # Train with cross-validation (unsupervised: train on normals only)
-    logger.info(f"\n{'='*70}")
-    logger.info("STEP 3: Training with CV (train on normals, validate on full)")
-    logger.info(f"{'='*70}")
-    
-    n_splits = config.get('n_splits', 5)
-    
-    # Note: For Extended Isolation Forest (unsupervised):
-    # - We do CV on the train set
-    # - Each fold: train on normal samples only, validate on full fold (normals + abnormalities)
-    # - Final model: trained on ALL normal samples from train set
-    
-    cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
-        X=X_train,
-        y=y_train,
-        normal_classification=normal_class,
-        n_splits=n_splits,
-    )
+    if use_hyperparameter_tuning:
+        logger.info(f"\n{'='*70}")
+        logger.info("STEP 3: Hyperparameter Tuning with CV")
+        logger.info(f"{'='*70}")
+        
+        # Define parameter grid for tuning
+        param_grid = config.get('param_grid', None)
+        if param_grid is None:
+            param_grid = {
+                'n_estimators': [50, 100, 200],
+                'max_samples': ['auto', 0.5, 0.8],
+                'max_features': [0.5, 0.8, 1.0],
+                'contamination': ['auto'],
+                'bootstrap': [False, True],
+            }
+        
+        n_jobs = config.get('n_jobs', -1)
+        random_state = config.get('random_state', 42)
+        n_splits_tuning = config.get('n_splits_tuning', 5)
+        tuning_scoring = config.get('tuning_scoring', 'f1')
+        
+        # Run hyperparameter tuning
+        best_model, scaler, best_params, tuning_results = tune_and_train(
+            X_train=X_train,
+            y_train=y_train,
+            normal_classification=normal_class,
+            param_grid=param_grid,
+            n_splits=n_splits_tuning,
+            random_state=random_state,
+            n_jobs=n_jobs,
+            scoring=tuning_scoring,
+            output_dir=output_dir,
+        )
+        
+        # Create ExtendedIsolationForestModel wrapper with best parameters
+        model = ExtendedIsolationForestModel(
+            n_estimators=best_params['n_estimators'],
+            max_samples=best_params['max_samples'],
+            max_features=best_params['max_features'],
+            bootstrap=best_params['bootstrap'],
+            n_jobs=n_jobs,
+            random_state=random_state,
+            contamination=best_params.get('contamination', 'auto'),
+        )
+        model.model = best_model
+        model.scaler = scaler
+        model.is_fitted_ = True
+        
+        logger.info(f"\n{'='*70}")
+        logger.info("Best hyperparameters found:")
+        logger.info(f"{'='*70}")
+        for key, value in best_params.items():
+            logger.info(f"  {key}: {value}")
+        
+        # Save tuning results
+        tuning_results.to_csv(output_dir / "tuning_results.csv", index=False)
+        logger.info(f"Tuning results saved to {output_dir / 'tuning_results.csv'}")
+        
+        # Run CV with best model for evaluation
+        cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
+            X=X_train,
+            y=y_train,
+            normal_classification=normal_class,
+            n_splits=n_splits_tuning,
+        )
+        
+    else:
+        # Use config defaults without tuning
+        n_estimators = config.get('n_estimators', 100)
+        max_samples = config.get('max_samples', 'auto')
+        max_features = config.get('max_features', 1.0)
+        bootstrap = config.get('bootstrap', False)
+        n_jobs = config.get('n_jobs', -1)
+        random_state = config.get('random_state', 42)
+        contamination = config.get('contamination', 'auto')
+        n_splits = config.get('n_splits', 5)
+        
+        model = ExtendedIsolationForestModel(
+            n_estimators=n_estimators,
+            max_samples=max_samples,
+            max_features=max_features,
+            bootstrap=bootstrap,
+            n_jobs=n_jobs,
+            random_state=random_state,
+            contamination=contamination,
+        )
+        
+        # Train with cross-validation (unsupervised: train on normals only)
+        logger.info(f"\n{'='*70}")
+        logger.info("STEP 3: Training with CV (train on normals, validate on full)")
+        logger.info(f"{'='*70}")
+        
+        # Note: For Extended Isolation Forest (unsupervised):
+        # - We do CV on the train set
+        # - Each fold: train on normal samples only, validate on full fold (normals + abnormalities)
+        # - Final model: trained on ALL normal samples from train set
+        
+        cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
+            X=X_train,
+            y=y_train,
+            normal_classification=normal_class,
+            n_splits=n_splits,
+        )
     
     logger.info("Training with cross-validation complete.")
     logger.info(f"Final model trained on all {len(y_train[y_train == normal_class])} normal samples from train set")
