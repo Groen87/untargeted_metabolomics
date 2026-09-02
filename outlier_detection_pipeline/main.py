@@ -118,7 +118,7 @@ def run_pipeline(
     logger.info(f"Loaded {len(features)} samples with {len(features.columns)} features")
     logger.info(f"Classification distribution: {classification.value_counts().to_dict()}")
     
-    # Step 1.5: Optional Sparse PCA for dimensionality reduction
+    # Step 1.5: Optional PCA for dimensionality reduction
     use_sparse_pca = config.get('use_sparse_pca', False)
     if use_sparse_pca:
         n_components = config.get('n_components', 100)
@@ -127,9 +127,12 @@ def run_pipeline(
         pca_random_state = config.get('pca_random_state', 42)
         save_pca_model = config.get('save_pca_model', True)
         nan_strategy = config.get('pca_nan_strategy', 'drop_columns')
+        pca_method = config.get('pca_method', 'sparse')
+        batch_size = config.get('pca_batch_size', 1000)
+        intermediate_components = config.get('pca_intermediate_components', None)
         
         logger.info(f"\n{'='*70}")
-        logger.info("STEP 1.5: Sparse PCA Dimensionality Reduction")
+        logger.info("STEP 1.5: PCA Dimensionality Reduction")
         logger.info(f"{'='*70}")
         
         # Handle NaN values before PCA (SparsePCA doesn't support NaN)
@@ -161,6 +164,9 @@ def run_pipeline(
             alpha=alpha,
             max_iter=max_iter,
             random_state=pca_random_state,
+            method=pca_method,
+            batch_size=batch_size,
+            intermediate_components=intermediate_components,
         )
         features = pca.fit_transform(features)
         

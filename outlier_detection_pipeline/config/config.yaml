@@ -46,6 +46,9 @@ max_iter: 1000            # Maximum iterations for sparse PCA
 pca_random_state: 42      # Random seed for sparse PCA
 save_pca_model: true      # Save the fitted PCA model
 pca_nan_strategy: drop_columns  # How to handle NaN: 'drop_columns', 'drop_rows', or 'impute_mean'
+pca_method: sparse         # PCA method: 'regular', 'sparse', 'mini_batch_sparse', 'two_phase'
+pca_batch_size: 1000       # Batch size for mini_batch_sparse
+pca_intermediate_components: null  # Intermediate components for two_phase (null = auto: min(500, n_components*5))
 
 # ============================================================================
 # Extended Isolation Forest Parameters
