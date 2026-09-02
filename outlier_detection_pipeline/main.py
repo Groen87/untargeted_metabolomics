@@ -181,28 +181,41 @@ def run_pipeline(
         logger.info(f"{'='*70}")
         
         # Handle NaN values before PCA (SparsePCA doesn't support NaN)
-        nan_count = features.isna().sum().sum()
-        if nan_count > 0:
-            logger.warning(f"Found {nan_count} NaN values in features. Strategy: {nan_strategy}")
+        # Apply to X_train and X_test separately to maintain consistency
+        nan_count_train = X_train.isna().sum().sum()
+        nan_count_test = X_test.isna().sum().sum()
+        total_nan = nan_count_train + nan_count_test
+        
+        if total_nan > 0:
+            logger.warning(f"Found {total_nan} NaN values in data. Strategy: {nan_strategy}")
             
             if nan_strategy == 'drop_columns':
+                # Drop columns with NaN from both train and test
                 cols_with_nan = features.columns[features.isna().any()].tolist()
                 n_dropped = len(cols_with_nan)
-                features = features.dropna(axis=1)
+                X_train = X_train.dropna(axis=1)
+                X_test = X_test.dropna(axis=1)
                 logger.warning(f"Dropped {n_dropped} columns with NaN values: {cols_with_nan[:5]}{'...' if len(cols_with_nan) > 5 else ''}")
             elif nan_strategy == 'drop_rows':
-                rows_with_nan = features.index[features.isna().any(axis=1)].tolist()
-                n_dropped = len(rows_with_nan)
-                features = features.dropna(axis=0)
-                classification = classification[features.index]
-                logger.warning(f"Dropped {n_dropped} rows with NaN values: {rows_with_nan[:5]}{'...' if len(rows_with_nan) > 5 else ''}")
+                # Drop rows with NaN from both train and test
+                rows_with_nan_train = X_train.index[X_train.isna().any(axis=1)].tolist()
+                rows_with_nan_test = X_test.index[X_test.isna().any(axis=1)].tolist()
+                n_dropped = len(rows_with_nan_train) + len(rows_with_nan_test)
+                X_train = X_train.dropna(axis=0)
+                y_train = y_train[X_train.index]
+                X_test = X_test.dropna(axis=0)
+                y_test = y_test[X_test.index]
+                logger.warning(f"Dropped {n_dropped} rows with NaN values")
             elif nan_strategy == 'impute_mean':
-                features = features.fillna(features.mean())
-                logger.warning("Imputed NaN values with column means")
+                # Impute separately for train and test to avoid leakage
+                X_train = X_train.fillna(X_train.mean())
+                X_test = X_test.fillna(X_test.mean())
+                logger.warning("Imputed NaN values with column means (separately for train/test)")
             else:
                 raise ValueError(f"Unknown nan_strategy: {nan_strategy}. Use 'drop_columns', 'drop_rows', or 'impute_mean'.")
         
-        logger.info(f"Features shape after NaN handling: {features.shape}")
+        logger.info(f"Train shape after NaN handling: {X_train.shape}")
+        logger.info(f"Test shape after NaN handling: {X_test.shape}")
         
         pca = SparsePCAWrapper(
             n_components=n_components,
@@ -214,8 +227,8 @@ def run_pipeline(
             intermediate_components=intermediate_components,
         )
         
-        # Fit PCA on all features (using numpy arrays to avoid sklearn feature name validation)
-        pca.fit(features.values)
+        # Fit PCA on training data only (using numpy arrays to avoid sklearn feature name validation)
+        pca.fit(X_train.values)
         
         # Transform train and test separately using the fitted PCA
         X_train = pd.DataFrame(
