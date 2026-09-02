@@ -34,8 +34,8 @@ class LOFModel:
         metric: str = "minkowski",
         p: int = 2,
         metric_params: Optional[Dict] = None,
-        contamination: str = "auto",
-        novelty: bool = False,
+        contamination: float = 0.1,
+        novelty: bool = True,
         n_jobs: int = -1,
         random_state: int = 42,
     ):
@@ -64,6 +64,10 @@ class LOFModel:
         self.novelty = novelty
         self.n_jobs = n_jobs
         self.random_state = random_state
+        
+        # If novelty=True, contamination must be a float, not 'auto'
+        if self.novelty and self.contamination == 'auto':
+            self.contamination = 0.1  # Default contamination for novelty detection
         
         self.model = None
         self.scaler = StandardScaler()
@@ -125,7 +129,7 @@ class LOFModel:
             raise RuntimeError("Model not fitted. Call fit() first.")
         
         X_scaled = self.scaler.transform(X)
-        return self.model.fit_predict(X_scaled)
+        return self.model.predict(X_scaled)
     
     def decision_function(self, X: pd.DataFrame) -> np.ndarray:
         """
@@ -220,7 +224,7 @@ class LOFModel:
             fold_scores.append(val_scores)
             
             # Get predictions for validation fold
-            val_preds = fold_model.fit_predict(X_val_fold)
+            val_preds = fold_model.predict(X_val_fold)
             fold_predictions.append(val_preds)
             
             logger.debug(f"  Fold {fold_num + 1}: {len(X_train_fold)} train, {len(X_val_fold)} val samples")
@@ -244,7 +248,7 @@ class LOFModel:
         
         # Get final scores and predictions on full X (training set)
         scores = -self.model.negative_outlier_factor_
-        predictions = self.model.fit_predict(X_scaled)
+        predictions = self.model.predict(X_scaled)
         
         logger.info("Cross-validation complete.")
         logger.info(f"Final model trained on {len(X_normal_all)} normal samples from training set")
