@@ -24,6 +24,9 @@ class LOFModel:
     - Cross-validation support
     - Score normalization
     - Consistent interface with IsolationForest pipeline
+    
+    Note: All LOF models use novelty=True and contamination as float
+    to enable predict() and decision_function() on new data.
     """
     
     def __init__(
@@ -49,8 +52,8 @@ class LOFModel:
             metric: Distance metric
             p: Power parameter for Minkowski metric
             metric_params: Additional metric parameters
-            contamination: Expected proportion of outliers ('auto' or float)
-            novelty: Whether to use novelty detection (requires contamination)
+            contamination: Expected proportion of outliers (must be float, not 'auto')
+            novelty: Whether to use novelty detection (forced to True)
             n_jobs: Number of jobs for parallel processing
             random_state: Random seed
         """
@@ -60,16 +63,19 @@ class LOFModel:
         self.metric = metric
         self.p = p
         self.metric_params = metric_params or {}
-        self.contamination = contamination
-        self.novelty = novelty
+        
+        # Force novelty=True for all LOF models
+        # This allows predict() and decision_function() to work on new data
+        self.novelty = True
+        
+        # contamination must be a float for novelty=True
+        if contamination == 'auto':
+            self.contamination = 0.1  # Default contamination
+        else:
+            self.contamination = float(contamination)
+        
         self.n_jobs = n_jobs
         self.random_state = random_state
-        
-        # LOF requires novelty=True for predict/decision_function on new data
-        # Force novelty=True and ensure contamination is a float
-        self.novelty = True
-        if self.contamination == 'auto':
-            self.contamination = 0.1  # Default contamination for novelty detection
         
         self.model = None
         self.scaler = StandardScaler()
@@ -95,7 +101,7 @@ class LOFModel:
         # Scale features
         X_scaled = self.scaler.fit_transform(X)
         
-        # Initialize and fit model
+        # Initialize and fit model with novelty=True
         self.model = LocalOutlierFactor(
             n_neighbors=self.n_neighbors,
             algorithm=self.algorithm,
@@ -119,7 +125,7 @@ class LOFModel:
         X: pd.DataFrame,
     ) -> np.ndarray:
         """
-        Predict outliers.
+        Predict outliers on new data.
         
         Args:
             X: Features to predict on
@@ -131,11 +137,12 @@ class LOFModel:
             raise RuntimeError("Model not fitted. Call fit() first.")
         
         X_scaled = self.scaler.transform(X)
-        return self.model.fit_predict(X_scaled)
+        # With novelty=True, we can use predict() on new data
+        return self.model.predict(X_scaled)
     
     def decision_function(self, X: pd.DataFrame) -> np.ndarray:
         """
-        Get anomaly scores (negative LOF scores).
+        Get anomaly scores (negative LOF scores) for new data.
         
         Args:
             X: Features to score
@@ -147,7 +154,8 @@ class LOFModel:
             raise RuntimeError("Model not fitted. Call fit() first.")
         
         X_scaled = self.scaler.transform(X)
-        # LOF returns negative outlier scores, so we negate to match IF convention
+        # With novelty=True, decision_function works on new data
+        # LOF returns negative outlier scores, negate to match IF convention
         return -self.model.decision_function(X_scaled)
     
     def cross_val_predict(
@@ -207,7 +215,7 @@ class LOFModel:
             train_normal_positions = train_fold_idx[train_y_binary == 0]
             X_train_fold = X_scaled[train_normal_positions]
             
-            # Train model on this fold
+            # Train model on this fold with novelty=True
             fold_model = LocalOutlierFactor(
                 n_neighbors=self.n_neighbors,
                 algorithm=self.algorithm,
@@ -216,17 +224,17 @@ class LOFModel:
                 p=self.p,
                 metric_params=self.metric_params,
                 contamination=self.contamination,
-                novelty=self.novelty,
+                novelty=True,  # Always use novelty=True
                 n_jobs=self.n_jobs,
             )
             fold_model.fit(X_train_fold)
             
-            # Get scores for validation fold
+            # Get scores for validation fold (use negative_outlier_factor_ from fit)
             val_scores = -fold_model.negative_outlier_factor_
             fold_scores.append(val_scores)
             
-            # Get predictions for validation fold
-            val_preds = fold_model.fit_predict(X_val_fold)
+            # Get predictions for validation fold (use predict with novelty=True)
+            val_preds = fold_model.predict(X_val_fold)
             fold_predictions.append(val_preds)
             
             logger.debug(f"  Fold {fold_num + 1}: {len(X_train_fold)} train, {len(X_val_fold)} val samples")
@@ -242,19 +250,22 @@ class LOFModel:
             p=self.p,
             metric_params=self.metric_params,
             contamination=self.contamination,
-            novelty=self.novelty,
+            novelty=True,  # Always use novelty=True
             n_jobs=self.n_jobs,
         )
         self.model.fit(X_normal_all)
         self.is_fitted_ = True
         
         # Get final scores and predictions on full X (training set)
+        # For training data, we can use the cached negative_outlier_factor_
         scores = -self.model.negative_outlier_factor_
-        fit_predictions = self.model.fit_predict(X_scaled)
+        
+        # For predictions on training data, use predict (works with novelty=True)
+        predictions = self.model.predict(X_scaled)
         
         logger.info("Cross-validation complete.")
         logger.info(f"Final model trained on {len(X_normal_all)} normal samples from training set")
-        return fit_predictions, scores, np.concatenate(fold_scores)
+        return predictions, scores, np.concatenate(fold_scores)
     
     def save(self, path: str) -> None:
         """Save model to file."""
