@@ -93,6 +93,14 @@ def split_data(
         Dictionary with keys: 'train', 'test'
         Each value is a tuple of (features, classification)
     """
+    # Check for NaN in classification and drop if present
+    if classification.isna().any():
+        logger.warning(f"Found {classification.isna().sum()} NaN values in Classification. Dropping these samples.")
+        # Drop rows with NaN classification from both features and classification
+        valid_indices = classification[~classification.isna()].index
+        features = features.loc[valid_indices]
+        classification = classification.loc[valid_indices]
+    
     # Stratified train-test split (maintains class distribution)
     X_for_split = pd.DataFrame(index=features.index)
     X_for_split['classification'] = classification.values
