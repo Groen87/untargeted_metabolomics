@@ -161,8 +161,8 @@ def run_pipeline(
     )
     
     X_train, y_train = splits['train']
+    X_test, y_test = splits['test']
 
-    # Step 1.5: Optional PCA for dimensionality reduction
     # Step 1.5: Optional PCA for dimensionality reduction
     use_sparse_pca = config.get('use_sparse_pca', False)
     if use_sparse_pca:
@@ -215,7 +215,7 @@ def run_pipeline(
         )
         
         # Fit PCA on all features (using numpy arrays to avoid sklearn feature name validation)
-        pca.fit(X_train.values)
+        pca.fit(features.values)
         
         # Transform train and test separately using the fitted PCA
         X_train = pd.DataFrame(
@@ -233,7 +233,6 @@ def run_pipeline(
         
         if save_pca_model:
             pca.save(output_dir / "pca_model.joblib")
-    X_test, y_test = splits['test']
     
     logger.info(f"Train: {len(X_train)} samples")
     logger.info(f"Test: {len(X_test)} samples")
