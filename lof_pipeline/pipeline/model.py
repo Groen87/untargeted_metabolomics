@@ -248,7 +248,7 @@ class LOFModel:
         
         # Get final scores and predictions on full X (training set)
         scores = -self.model.negative_outlier_factor_
-        predictions = self.model.predict(X_scaled)
+        fit_predictions = self.model.fit_predict(X_scaled)
         
         logger.info("Cross-validation complete.")
         logger.info(f"Final model trained on {len(X_normal_all)} normal samples from training set")
