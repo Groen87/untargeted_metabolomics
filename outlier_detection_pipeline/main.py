@@ -213,21 +213,26 @@ def run_pipeline(
             batch_size=batch_size,
             intermediate_components=intermediate_components,
         )
-        features = pca.fit_transform(features)
         
-        logger.info(f"Features reduced from original to {features.shape[1]} components")
+        # Fit PCA on all features (using numpy arrays to avoid sklearn feature name validation)
+        pca.fit(X_train.values)
+        
+        # Transform train and test separately using the fitted PCA
+        X_train = pd.DataFrame(
+            pca.transform(X_train.values),
+            index=X_train.index,
+            columns=[f"PC_{i+1}" for i in range(pca.n_components)]
+        )
+        X_test = pd.DataFrame(
+            pca.transform(X_test.values),
+            index=X_test.index,
+            columns=[f"PC_{i+1}" for i in range(pca.n_components)]
+        )
+        
+        logger.info(f"Features reduced from original to {X_train.shape[1]} components")
         
         if save_pca_model:
             pca.save(output_dir / "pca_model.joblib")
-        # Fit PCA on training data (convert to numpy for sklearn)        pca.fit(features.values)  # Fit on all features using numpy array
-        
-        # Transform both train and test using the fitted PCA
-        X_train = pd.DataFrame(pca.transform(X_train.values), 
-                             index=X_train.index, 
-                             columns=[f"PC_{i+1}" for i in range(pca.n_components)])
-        X_test = pd.DataFrame(pca.transform(X_test.values), 
-                            index=X_test.index, 
-                            columns=[f"PC_{i+1}" for i in range(pca.n_components)])
     X_test, y_test = splits['test']
     
     logger.info(f"Train: {len(X_train)} samples")
