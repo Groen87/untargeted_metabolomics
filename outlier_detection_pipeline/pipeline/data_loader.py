@@ -165,24 +165,6 @@ def split_data(
         )
     
     return splits
-    
-    logger.info(f"Train set: {len(final_train_indices)} samples")
-    logger.info(f"Validation set: {len(final_val_indices)} samples")
-    logger.info(f"Test set: {len(final_test_indices)} samples")
-    
-    # Create splits
-    splits = {}
-    for name, indices in [('train', final_train_indices), 
-                          ('validation', final_val_indices),
-                          ('test', final_test_indices)]:
-        splits[name] = (
-            features.loc[indices].copy(),
-            classification.loc[indices].copy(),
-        )
-    
-    return splits
-
-
 def get_class_distribution(classification: pd.Series) -> Dict[int, int]:
     """Get distribution of classification values."""
     return classification.value_counts().to_dict()
