@@ -146,7 +146,7 @@ class LOFModel:
         
         X_scaled = self.scaler.transform(X)
         # LOF returns negative outlier scores, so we negate to match IF convention
-        return -self.model.negative_outlier_factor_
+        return -self.model.decision_function(X_scaled)
     
     def cross_val_predict(
         self,
