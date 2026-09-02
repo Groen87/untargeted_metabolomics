@@ -291,26 +291,8 @@ def run_pipeline(
         logger.info("STEP 4: Realistic Evaluation (LOO Abnormal)")
         logger.info(f"{'='*70}")
         
-        # Train final model on ALL training data (both normal and abnormal)
-        # Use contamination matching the training set (capped at 0.5 for IsolationForest)
-        train_contamination_raw = float((y_train.isin(outlier_classes)).mean())
-        train_contamination = min(0.5, train_contamination_raw)
-        if train_contamination_raw > 0.5:
-            logger.warning(f"Training set has {train_contamination_raw:.4f} contamination (>0.5). "
-                          f"Capping at 0.5 for IsolationForest.")
-        logger.info(f"Training contamination: {train_contamination:.4f} (raw: {train_contamination_raw:.4f})")
-        
-        # Retrain model on full training set with proper contamination
-        model_final = ExtendedIsolationForestModel(
-            n_estimators=n_estimators,
-            max_samples=max_samples,
-            max_features=max_features,
-            bootstrap=bootstrap,
-            n_jobs=n_jobs,
-            random_state=random_state,
-            contamination=train_contamination,
-        )
-        model_final.fit(X_train, y_train)
+        # Use the CV-trained model (already trained on normals only)
+        model_final = model  # model was trained on normals in cross_val_predict
         
         # Run realistic evaluation
         realistic_results = run_realistic_evaluation(
