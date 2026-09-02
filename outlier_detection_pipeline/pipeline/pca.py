@@ -196,6 +196,45 @@ class SparsePCAWrapper:
         explained_var_ratio = explained_var / explained_var.sum()
         return X_transformed, explained_var_ratio
     
+
+    def fit(self, X: pd.DataFrame) -> "SparsePCAWrapper":
+        """
+        Fit PCA without transforming data.
+        
+        Args:
+            X: Input features (n_samples, n_features)
+            
+        Returns:
+            self
+        """
+        n_samples, n_features = X.shape
+        estimated_time = self._estimate_compute_time(n_samples, n_features)
+        
+        logger.info(f"Fitting {self.method} PCA with {self.n_components} components...")
+        logger.info(f"Data shape: {n_samples} samples x {n_features} features")
+        logger.info(f"Estimated compute time: {estimated_time:.1f} seconds")
+        
+        start_time = time.time()
+        
+        if self.method == "regular":
+            X_transformed, explained_variance = self._fit_regular_pca(X)
+        elif self.method == "sparse":
+            X_transformed, explained_variance = self._fit_sparse_pca(X)
+        elif self.method == "mini_batch_sparse":
+            X_transformed, explained_variance = self._fit_mini_batch_sparse_pca(X)
+        elif self.method == "two_phase":
+            X_transformed, explained_variance = self._fit_two_phase_pca(X)
+        else:
+            raise ValueError(f"Unknown PCA method: {self.method}. Use 'regular', 'sparse', 'mini_batch_sparse', or 'two_phase'.")
+        
+        self.is_fitted = True
+        self.explained_variance_ratio_ = explained_variance
+        
+        elapsed = time.time() - start_time
+        logger.info(f"PCA fitting complete in {elapsed:.1f} seconds.")
+        
+        return self
+
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
         Transform new data using fitted PCA.
