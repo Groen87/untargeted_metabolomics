@@ -1,0 +1,62 @@
+# LOF Outlier Detection Pipeline Configuration
+
+# Data input
+input_file: "data/merged_data_with_classification.csv"
+non_feature_columns: ["Oordeel targeted", "Classification"]
+patient_id_column: null  # Set to column name if patient IDs are in a column, not index
+
+# Class labels
+normal_classification: 0
+outlier_classifications: [1, 2, 3]
+
+# Data splitting
+train_ratio: 0.8
+test_ratio: 0.2
+random_seed: 42
+
+# Feature filtering (optional)
+# feature_filter: "HMDB"  # Keep only features containing "HMDB"
+# feature_filter: ["HMDB", "KEGG"]  # Keep features containing any of these
+feature_filter: null
+
+# PCA for dimensionality reduction (optional)
+use_pca: false
+pca_method: "regular"  # Options: "regular", "sparse", "mini_batch_sparse", "two_phase"
+n_components: 100
+pca_random_state: 42
+save_pca_model: true
+pca_nan_strategy: "drop_columns"  # Options: "drop_columns", "drop_rows", "impute_mean"
+pca_batch_size: 1000
+pca_alpha: 1.0  # For sparse PCA methods
+pca_max_iter: 1000  # For sparse PCA methods
+pca_intermediate_components: null  # For two_phase method
+
+# LOF Model parameters
+n_neighbors: 20
+algorithm: "auto"  # Options: "auto", "ball_tree", "kd_tree", "brute"
+leaf_size: 30
+metric: "minkowski"  # Options: "minkowski", "euclidean", "manhattan", "chebyshev"
+p: 2  # Power parameter for Minkowski metric (2 = Euclidean)
+contamination: "auto"  # Options: "auto" or float (e.g., 0.1)
+novelty: false  # Set to true for novelty detection (requires contamination != "auto")
+n_jobs: -1  # -1 = use all cores
+
+# Cross-validation
+n_splits: 5
+
+# Output
+output_dir: "outputs/lof_outlier_detection"
+save_model: true
+save_predictions: true
+save_plots: true
+save_metrics: true
+
+# Metrics to compute
+metrics:
+  - accuracy
+  - f1
+  - f1_weighted
+  - precision
+  - recall
+  - roc_auc
+  - confusion_matrix
