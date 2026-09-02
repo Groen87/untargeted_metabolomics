@@ -117,6 +117,22 @@ def run_pipeline(
     
     logger.info(f"Loaded {len(features)} samples with {len(features.columns)} features")
     logger.info(f"Classification distribution: {classification.value_counts().to_dict()}")
+
+    # Step 1.2: Optional feature filtering
+    feature_filter = config.get('feature_filter', None)
+    if feature_filter:
+        original_n_features = len(features.columns)
+        if feature_filter == 'hmdb':
+            features = features[[col for col in features.columns if 'HMDB' in col]]
+        elif isinstance(feature_filter, str):
+            # Custom substring filter
+            features = features[[col for col in features.columns if feature_filter in col]]
+        elif isinstance(feature_filter, list):
+            # List of substrings - keep features containing any of them
+            features = features[[col for col in features.columns if any(s in col for s in feature_filter)]]
+        
+        n_filtered = original_n_features - len(features.columns)
+        logger.info(f"Filtered features: {n_filtered} removed, {len(features.columns)} remaining (filter: {feature_filter})")
     
     # Step 1.5: Optional PCA for dimensionality reduction
     use_sparse_pca = config.get('use_sparse_pca', False)

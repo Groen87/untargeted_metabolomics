@@ -16,6 +16,9 @@ non_feature_columns:
   - "Oordeel trageted"
   - "Classification"
 
+# Feature filtering (optional)
+feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
+
 # Classification values
 normal_classification: 0    # Samples with this classification are used for training
 outlier_classifications:    # Other classifications are split between val/test
