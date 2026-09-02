@@ -190,7 +190,7 @@ class ExtendedIsolationForestModel:
         from sklearn.model_selection import StratifiedKFold
         
         # Create labels for stratified splitting (0=normal, 1=abnormal)
-        y_binary = (y != normal_classification).astype(int)
+        y_binary = (y != normal_classification).astype(int).values  # Use .values for numpy array
         
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
         
@@ -201,7 +201,7 @@ class ExtendedIsolationForestModel:
             logger.info(f"Fold {fold_num + 1}/{n_splits}")
             
             # Get indices for this fold
-            X_train_fold = X_scaled[train_fold_idx]
+            X_train_fold_full = X_scaled[train_fold_idx]
             X_val_fold = X_scaled[val_fold_idx]
             
             # From training fold, extract only normal samples for training
