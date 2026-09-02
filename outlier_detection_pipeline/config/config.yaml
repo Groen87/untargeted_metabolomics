@@ -1,0 +1,71 @@
+# Outlier Detection Pipeline Configuration
+
+# ============================================================================
+# Input/Output
+# ============================================================================
+input_file: "data/merged_data_with_classification.csv"
+output_dir: "outputs/outlier_detection"
+
+# ============================================================================
+# Data Configuration
+# ============================================================================
+# Column names in the input CSV
+patient_id_column: null  # Patient IDs are row index (not a column)
+feature_columns: null     # All columns except the ones listed below
+non_feature_columns:
+  - "Oordeel trageted"
+  - "Classification"
+
+# Classification values
+normal_classification: 0    # Samples with this classification are used for training
+outlier_classifications:    # Other classifications are split between val/test
+  - 1
+  - 2
+  - 3
+
+# ============================================================================
+# Data Splitting
+# ============================================================================
+# Split ratios for Classification 0 samples
+train_ratio: 0.8           # 80% for training
+test_ratio: 0.1            # 10% for test
+val_ratio: 0.1             # 10% for validation
+
+# Random seed for reproducibility
+random_seed: 42
+
+# ============================================================================
+# Extended Isolation Forest Parameters
+# ============================================================================
+n_estimators: 100         # Number of trees in the forest
+max_samples: "auto"       # Number of samples to draw for each tree
+max_features: 1.0         # Number of features to draw for each tree
+bootstrap: false          # Whether to use bootstrap sampling
+n_jobs: -1                # Number of jobs for parallel processing (-1 = all)
+random_state: 42          # Random seed
+contamination: "auto"     # Expected proportion of outliers (auto or float)
+
+# ============================================================================
+# Cross-Validation
+# ============================================================================
+n_splits: 5              # Number of CV folds (for training set)
+
+# ============================================================================
+# Evaluation Metrics
+# ============================================================================
+# Metrics to compute (all standard classification metrics)
+metrics:
+  - accuracy
+  - f1
+  - f1_weighted
+  - precision
+  - recall
+  - roc_auc
+  - confusion_matrix
+
+# ============================================================================
+# Output
+# ============================================================================
+save_predictions: true    # Save predictions to CSV
+save_model: true          # Save trained model
+save_plots: true          # Save evaluation plots
