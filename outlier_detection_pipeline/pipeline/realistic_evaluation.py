@@ -147,19 +147,20 @@ def run_realistic_evaluation(
         scores = model.decision_function(X_test_iter)
         
         # Get predictions using model's trained threshold
-        # Also check if abnormal is in top n_top most anomalous
         raw_preds = model.predict(X_test_iter)
-        
-        # For evaluation: flag the n_top most anomalous samples (lowest scores)
-        sorted_indices = np.argsort(scores)  # ascending: lowest scores first
-        top_outlier_indices = sorted_indices[:n_top]
-        
-        # Create binary predictions: 1 for top outliers, 0 otherwise
-        y_pred_iter = np.zeros(len(scores), dtype=int)
-        y_pred_iter[top_outlier_indices] = 1
-        
-        # Also check what model.predict() gives us
         model_preds_binary = np.where(raw_preds == -1, 1, 0)  # -1 = outlier, 1 = inlier
+        
+        # For realistic evaluation: we want to use a threshold that corresponds
+        # to the target contamination rate on THIS test set (n_normal + 1 samples)
+        # Sort scores and find the threshold at position (n_test_total - n_top)
+        sorted_scores = np.sort(scores)  # ascending: lowest = most anomalous
+        if n_top >= len(sorted_scores):
+            threshold_score = sorted_scores[0]  # Most anomalous
+        else:
+            threshold_score = sorted_scores[n_top - 1]  # n_top-th most anomalous
+        
+        # Flag samples with score <= threshold (more anomalous than threshold)
+        y_pred_iter = (scores <= threshold_score).astype(int)
         
         # Convert ground truth to binary (0=normal, 1=outlier)
         y_true_binary = (y_test_iter.isin(outlier_classes)).astype(int)

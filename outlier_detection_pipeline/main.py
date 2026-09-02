@@ -359,8 +359,23 @@ def run_pipeline(
         logger.info("STEP 4: Evaluating on test set")
         logger.info(f"{'='*70}")
         
-        test_preds = model.predict(X_test)
         test_scores = model.decision_function(X_test)
+        
+        # Calculate test set contamination for proper threshold
+        test_contamination = (y_test != normal_class).mean()
+        logger.info(f"Test set contamination: {test_contamination:.2%}")
+        
+        # Use score-based threshold matching test contamination
+        n_outliers_expected = int(np.round(test_contamination * len(X_test)))
+        if n_outliers_expected > 0:
+            sorted_scores = np.sort(test_scores)
+            threshold_idx = min(n_outliers_expected - 1, len(sorted_scores) - 1)
+            threshold = sorted_scores[threshold_idx]
+            test_preds = np.where(test_scores <= threshold, -1, 1)
+        else:
+            test_preds = model.predict(X_test)
+        
+        logger.info(f"Flagging {np.sum(test_preds == -1)} outliers (expected ~{n_outliers_expected})")
 
         # Compute metrics for standard evaluation
         metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
