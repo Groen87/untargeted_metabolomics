@@ -252,7 +252,7 @@ class LOFModel:
         
         logger.info("Cross-validation complete.")
         logger.info(f"Final model trained on {len(X_normal_all)} normal samples from training set")
-        return predictions, scores, np.concatenate(fold_scores)
+        return fit_predictions, scores, np.concatenate(fold_scores)
     
     def save(self, path: str) -> None:
         """Save model to file."""
