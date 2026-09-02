@@ -47,12 +47,15 @@ def load_data(
     logger.info(f"Loaded data with shape: {df.shape}")
     logger.info(f"Columns: {list(df.columns)}")
     
-    # Data cleaning: Remove ambiguous samples
-    # Remove samples where Classification is 2 or 3 but Oordeel targeted is 0
-    # (unclear whether these should be outliers)
+    # Data cleaning: Filter samples based on Classification and Oordeel targeted
+    # Rule: Keep samples where Classification indicates outlier status clearly
+    # - Normal: Classification=0 AND Oordeel targeted=0
+    # - Outlier: Classification=1,2,3 (regardless of Oordeel targeted)
+    # - Remove: Classification=2 or 3 with Oordeel targeted=0 (ambiguous)
     classification_col = df['Classification']
     oordeel_col = df['Oordeel targeted']
     
+    # Remove ambiguous: Classification 2 or 3 with Oordeel targeted = 0
     ambiguous_mask = ((classification_col.isin([2, 3])) & (oordeel_col == 0))
     n_ambiguous = ambiguous_mask.sum()
     
@@ -61,6 +64,19 @@ def load_data(
         logger.warning(f"Found {n_ambiguous} ambiguous samples (Classification 2/3 with Oordeel targeted=0). Removing these.")
         df = df[~ambiguous_mask]
         logger.warning(f"Removed samples: {list(ambiguous_indices[:5])}{'...' if n_ambiguous > 5 else ''}")
+    
+    # After removing ambiguous, update classification to be consistent
+    # Classification=0 with Oordeel targeted!=0: treat as outlier (Classification=1)
+    # This ensures Classification=0 means Normal, Classification!=0 means Outlier
+    inconsistent_mask = (df['Classification'] == 0) & (df['Oordeel targeted'] != 0)
+    n_inconsistent = inconsistent_mask.sum()
+    
+    if n_inconsistent > 0:
+        inconsistent_indices = df.index[inconsistent_mask]
+        logger.warning(f"Found {n_inconsistent} samples with Classification=0 but Oordeel targeted!=0. "
+                      f"Updating Classification to 1 (outlier) for consistency.")
+        df.loc[inconsistent_mask, 'Classification'] = 1
+        logger.warning(f"Updated samples: {list(inconsistent_indices[:5])}{'...' if n_inconsistent > 5 else ''}")
     
     # Extract non-feature columns
     classification = df['Classification']
