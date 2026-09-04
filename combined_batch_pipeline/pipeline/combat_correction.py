@@ -109,10 +109,6 @@ def run_combat_on_merged_data(
     
     logger.info(f"Features with non-zero variance: {nonzero_var_mask.sum()}/{len(nonzero_var_mask)}")
     
-    # Add small epsilon to prevent numerical issues
-    epsilon = 1e-10
-    data_for_combat = data_for_combat + epsilon
-    
     # Run ComBat
     logger.info("Running pycombat_norm...")
     logger.info(f"ComBat parameters - gamma: {gamma}, parametric: {parametric}")
@@ -538,8 +534,9 @@ def generate_combat_plots(
     if len(qc4_samples) >= 2:
         logger.info(f"Generating QC-only plots with {len(qc4_samples)} QC4 samples")
         
-        # Get batch labels for QC samples
-        qc_batch_vec = numeric_batch_vector[[col in qc4_samples for col in data_after.columns]]
+        # Get batch labels for QC samples - use the original batch_vector for proper alignment
+        # numeric_batch_vector is 1-indexed, so we need to map back
+        qc_batch_vec = np.array([batch_to_num.get(batch_dict.get(col, 'unknown'), 0) for col in qc4_samples])
         qc_unique_batches = np.unique(qc_batch_vec)
         
         # UMAP for QC only
@@ -548,7 +545,8 @@ def generate_combat_plots(
             
             for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
                 qc_df = df[qc4_samples].copy()
-                qc_batch = numeric_batch_vector[[col in qc4_samples for col in df.columns]]
+                # Get batch labels for these QC samples using the original batch_dict
+                qc_batch = np.array([batch_to_num.get(batch_dict.get(col, "unknown"), 0) for col in qc4_samples])
                 
                 # Handle NaN
                 if qc_df.isna().any().any():
@@ -604,7 +602,8 @@ def generate_combat_plots(
             
             for label, df in [("Before ComBat", data_before), ("After ComBat", data_after)]:
                 qc_df = df[qc4_samples].copy()
-                qc_batch = numeric_batch_vector[[col in qc4_samples for col in df.columns]]
+                # Get batch labels for these QC samples using the original batch_dict
+                qc_batch = np.array([batch_to_num.get(batch_dict.get(col, "unknown"), 0) for col in qc4_samples])
                 
                 # Handle NaN
                 if qc_df.isna().any().any():
