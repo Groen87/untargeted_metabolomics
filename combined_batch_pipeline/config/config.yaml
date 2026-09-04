@@ -66,9 +66,17 @@ single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global me
                                         # Increase to 0.25 or 0.50 if gap-filled values are higher
 
 # Filter 5: High RSD in QC3 samples
-# Removes features with RSD > 30% across all QC3 samples
+# Removes features with high RSD across all QC3 samples
+# Uses tiered RSD thresholds based on feature intensity:
+# - Features with mean intensity < 100000: RSD threshold = 50%
+# - Features with mean intensity >= 100000: RSD threshold = 25%
+# This accounts for low-intensity features naturally having higher CV/RSD
 filter_high_qc3_rsd: true
-qc3_rsd_threshold: 30.0  # RSD threshold in QC3 samples (features with RSD > this are removed)
+qc3_rsd_threshold: 30.0  # Legacy single threshold (used if use_intensity_based_rsd is false)
+qc3_rsd_intensity_threshold: 100000.0  # Intensity threshold for tiered filtering
+qc3_rsd_low_intensity: 50.0  # RSD threshold for features below intensity threshold
+qc3_rsd_high_intensity: 25.0  # RSD threshold for features at or above intensity threshold
+use_intensity_based_rsd: true  # Enable tiered RSD filtering based on intensity
 
 # ============================================================================
 # QC Sample Detection

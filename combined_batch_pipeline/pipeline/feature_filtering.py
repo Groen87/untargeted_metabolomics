@@ -56,6 +56,10 @@ class FeatureFilter:
         # QC3 RSD filter
         filter_high_qc3_rsd: bool = True,
         qc3_rsd_threshold: float = 30.0,  # RSD threshold in QC3 samples
+        qc3_rsd_intensity_threshold: float = 100000.0,  # Intensity threshold for tiered RSD filtering
+        qc3_rsd_low_intensity: float = 50.0,  # RSD threshold for features below intensity threshold
+        qc3_rsd_high_intensity: float = 25.0,  # RSD threshold for features at or above intensity threshold
+        use_intensity_based_rsd: bool = False,  # Use tiered RSD thresholds based on intensity
         
         # General
         qc_pattern: str = "expQC",
@@ -84,6 +88,10 @@ class FeatureFilter:
         
         self.filter_high_qc3_rsd = filter_high_qc3_rsd
         self.qc3_rsd_threshold = qc3_rsd_threshold
+        self.qc3_rsd_intensity_threshold = qc3_rsd_intensity_threshold
+        self.qc3_rsd_low_intensity = qc3_rsd_low_intensity
+        self.qc3_rsd_high_intensity = qc3_rsd_high_intensity
+        self.use_intensity_based_rsd = use_intensity_based_rsd
         
         self.qc_pattern = qc_pattern
         self.fallback_qc_pattern = fallback_qc_pattern
@@ -123,6 +131,10 @@ class FeatureFilter:
             
             filter_high_qc3_rsd=config.get('filter_high_qc3_rsd', True),
             qc3_rsd_threshold=config.get('qc3_rsd_threshold', 30.0),
+            qc3_rsd_intensity_threshold=config.get('qc3_rsd_intensity_threshold', 100000.0),
+            qc3_rsd_low_intensity=config.get('qc3_rsd_low_intensity', 50.0),
+            qc3_rsd_high_intensity=config.get('qc3_rsd_high_intensity', 25.0),
+            use_intensity_based_rsd=config.get('use_intensity_based_rsd', False),
             
             qc_pattern=config.get('qc_pattern', 'expQC'),
             fallback_qc_pattern=config.get('fallback_qc_pattern', 'QC3'),
@@ -367,18 +379,23 @@ class FeatureFilter:
         df: pd.DataFrame,
         sample_cols: List[str],
         qc_samples: List[str],
+        blank_samples: Optional[List[str]] = None,
     ) -> Tuple[pd.DataFrame, int]:
         """
         Filter 5: Remove features with high RSD in QC3 samples.
         
-        Removes features where RSD > 30% across all QC3 samples.
-        This filters out features that are inconsistent in QC samples.
-        Features with 'HMDB' in their name are preserved.
+        Uses tiered RSD thresholds based on feature intensity:
+        - Features with mean intensity < 100000: RSD threshold = 50%
+        - Features with mean intensity >= 100000: RSD threshold = 25%
+        
+        This accounts for the fact that low-intensity features naturally have
+        higher CV/RSD. Features with 'HMDB' in their name are preserved.
         
         Args:
             df: DataFrame with features as rows, samples as columns
             sample_cols: List of all sample column names
             qc_samples: List of QC sample column names
+            blank_samples: Optional list of blank sample column names
             
         Returns:
             Tuple of (filtered DataFrame, number of features removed)
@@ -396,14 +413,32 @@ class FeatureFilter:
             logger.debug("  High QC3 RSD filter: skipped (need at least 2 QC3 samples)")
             return df, 0
         
-        # Calculate RSD for each feature across QC3 samples
+        # Calculate RSD and intensity from QC3 samples for tiered filtering
         qc3_df = df[qc3_samples]
         feature_means = qc3_df.mean(axis=1)
         feature_stds = qc3_df.std(axis=1)
         feature_rsds = (feature_stds / feature_means * 100).fillna(0)
         
-        # Features with RSD > threshold in QC3 samples
-        high_rsd_mask = feature_rsds > self.qc3_rsd_threshold
+        # Use QC3 mean intensities for the tiered classification
+        # This is consistent with RSD calculation and avoids outliers in other sample types
+        feature_mean_intensities = feature_means
+        
+        # Apply tiered RSD thresholds based on intensity
+        if self.use_intensity_based_rsd:
+            # Use configurable tiered thresholds
+            low_intensity_mask = feature_mean_intensities < self.qc3_rsd_intensity_threshold
+            high_rsd_mask = pd.Series(False, index=df.index)
+            high_rsd_mask[low_intensity_mask] = feature_rsds[low_intensity_mask] > self.qc3_rsd_low_intensity
+            high_rsd_mask[~low_intensity_mask] = feature_rsds[~low_intensity_mask] > self.qc3_rsd_high_intensity
+            threshold_str = f"RSD > {self.qc3_rsd_low_intensity}% (intensity < {self.qc3_rsd_intensity_threshold}) or > {self.qc3_rsd_high_intensity}% (intensity >= {self.qc3_rsd_intensity_threshold})"
+        else:
+            # Default tiered behavior: 50% for intensity < 100000, 25% for intensity >= 100000
+            low_intensity_mask = feature_mean_intensities < 100000.0
+            high_rsd_mask = pd.Series(False, index=df.index)
+            high_rsd_mask[low_intensity_mask] = feature_rsds[low_intensity_mask] > 50.0
+            high_rsd_mask[~low_intensity_mask] = feature_rsds[~low_intensity_mask] > 25.0
+            threshold_str = "RSD > 50% (intensity < 100000) or > 25% (intensity >= 100000)"
+        
         high_rsd_features = high_rsd_mask[high_rsd_mask].index
         
         if len(high_rsd_features) == 0:
@@ -415,7 +450,7 @@ class FeatureFilter:
         df_filtered = df.drop(index=high_rsd_features_to_remove)
         removed = len(high_rsd_features_to_remove)
         
-        logger.info(f"  High QC3 RSD filter (RSD > {self.qc3_rsd_threshold}%): removed {removed} features")
+        logger.info(f"  High QC3 RSD filter ({threshold_str}): removed {removed} features")
         
         return df_filtered, removed
 
@@ -600,8 +635,8 @@ class FeatureFilter:
         else:
             logger.debug("  Single batch filter: skipped (no batch_info provided)")
         
-        # Filter 5: High RSD in QC3 samples (remove features with RSD > 30% in QC3)
-        df, removed = self._filter_high_qc3_rsd(df, sample_cols, qc_samples)
+        # Filter 5: High RSD in QC3 samples (remove features with high RSD in QC3)
+        df, removed = self._filter_high_qc3_rsd(df, sample_cols, qc_samples, blank_samples)
         total_removed += removed
         
 
