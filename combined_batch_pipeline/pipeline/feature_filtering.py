@@ -31,16 +31,22 @@ class FeatureFilter:
         filter_low_variance: bool = True,
         variance_threshold: float = 0.01,  # Features with variance < this threshold are removed
         variance_quantile: Optional[float] = None,  # Alternative: remove bottom N% by variance
+        variance_use_nonzero: bool = False,  # Calculate variance only on non-zero/gap-filled values
+        variance_nonzero_threshold: float = 1000.0,  # Threshold to consider a value as non-gap-filled
         
         # Filter 2: Single batch features (gap-filled in others)
         filter_single_batch: bool = True,
         min_batches: int = 2,  # Features must be present in at least this many batches
         single_batch_noise_quantile: float = 0.10,  # Noise threshold = this quantile * global median
+        single_batch_preserve_high_signal: bool = False,  # Preserve features with high signal in any batch
+        single_batch_high_signal_threshold: float = 100000.0,  # Keep if max in any batch >= this
         
         # Filter 3: Low intensity
         filter_low_intensity: bool = True,
         intensity_threshold: float = 10000.0,  # Minimum mean intensity across all samples
         intensity_quantile: Optional[float] = None,  # Alternative: remove bottom N% by intensity
+        intensity_use_max: bool = False,  # Use max intensity instead of mean (preserves rare high-signal features)
+        intensity_max_threshold: float = 100000.0,  # Minimum max intensity across all samples
         
         # Filter 4: QC-based filtering
         filter_qc_present: bool = True,
@@ -68,14 +74,20 @@ class FeatureFilter:
         self.filter_low_variance = filter_low_variance
         self.variance_threshold = variance_threshold
         self.variance_quantile = variance_quantile
+        self.variance_use_nonzero = variance_use_nonzero
+        self.variance_nonzero_threshold = variance_nonzero_threshold
         
         self.filter_single_batch = filter_single_batch
         self.min_batches = min_batches
         self.single_batch_noise_quantile = single_batch_noise_quantile
+        self.single_batch_preserve_high_signal = single_batch_preserve_high_signal
+        self.single_batch_high_signal_threshold = single_batch_high_signal_threshold
         
         self.filter_low_intensity = filter_low_intensity
         self.intensity_threshold = intensity_threshold
         self.intensity_quantile = intensity_quantile
+        self.intensity_use_max = intensity_use_max
+        self.intensity_max_threshold = intensity_max_threshold
         
         self.filter_qc_present = filter_qc_present
         self.filter_qc_intensity = filter_qc_intensity
@@ -111,14 +123,20 @@ class FeatureFilter:
             filter_low_variance=config.get('filter_low_variance', True),
             variance_threshold=config.get('variance_threshold', 0.01),
             variance_quantile=config.get('variance_quantile', None),
+            variance_use_nonzero=config.get('variance_use_nonzero', False),
+            variance_nonzero_threshold=config.get('variance_nonzero_threshold', 1000.0),
             
             filter_single_batch=config.get('filter_single_batch', True),
             min_batches=config.get('min_batches', 2),
             single_batch_noise_quantile=config.get('single_batch_noise_quantile', 0.10),
+            single_batch_preserve_high_signal=config.get('single_batch_preserve_high_signal', False),
+            single_batch_high_signal_threshold=config.get('single_batch_high_signal_threshold', 100000.0),
             
             filter_low_intensity=config.get('filter_low_intensity', True),
             intensity_threshold=config.get('intensity_threshold', 10000.0),
             intensity_quantile=config.get('intensity_quantile', None),
+            intensity_use_max=config.get('intensity_use_max', False),
+            intensity_max_threshold=config.get('intensity_max_threshold', 100000.0),
             
             filter_qc_present=config.get('filter_qc_present', True),
             filter_qc_intensity=config.get('filter_qc_intensity', True),
@@ -226,7 +244,36 @@ class FeatureFilter:
             logger.warning("No non-blank samples for variance calculation. Skipping low variance filter.")
             return df, 0
         
-        variances = df[non_blank_cols].var(axis=1)
+        if self.variance_use_nonzero:
+            # For gap-filled data: only calculate variance on values above threshold
+            # This preserves features that have real variation in non-gap-filled samples
+            df_nonblank = df[non_blank_cols]
+            # Create mask of values above the gap-fill threshold
+            nonzero_mask = df_nonblank > self.variance_nonzero_threshold
+            # Calculate variance only on non-gap-filled values for each feature
+            # Also track max intensity for preserving rare high-signal features
+            variances = pd.Series(0.0, index=df.index, dtype=float)
+            max_intensities = df_nonblank.max(axis=1)
+            
+            for feature in df.index:
+                # Always preserve HMDB features
+                if self._is_hmdb_feature(feature):
+                    variances[feature] = float('inf')
+                    continue
+                    
+                feature_values = df_nonblank.loc[feature]
+                nonzero_values = feature_values[feature_values > self.variance_nonzero_threshold]
+                if len(nonzero_values) >= 2:
+                    variances[feature] = float(nonzero_values.var())
+                else:
+                    # If feature has at least one high-signal value, preserve it
+                    # (this handles rare IMD features that appear in only 1-2 samples)
+                    if max_intensities[feature] >= self.variance_nonzero_threshold * 10:
+                        variances[feature] = float('inf')  # Force to pass any variance threshold
+                    else:
+                        variances[feature] = 0.0
+        else:
+            variances = df[non_blank_cols].var(axis=1)
         
         if self.variance_quantile is not None:
             # Remove bottom N% by variance
@@ -319,7 +366,29 @@ class FeatureFilter:
         # Ensure mask aligns with df.index
         mask = mask.reindex(df.index, fill_value=True)
         
-        logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}): removed {removed} features")
+        # If enabled, also preserve features with high signal in any batch (for rare IMD features)
+        if self.single_batch_preserve_high_signal:
+            # Check if any batch has max value >= high signal threshold
+            batch_maxes = {}
+            for batch, cols in batch_samples.items():
+                if len(cols) > 0:
+                    batch_df = df[cols]
+                    batch_maxes[batch] = batch_df.max(axis=1)
+            
+            if batch_maxes:
+                max_df = pd.DataFrame(batch_maxes)
+                feature_max = max_df.max(axis=1)
+                high_signal_mask = feature_max >= self.single_batch_high_signal_threshold
+                # Keep features that either pass batch count OR have high signal
+                mask = mask | high_signal_mask.reindex(df.index, fill_value=False)
+                # Recalculate removed count
+                original_removed = removed
+                removed = (~mask).sum()
+                logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}, high_signal_preserved): removed {removed} features ({original_removed} before high-signal preservation)")
+            else:
+                logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}): removed {removed} features")
+        else:
+            logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}): removed {removed} features")
         
         # Preserve HMDB features by forcing them to pass the filter
         mask_with_hmdb = mask.copy()
@@ -340,6 +409,7 @@ class FeatureFilter:
         
         Uses only non-blank samples for intensity calculation.
         Features with 'HMDB' in their name are preserved.
+        When intensity_use_max=True, uses maximum intensity instead of mean to preserve rare high-signal features.
         
         Returns:
             Filtered DataFrame and number of features removed.
@@ -347,31 +417,43 @@ class FeatureFilter:
         if not self.filter_low_intensity:
             return df, 0
         
-        # Preserve HMDB features
+        # Get HMDB features to preserve
         hmdb_features = self._get_hmdb_features(df)
         
-        # Calculate mean intensity for each feature across non-blank samples
+        # Calculate intensity for each feature across non-blank samples
         non_blank_cols = [col for col in sample_cols if col not in blank_samples]
         
         if len(non_blank_cols) == 0:
             logger.warning("No non-blank samples for intensity calculation. Skipping low intensity filter.")
             return df, 0
         
-        mean_intensities = df[non_blank_cols].mean(axis=1)
-        
-        if self.intensity_quantile is not None:
-            # Remove bottom N% by intensity
+        if self.intensity_use_max:
+            # Use maximum intensity - preserves rare high-signal features (IMD)
+            intensities = df[non_blank_cols].max(axis=1)
+            mask = intensities >= self.intensity_max_threshold
+            removed = (intensities < self.intensity_max_threshold).sum()
+            logger.info(f"  Low intensity filter (max > {self.intensity_max_threshold}): removed {removed} features")
+        elif self.intensity_quantile is not None:
+            # Remove bottom N% by mean intensity
+            mean_intensities = df[non_blank_cols].mean(axis=1)
             threshold = mean_intensities.quantile(self.intensity_quantile)
             mask = mean_intensities >= threshold
             removed = (mean_intensities < threshold).sum()
             logger.info(f"  Low intensity filter (quantile {self.intensity_quantile}): removed {removed} features")
         else:
             # Remove features with mean intensity below threshold
+            mean_intensities = df[non_blank_cols].mean(axis=1)
             mask = mean_intensities >= self.intensity_threshold
             removed = (mean_intensities < self.intensity_threshold).sum()
             logger.info(f"  Low intensity filter (threshold={self.intensity_threshold}): removed {removed} features")
         
-        return df[mask], removed
+        # Preserve HMDB features by forcing them to pass the filter
+        mask_with_hmdb = mask.copy()
+        for feature in hmdb_features:
+            if feature in mask_with_hmdb.index:
+                mask_with_hmdb[feature] = True
+        
+        return df[mask_with_hmdb], removed
     
 
     def _filter_high_qc3_rsd(

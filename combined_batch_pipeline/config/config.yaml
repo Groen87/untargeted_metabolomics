@@ -37,12 +37,15 @@ combat_parametric: true
 # Note: QC present and QC intensity filters removed as per user request
 
 # Filter 1: Low intensity
-# Removes features with low mean intensity across all samples
+# Removes features with low intensity across all samples
 filter_low_intensity: true
-# Option A: Absolute threshold
+# Option A: Mean-based threshold (default)
 intensity_threshold: 100000.0  # Features with mean intensity < this are removed
 # Option B: Quantile-based (uncomment to use instead of absolute threshold)
 # intensity_quantile: 0.1  # Remove bottom N% by intensity
+# Option C: Max-based threshold (preserves rare high-signal features like IMD)
+intensity_use_max: false  # Use max intensity instead of mean
+intensity_max_threshold: 100000.0  # Minimum max intensity across all samples
 
 # Filter 2: Blank sample contaminants
 # Removes features that are high in blank samples (likely contaminants)
@@ -57,6 +60,9 @@ filter_low_variance: true
 # variance_threshold: 0.01  # Absolute variance threshold (features with var < this are removed)
 # Alternative to threshold: use quantile to remove bottom N% by variance
 variance_quantile: 0.05  # Remove bottom 5% by variance
+# For gap-filled data: calculate variance only on non-gap-filled values
+variance_use_nonzero: false  # Enable to preserve features with real variation in non-gap-filled samples
+variance_nonzero_threshold: 1000.0  # Values below this are considered gap-filled
 
 # Filter 4: Single batch features
 # Removes features only present in a single batch (gap-filled in others)
@@ -64,6 +70,9 @@ filter_single_batch: true
 min_batches: 2  # Features must be present in at least this many batches
 single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global median (default: 10%)
                                         # Increase to 0.25 or 0.50 if gap-filled values are higher
+# Preserve rare high-signal features (IMD) that may only be in one batch
+single_batch_preserve_high_signal: false  # Enable to preserve features with high signal in any batch
+single_batch_high_signal_threshold: 100000.0  # Keep if max in any batch >= this
 
 # Filter 5: High RSD in QC3 samples
 # Removes features with high RSD across all QC3 samples
