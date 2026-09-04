@@ -676,6 +676,34 @@ class FeatureFilter:
         if df.empty:
             return df
         
+        # ========================================================================
+        # Handle duplicate samples BEFORE filtering
+        # (samples measured twice with _1/_2 suffixes should be averaged)
+        # ========================================================================
+        if df.index.has_duplicates:
+            # Check for samples with large differences between duplicate measurements
+            dup_mask = df.index.duplicated(keep=False)  # All duplicates including first
+            dup_samples = df.index[dup_mask].unique()
+            
+            flagged_samples = []
+            for sample_name in dup_samples:
+                sample_rows = df.loc[[sample_name]]
+                if len(sample_rows) == 2:
+                    # Calculate % difference between the two measurements across all features
+                    diff = (sample_rows.iloc[0] - sample_rows.iloc[1]).abs()
+                    mean_vals = (sample_rows.iloc[0] + sample_rows.iloc[1]) / 2
+                    # Avoid division by zero
+                    mean_vals_safe = mean_vals.replace(0, np.nan)
+                    pct_diff = (diff / mean_vals_safe * 100).mean()
+                    if pct_diff > 30:
+                        flagged_samples.append(f"{sample_name} ({pct_diff:.1f}% diff)")
+            
+            if flagged_samples:
+                logger.warning(f"  FLAGGED: Samples with >30% difference between duplicates: {', '.join(flagged_samples)}")
+            
+            logger.info(f"  Combining {df.index.duplicated().sum()} duplicate sample names by taking mean")
+            df = df.groupby(level=0).mean()
+        
         logger.info(f"\nApplying feature filters...")
         logger.info(f"Initial feature count: {len(df)}")
         
@@ -729,11 +757,6 @@ class FeatureFilter:
         if initial_count > 0:
             pct_removed = 100 * total_removed / initial_count
             logger.info(f"\nTotal: filtered out {total_removed}/{initial_count} features ({pct_removed:.1f}%)")
-        
-        # Ensure unique index
-        if df.index.has_duplicates:
-            logger.info(f"  Combining {df.index.duplicated().sum()} duplicate feature names by taking mean")
-            df = df.groupby(level=0).mean()
         
         return df
 
