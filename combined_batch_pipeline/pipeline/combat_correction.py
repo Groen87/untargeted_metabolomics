@@ -167,6 +167,7 @@ def run_combat_on_merged_data(
             merged_data,
             corrected_data,
             batch_vector,
+            batch_dict,
             batch_to_num,
             numeric_batch_vector,
             output_dir,
@@ -177,6 +178,7 @@ def run_combat_on_merged_data(
 
 def generate_combat_plots(
     data_before: pd.DataFrame,
+    batch_dict: Dict,
     data_after: pd.DataFrame,
     batch_vector: np.ndarray,
     batch_to_num: Dict,
