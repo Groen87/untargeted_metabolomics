@@ -62,7 +62,7 @@ filter_low_variance: true
 variance_quantile: 0.05  # Remove bottom 5% by variance
 # For gap-filled data: calculate variance only on non-gap-filled values
 variance_use_nonzero: false  # Enable to preserve features with real variation in non-gap-filled samples
-variance_nonzero_threshold: 1000.0  # Values below this are considered gap-filled
+variance_nonzero_threshold: 10000.0  # Values below this are considered gap-filled (your gap-fill is ~6000)
 
 # Filter 4: Single batch features
 # Removes features only present in a single batch (gap-filled in others)
@@ -72,7 +72,7 @@ single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global me
                                         # Increase to 0.25 or 0.50 if gap-filled values are higher
 # Preserve rare high-signal features (IMD) that may only be in one batch
 single_batch_preserve_high_signal: false  # Enable to preserve features with high signal in any batch
-single_batch_high_signal_threshold: 100000.0  # Keep if max in any batch >= this
+single_batch_high_signal_threshold: 10000.0  # Keep if max in any batch >= this
 
 # Filter 5: High RSD in QC3 samples
 # Removes features with high RSD across all QC3 samples
