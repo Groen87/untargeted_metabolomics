@@ -52,7 +52,6 @@ from outlier_detection_pipeline.pipeline.outlier_analysis import (
     analyze_outliers_log_iqr,
     plot_outlier_log_iqr,
     save_outlier_log_iqr_results,
-    print_outlier_log_iqr_summary,
 )
 from outlier_detection_pipeline.pipeline.realistic_evaluation import (
     run_realistic_evaluation,
@@ -484,30 +483,13 @@ def run_pipeline(
     
     # Step 5: Save outputs
     logger.info(f"\n{'='*70}")
-    # Step 4.5: Log IQR analysis for outliers
-    if 'features' in locals():
-        # Get outlier indices from test set
-        outlier_mask = (test_preds == -1)
-        outlier_indices = list(X_test.index[outlier_mask])
-        
-        if len(outlier_indices) > 0:
-            logger.info(f"\n{'='*70}")
-            logger.info(f"STEP 4.5: Log IQR Analysis for {len(outlier_indices)} Outliers")
-            logger.info(f"{'='*70}")
-            
-            # Analyze outliers using original features
-            outlier_analysis = analyze_outliers_log_iqr(
-                all_features=features,
-                outlier_indices=outlier_indices,
-                n_top=20,
-            )
-            
-            # Print and save results
-            print_outlier_log_iqr_summary(outlier_analysis, n_top=20)
-            save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
-            plot_outlier_log_iqr(outlier_analysis, features, output_dir, n_top=20)
-        else:
-            logger.info("No outliers detected in test set, skipping log IQR analysis.")
+    # Log IQR analysis for outliers
+    outlier_mask = (test_preds == -1)
+    outlier_indices = list(X_test.index[outlier_mask])
+    if len(outlier_indices) > 0:
+        outlier_analysis = analyze_outliers_log_iqr(features, outlier_indices, n_top=20)
+        save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
+        plot_outlier_log_iqr(outlier_analysis, features, output_dir, n_top=20)
     
     logger.info("STEP 5: Saving outputs")
     logger.info(f"{'='*70}")
