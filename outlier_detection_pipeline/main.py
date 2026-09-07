@@ -488,8 +488,9 @@ def run_pipeline(
     # Log IQR analysis for outliers
     outlier_mask = (test_preds == -1)
     outlier_indices = list(X_test.index[outlier_mask])
+    log_iqr_feature_filter = config.get('log_iqr_feature_filter', None)
     if len(outlier_indices) > 0:
-        outlier_analysis = analyze_outliers_log_iqr(features, outlier_indices, n_top=20)
+        outlier_analysis = analyze_outliers_log_iqr(features, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter)
         save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
         plot_outlier_log_iqr(outlier_analysis, features, output_dir, n_top=20)
     

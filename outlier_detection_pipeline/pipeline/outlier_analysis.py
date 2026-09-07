@@ -32,15 +32,56 @@ def compute_deviation_scores(sample: pd.Series, reference_features: pd.DataFrame
     return abs_dev * (log_iqr + 1e-10)
 
 
-def analyze_outliers_log_iqr(all_features: pd.DataFrame, outlier_indices: List[str], n_top: int = 20) -> Dict[str, Dict[str, Any]]:
+def filter_features_by_name(features: pd.DataFrame, feature_filter: Optional[str] = None) -> pd.DataFrame:
+    """Filter features by name substring."""
+    if feature_filter is None:
+        return features
+    return features.loc[:, features.columns.str.contains(feature_filter, case=False, regex=False)]
+
+
+def analyze_outliers_log_iqr(all_features: pd.DataFrame, outlier_indices: List[str], n_top: int = 20, feature_filter: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """
+    For each outlier, find the top N features with highest log IQR-weighted deviation.
+    
+    Args:
+        all_features: DataFrame with ALL samples (samples x features)
+        outlier_indices: List of sample indices that are outliers
+        n_top: Number of top features to return per outlier
+        feature_filter: Optional substring to filter features (e.g., 'hmdb')
+        
+    Returns:
+        Dictionary mapping outlier index -> {
+            'top_features': [(feature_name, deviation_score), ...],
+            'all_deviations': {feature_name: score, ...}
+        }
+    """
+    # Apply feature filter if specified
+    if feature_filter:
+        all_features = filter_features_by_name(all_features, feature_filter)
+        logger.info(f"Filtered to {len(all_features.columns)} features containing '{feature_filter}'")
+    
     results = {}
+    
     for outlier_idx in outlier_indices:
         if outlier_idx not in all_features.index:
             continue
+        
         sample = all_features.loc[outlier_idx]
         deviations = compute_deviation_scores(sample, all_features)
-        sorted_features = sorted(zip(deviations.index, deviations.values), key=lambda x: x[1], reverse=True)
-        results[outlier_idx] = {'top_features': sorted_features[:n_top], 'all_deviations': dict(zip(deviations.index, deviations.values))}
+        
+        sorted_features = sorted(
+            zip(deviations.index, deviations.values),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        top_features = sorted_features[:n_top]
+        
+        results[outlier_idx] = {
+            'top_features': top_features,
+            'all_deviations': dict(zip(deviations.index, deviations.values)),
+        }
+    
     return results
 
 
