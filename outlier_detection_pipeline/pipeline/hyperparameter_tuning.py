@@ -39,7 +39,7 @@ def tune_hyperparameters(
     n_splits: int = 5,
     random_state: int = 42,
     n_jobs: int = -1,
-    scoring: str = 'f1',
+    scoring: str = 'pr_auc',
     refit: bool = True,
     use_optuna: bool = False,
     n_trials: int = 100,
@@ -316,6 +316,9 @@ def _tune_with_optuna(
     # Create Optuna study
     direction = 'maximize'
     
+    # Log the scoring metric being used
+    logger.info(f"Using scoring metric: {scoring}")
+    
     sampler_map = {
         'tpe': TPESampler(seed=random_state),
         'random': RandomSampler(seed=random_state),
@@ -536,7 +539,7 @@ def tune_and_train(
     n_splits: int = 5,
     random_state: int = 42,
     n_jobs: int = -1,
-    scoring: str = 'f1',
+    scoring: str = 'pr_auc',
     output_dir: Optional[Path] = None,
     use_optuna: bool = False,
     n_trials: int = 100,

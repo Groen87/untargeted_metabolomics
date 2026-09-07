@@ -291,7 +291,7 @@ def run_pipeline(
         n_jobs = config.get('n_jobs', -1)
         random_state = config.get('random_state', 42)
         n_splits_tuning = config.get('n_splits_tuning', 5)
-        tuning_scoring = config.get('tuning_scoring', 'f1')
+        tuning_scoring = config.get('tuning_scoring', 'pr_auc')
         
         # Optuna configuration
         use_optuna = config.get('use_optuna', False)
