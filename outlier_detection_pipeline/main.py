@@ -200,11 +200,12 @@ def run_pipeline(
             
             if nan_strategy == 'drop_columns':
                 # Drop columns with NaN from both train and test
-                # Use X_train to find columns with NaN (since X_train/X_test have same columns after split)
-                cols_with_nan = X_train.columns[X_train.isna().any()].tolist()
+                # Find columns with NaN in either train or test
+                all_cols_with_nan = X_train.columns[X_train.isna().any()] | X_test.columns[X_test.isna().any()]
+                cols_with_nan = list(all_cols_with_nan)
                 n_dropped = len(cols_with_nan)
-                X_train = X_train.dropna(axis=1)
-                X_test = X_test.dropna(axis=1)
+                X_train = X_train.drop(columns=cols_with_nan)
+                X_test = X_test.drop(columns=cols_with_nan)
                 logger.warning(f"Dropped {n_dropped} columns with NaN values: {cols_with_nan[:5]}{'...' if len(cols_with_nan) > 5 else ''}")
             elif nan_strategy == 'drop_rows':
                 # Drop rows with NaN from both train and test
