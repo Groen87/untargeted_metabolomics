@@ -26,13 +26,15 @@ def compute_feature_iqr(features: pd.DataFrame) -> pd.Series:
 
 def compute_deviation_scores(sample: pd.Series, reference_features: pd.DataFrame) -> pd.Series:
     """
-    Compute absolute deviation from median in IQR units.
-    Returns |sample_value - median| / IQR for each feature.
+    Compute log(IQR)-weighted absolute deviation from median.
+    Formula: |sample - median| / IQR * log(IQR)
+    This emphasizes features with higher natural variation.
     """
     median = reference_features.median(axis=0)
     iqr = compute_feature_iqr(reference_features)
-    # Absolute deviation in IQR units (how many IQRs away from median)
-    return (sample - median).abs() / (iqr + 1e-10)
+    log_iqr = np.log(iqr + 1e-10)
+    abs_dev = (sample - median).abs() / (iqr + 1e-10)
+    return abs_dev * (log_iqr + 1e-10)
 
 
 def filter_features_by_name(features: pd.DataFrame, feature_filter: Optional[str] = None) -> pd.DataFrame:
@@ -44,7 +46,7 @@ def filter_features_by_name(features: pd.DataFrame, feature_filter: Optional[str
 
 def analyze_outliers_log_iqr(all_features: pd.DataFrame, outlier_indices: List[str], n_top: int = 20, feature_filter: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
     """
-    For each outlier, find the top N features with highest absolute deviation in IQR units.
+    For each outlier, find the top N features with highest log(IQR)-weighted deviation.
     
     Args:
         all_features: DataFrame with ALL samples (samples x features)
@@ -54,38 +56,29 @@ def analyze_outliers_log_iqr(all_features: pd.DataFrame, outlier_indices: List[s
         
     Returns:
         Dictionary mapping outlier index -> {
-            'top_features': [(feature_name, iqr_deviation), ...],
-            'all_deviations': {feature_name: iqr_deviation, ...}
+            'top_features': [(feature_name, log_iqr_weighted_dev), ...],
+            'all_deviations': {feature_name: log_iqr_weighted_dev, ...}
         }
     """
-    # Apply feature filter if specified
     if feature_filter:
         all_features = filter_features_by_name(all_features, feature_filter)
         logger.info(f"Filtered to {len(all_features.columns)} features containing '{feature_filter}'")
     
     results = {}
-    
     for outlier_idx in outlier_indices:
         if outlier_idx not in all_features.index:
             continue
-        
         sample = all_features.loc[outlier_idx]
         deviations = compute_deviation_scores(sample, all_features)
-        
-        # Sort by absolute deviation in IQR units (descending)
         sorted_features = sorted(
             zip(deviations.index, deviations.values),
             key=lambda x: x[1],
             reverse=True
         )
-        
-        top_features = sorted_features[:n_top]
-        
         results[outlier_idx] = {
-            'top_features': top_features,
+            'top_features': sorted_features[:n_top],
             'all_deviations': dict(zip(deviations.index, deviations.values)),
         }
-    
     return results
 
 
@@ -95,18 +88,12 @@ def plot_outlier_log_iqr(outlier_analysis: Dict[str, Dict[str, Any]], all_featur
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Get IQR for each feature for reference
-    iqr = compute_feature_iqr(all_features)
-    median = all_features.median(axis=0)
-    
     for outlier_idx, analysis in outlier_analysis.items():
         top_features = analysis.get('top_features', [])
         if not top_features:
             continue
         features = [f[0] for f in top_features[:n_top]]
         deviations = [f[1] for f in top_features[:n_top]]
-        
-        # Sort by deviation (descending)
         sorted_indices = np.argsort(deviations)[::-1]
         features = [features[i] for i in sorted_indices]
         deviations = [deviations[i] for i in sorted_indices]
@@ -114,13 +101,10 @@ def plot_outlier_log_iqr(outlier_analysis: Dict[str, Dict[str, Any]], all_featur
         fig, ax = plt.subplots(figsize=figsize)
         colors = plt.cm.viridis(np.linspace(0, 1, len(features)))
         ax.barh(features, deviations, color=colors, alpha=0.7)
-        
-        # Label shows how many IQR units away from median
         for i, (f, dev) in enumerate(zip(features, deviations)):
-            ax.text(dev, i, f'  {dev:.2f}x IQR', va='center', fontsize=8)
-        
-        ax.set_xlabel('Deviation in IQR units (absolute)')
-        ax.set_title(f'Outlier {outlier_idx}: Top {n_top} Features by IQR Deviation')
+            ax.text(dev, i, f'  {dev:.2f}', va='center', fontsize=8)
+        ax.set_xlabel('Log(IQR)-Weighted Deviation')
+        ax.set_title(f'Outlier {outlier_idx}: Top {n_top} Features by Log(IQR) Deviation')
         ax.invert_yaxis()
         ax.grid(True, alpha=0.3, axis='x')
         plt.tight_layout()
@@ -134,7 +118,7 @@ def save_outlier_log_iqr_results(outlier_analysis: Dict[str, Dict[str, Any]], ou
     rows = []
     for outlier_idx, analysis in outlier_analysis.items():
         for rank, (feature_name, deviation) in enumerate(analysis.get('top_features', [])[:n_top], 1):
-            rows.append({'outlier': outlier_idx, 'rank': rank, 'feature': feature_name, 'iqr_deviation': deviation})
+            rows.append({'outlier': outlier_idx, 'rank': rank, 'feature': feature_name, 'log_iqr_weighted_deviation': deviation})
     df = pd.DataFrame(rows)
     output_path = output_dir / "outlier_log_iqr_analysis.csv"
     df.to_csv(output_path, index=False)
