@@ -235,6 +235,11 @@ def _compute_metric(y_true: np.ndarray, y_pred: np.ndarray, scores: np.ndarray, 
         elif scoring == 'roc_auc':
             from sklearn.metrics import roc_auc_score
             return roc_auc_score(y_true, -scores)
+        elif scoring in ('pr_auc', 'prauc', 'average_precision'):
+            from sklearn.metrics import average_precision_score
+            # For PR AUC: higher scores should indicate more likely to be positive class
+            # IsolationForest gives lower scores for anomalies, so negate
+            return average_precision_score(y_true, -scores)
         else:
             from sklearn.metrics import f1_score
             return f1_score(y_true, y_pred, pos_label=1)

@@ -337,7 +337,7 @@ def plot_realistic_results(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Plot 1: Detection by iteration
+    # Plot 1: Detection by iteration and False positives
     plt.figure(figsize=(12, 6))
     
     # Extract iteration data
@@ -372,3 +372,22 @@ def plot_realistic_results(
     plt.close()
     
     logger.info(f"Realistic evaluation plot saved to {output_dir / 'realistic_detection_plot.png'}")
+    
+    # Plot 2: Confusion Matrix for aggregated results
+    if 'confusion_matrix' in results:
+        cm = np.array(results['confusion_matrix'])
+        labels = results.get('confusion_matrix_labels', ['Normal', 'Outlier'])
+        
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=labels, yticklabels=labels)
+        plt.xlabel('Predicted')
+        plt.ylabel('Actual')
+        plt.title(f'Confusion Matrix (Realistic Evaluation)\n'
+                  f'Detection Rate: {results["detection_rate"]:.2%}, '
+                  f'FPR: {results["false_positive_rate"]:.2%}')
+        plt.tight_layout()
+        plt.savefig(output_dir / "realistic_confusion_matrix.png", dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Realistic confusion matrix saved to {output_dir / 'realistic_confusion_matrix.png'}")

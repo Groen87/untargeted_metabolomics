@@ -107,14 +107,23 @@ class FeatureFilter:
         
         self.qc_pattern = qc_pattern
         self.fallback_qc_pattern = fallback_qc_pattern
+        
+        # Cache for HMDB features to avoid repeated string matching
+        self._hmdb_features_cache: Optional[set] = None
     
     def _is_hmdb_feature(self, feature_name: str) -> bool:
         """Check if a feature name contains 'HMDB' (should be preserved)."""
         return 'HMDB' in str(feature_name)
 
     def _get_hmdb_features(self, df: pd.DataFrame) -> set:
-        """Get set of feature names that contain 'HMDB'."""
-        return {idx for idx in df.index if self._is_hmdb_feature(idx)}
+        """Get set of feature names that contain 'HMDB'. Uses cache for performance."""
+        # Return cached if available and index is the same
+        if self._hmdb_features_cache is not None:
+            return self._hmdb_features_cache
+        
+        # Compute and cache
+        self._hmdb_features_cache = {idx for idx in df.index if self._is_hmdb_feature(idx)}
+        return self._hmdb_features_cache
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> 'FeatureFilter':
@@ -234,7 +243,7 @@ class FeatureFilter:
         if not self.filter_low_variance:
             return df, 0
         
-        # Preserve HMDB features
+        # Get and cache HMDB features
         hmdb_features = self._get_hmdb_features(df)
         
         # Calculate variance for each feature across non-blank samples only
@@ -248,32 +257,42 @@ class FeatureFilter:
             # For gap-filled data: only calculate variance on values above threshold
             # This preserves features that have real variation in non-gap-filled samples
             df_nonblank = df[non_blank_cols]
-            # Create mask of values above the gap-fill threshold
+            
+            # Vectorized approach: create mask of values above the gap-fill threshold
             nonzero_mask = df_nonblank > self.variance_nonzero_threshold
-            # Calculate variance only on non-gap-filled values for each feature
-            # Also track max intensity for preserving rare high-signal features
-            variances = pd.Series(0.0, index=df.index, dtype=float)
+            
+            # Count non-zero values per feature
+            nonzero_counts = nonzero_mask.sum(axis=1)
+            
+            # For features with >= 2 non-zero values, calculate variance of those values
+            # For features with < 2 non-zero values, check if they have high signal
             max_intensities = df_nonblank.max(axis=1)
             
-            for feature in df.index:
-                # Always preserve HMDB features
-                if self._is_hmdb_feature(feature):
+            # Vectorized variance calculation for features with enough non-zero values
+            # Create a DataFrame where gap-filled values are replaced with NaN
+            df_for_var = df_nonblank.mask(~nonzero_mask)
+            
+            # Calculate variance (ignores NaN values)
+            variances_raw = df_for_var.var(axis=1)
+            
+            # Features with < 2 non-zero values will have NaN variance
+            # For these, check if max intensity >= threshold * 10 (preserve rare high-signal features)
+            has_high_signal = (nonzero_counts < 2) & (max_intensities >= self.variance_nonzero_threshold * 10)
+            
+            # Build final variances Series
+            variances = variances_raw.fillna(0.0)
+            variances[has_high_signal] = float('inf')
+            
+            # Also mark HMDB features as having infinite variance
+            for feature in hmdb_features:
+                if feature in variances.index:
                     variances[feature] = float('inf')
-                    continue
-                    
-                feature_values = df_nonblank.loc[feature]
-                nonzero_values = feature_values[feature_values > self.variance_nonzero_threshold]
-                if len(nonzero_values) >= 2:
-                    variances[feature] = float(nonzero_values.var())
-                else:
-                    # If feature has at least one high-signal value, preserve it
-                    # (this handles rare IMD features that appear in only 1-2 samples)
-                    if max_intensities[feature] >= self.variance_nonzero_threshold * 10:
-                        variances[feature] = float('inf')  # Force to pass any variance threshold
-                    else:
-                        variances[feature] = 0.0
         else:
             variances = df[non_blank_cols].var(axis=1)
+            # Mark HMDB features as having infinite variance
+            for feature in hmdb_features:
+                if feature in variances.index:
+                    variances[feature] = float('inf')
         
         if self.variance_quantile is not None:
             # Remove bottom N% by variance
@@ -287,13 +306,7 @@ class FeatureFilter:
             removed = (variances < self.variance_threshold).sum()
             logger.info(f"  Low variance filter (threshold={self.variance_threshold}): removed {removed} features")
         
-        # Preserve HMDB features by forcing them to pass the filter
-        mask_with_hmdb = mask.copy()
-        for feature in hmdb_features:
-            if feature in mask_with_hmdb.index:
-                mask_with_hmdb[feature] = True
-        
-        return df[mask_with_hmdb], removed
+        return df[mask], removed
     
     def _filter_single_batch(
         self,
@@ -319,7 +332,7 @@ class FeatureFilter:
         if not self.filter_single_batch:
             return df, 0
         
-        # Preserve HMDB features
+        # Get and cache HMDB features
         hmdb_features = self._get_hmdb_features(df)
         
         # Group samples by batch, excluding blanks
@@ -337,6 +350,8 @@ class FeatureFilter:
         # Vectorized approach: for each batch, compute median per feature
         # This is much faster than looping through each feature
         batch_medians = {}
+        batch_maxes = {}  # Pre-compute for high signal preservation
+        
         for batch, cols in batch_samples.items():
             if len(cols) == 0:
                 continue
@@ -347,6 +362,9 @@ class FeatureFilter:
             if isinstance(medians, pd.Series):
                 medians = medians.groupby(level=0).first()
             batch_medians[batch] = medians
+            
+            # Pre-compute max for potential high signal preservation
+            batch_maxes[batch] = batch_df.max(axis=1)
         
         # Combine into a DataFrame: features x batches
         median_df = pd.DataFrame(batch_medians)
@@ -367,36 +385,25 @@ class FeatureFilter:
         mask = mask.reindex(df.index, fill_value=True)
         
         # If enabled, also preserve features with high signal in any batch (for rare IMD features)
-        if self.single_batch_preserve_high_signal:
-            # Check if any batch has max value >= high signal threshold
-            batch_maxes = {}
-            for batch, cols in batch_samples.items():
-                if len(cols) > 0:
-                    batch_df = df[cols]
-                    batch_maxes[batch] = batch_df.max(axis=1)
-            
-            if batch_maxes:
-                max_df = pd.DataFrame(batch_maxes)
-                feature_max = max_df.max(axis=1)
-                high_signal_mask = feature_max >= self.single_batch_high_signal_threshold
-                # Keep features that either pass batch count OR have high signal
-                mask = mask | high_signal_mask.reindex(df.index, fill_value=False)
-                # Recalculate removed count
-                original_removed = removed
-                removed = (~mask).sum()
-                logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}, high_signal_preserved): removed {removed} features ({original_removed} before high-signal preservation)")
-            else:
-                logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}): removed {removed} features")
+        if self.single_batch_preserve_high_signal and batch_maxes:
+            max_df = pd.DataFrame(batch_maxes)
+            feature_max = max_df.max(axis=1)
+            high_signal_mask = feature_max >= self.single_batch_high_signal_threshold
+            # Keep features that either pass batch count OR have high signal
+            mask = mask | high_signal_mask.reindex(df.index, fill_value=False)
+            # Recalculate removed count
+            original_removed = removed
+            removed = (~mask).sum()
+            logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}, high_signal_preserved): removed {removed} features ({original_removed} before high-signal preservation)")
         else:
             logger.info(f"  Single batch filter (min_batches={self.min_batches}, noise_threshold={noise_threshold:.2f}): removed {removed} features")
         
         # Preserve HMDB features by forcing them to pass the filter
-        mask_with_hmdb = mask.copy()
         for feature in hmdb_features:
-            if feature in mask_with_hmdb.index:
-                mask_with_hmdb[feature] = True
+            if feature in mask.index:
+                mask[feature] = True
         
-        return df[mask_with_hmdb], removed
+        return df[mask], removed
     
     def _filter_low_intensity(
         self,
@@ -417,7 +424,7 @@ class FeatureFilter:
         if not self.filter_low_intensity:
             return df, 0
         
-        # Get HMDB features to preserve
+        # Get and cache HMDB features
         hmdb_features = self._get_hmdb_features(df)
         
         # Calculate intensity for each feature across non-blank samples
@@ -448,12 +455,11 @@ class FeatureFilter:
             logger.info(f"  Low intensity filter (threshold={self.intensity_threshold}): removed {removed} features")
         
         # Preserve HMDB features by forcing them to pass the filter
-        mask_with_hmdb = mask.copy()
         for feature in hmdb_features:
-            if feature in mask_with_hmdb.index:
-                mask_with_hmdb[feature] = True
+            if feature in mask.index:
+                mask[feature] = True
         
-        return df[mask_with_hmdb], removed
+        return df[mask], removed
     
 
     def _filter_high_qc3_rsd(
@@ -485,7 +491,7 @@ class FeatureFilter:
         if not self.filter_high_qc3_rsd or not qc_samples:
             return df, 0
         
-        # Preserve HMDB features
+        # Get and cache HMDB features
         hmdb_features = self._get_hmdb_features(df)
         
         # Identify QC3 samples specifically
@@ -521,16 +527,20 @@ class FeatureFilter:
             high_rsd_mask[~low_intensity_mask] = feature_rsds[~low_intensity_mask] > 25.0
             threshold_str = "RSD > 50% (intensity < 100000) or > 25% (intensity >= 100000)"
         
+        # Mark HMDB features as NOT high RSD (preserve them)
+        for feature in hmdb_features:
+            if feature in high_rsd_mask.index:
+                high_rsd_mask[feature] = False
+        
         high_rsd_features = high_rsd_mask[high_rsd_mask].index
         
         if len(high_rsd_features) == 0:
             logger.debug("  High QC3 RSD filter: no features removed")
             return df, 0
         
-        # Remove high RSD features, but preserve HMDB features
-        high_rsd_features_to_remove = [f for f in high_rsd_features if f not in hmdb_features]
-        df_filtered = df.drop(index=high_rsd_features_to_remove)
-        removed = len(high_rsd_features_to_remove)
+        # Remove high RSD features (HMDB already excluded from high_rsd_mask)
+        df_filtered = df.drop(index=high_rsd_features)
+        removed = len(high_rsd_features)
         
         logger.info(f"  High QC3 RSD filter ({threshold_str}): removed {removed} features")
         
@@ -607,7 +617,7 @@ class FeatureFilter:
         if not self.filter_blank_contaminants or not blank_samples:
             return df, 0
         
-        # Preserve HMDB features
+        # Get and cache HMDB features
         hmdb_features = self._get_hmdb_features(df)
         
         # Calculate mean intensity in blanks
@@ -628,9 +638,8 @@ class FeatureFilter:
         # BUT: keep features where ANY biological sample has >= 10x blank_mean (rare high-signal features)
         # i.e., contaminant if (bio_mean < blank_mean * threshold) AND (no bio sample >= 10 * blank_mean)
         
-        # Check if any biological sample has >= 10x the blank mean for this feature
+        # Check if any biological sample has >= high_signal_threshold * blank_mean
         blank_mean_series = pd.Series(blank_mean, index=df.index)
-        bio_df = df[non_blank_cols]
         
         # For each feature, check if any bio sample >= high_signal_threshold * blank_mean
         max_bio = bio_df.max(axis=1)
@@ -639,19 +648,18 @@ class FeatureFilter:
         # Contaminant: bio_mean < threshold * blank_mean AND no high-signal bio sample
         contaminant_mask = (bio_mean < blank_mean * self.blank_ratio_threshold) & (blank_mean > 0) & (~has_high_signal)
         
+        # Preserve HMDB features by marking them as NOT contaminants
+        for feature in hmdb_features:
+            if feature in contaminant_mask.index:
+                contaminant_mask[feature] = False
+        
         # Keep features that are NOT contaminants
         keep_mask = ~contaminant_mask
         removed = contaminant_mask.sum()
         
         logger.info(f"  Blank contaminant filter (bio < blank*{self.blank_ratio_threshold}, with {self.blank_high_signal_threshold}x loophole): removed {removed} features")
         
-        # Preserve HMDB features by forcing them to pass the filter
-        keep_mask_with_hmdb = keep_mask.copy()
-        for feature in hmdb_features:
-            if feature in keep_mask_with_hmdb.index:
-                keep_mask_with_hmdb[feature] = True
-        
-        return df[keep_mask_with_hmdb], removed
+        return df[keep_mask], removed
 
 
     def filter(
@@ -675,6 +683,9 @@ class FeatureFilter:
         """
         if df.empty:
             return df
+        
+        # Clear HMDB cache since we have a new DataFrame
+        self._hmdb_features_cache = None
         
         # ========================================================================
         # Handle duplicate samples BEFORE filtering

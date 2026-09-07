@@ -90,7 +90,7 @@ use_cv_with_abnormal: true  # Include abnormal samples in CV folds for realistic
 # ============================================================================
 use_hyperparameter_tuning: false  # Toggle hyperparameter tuning on/off
 n_splits_tuning: 5               # Number of CV folds for tuning
-tuning_scoring: f1              # Metric to optimize ('f1', 'precision', 'recall', 'roc_auc')
+tuning_scoring: pr_auc          # Metric to optimize ('f1', 'precision', 'recall', 'roc_auc', 'pr_auc', 'prauc')
 
 # Parameter grid for tuning (used if use_hyperparameter_tuning is true)
 # If null, uses default grid
