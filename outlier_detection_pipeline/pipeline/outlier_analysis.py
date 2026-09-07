@@ -99,7 +99,7 @@ def plot_outlier_log_iqr(outlier_analysis: Dict[str, Dict[str, Any]], all_featur
         ax.barh(features, weighted_deviations, color=colors, alpha=0.7)
         
         for i, (f, abs_dev) in enumerate(zip(features, abs_deviations)):
-            ax.text(weighted_deviations[i], i, f'  {abs_dev:.2f}x IQR', va='center', fontsize=8)
+            ax.text(weighted_deviations[i], i, f'  {weighted_deviations[i]:.2f}x log(IQR)', va='center', fontsize=8)
         
         ax.set_xlabel('Log(IQR)-Weighted Deviation (ranked)')
         ax.set_title(f'Outlier {outlier_idx}: Top {n_top} Features by Log(IQR) Deviation')
