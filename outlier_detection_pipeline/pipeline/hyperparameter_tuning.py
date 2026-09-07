@@ -410,39 +410,39 @@ def _create_optuna_search_space(param_grid: Dict[str, List[Any]], random_state: 
     
     for param, values in param_grid.items():
         if param == 'n_estimators':
-            # Integer parameter
+            # Integer parameter - store config for trial.suggest_int()
             if isinstance(values, list):
-                search_space[param] = optuna.suggest_int(param, min(values), max(values))
+                search_space[param] = {'type': 'int', 'min': min(values), 'max': max(values)}
             else:
-                search_space[param] = optuna.suggest_int(param, 50, 500)
+                search_space[param] = {'type': 'int', 'min': 50, 'max': 500}
         elif param == 'max_samples':
             # Can be 'auto' or float
             if isinstance(values, list):
                 float_values = [v for v in values if isinstance(v, (int, float))]
                 if float_values:
-                    search_space[param] = optuna.suggest_float(param, min(float_values), max(float_values))
+                    search_space[param] = {'type': 'float', 'min': min(float_values), 'max': max(float_values)}
                 else:
-                    search_space[param] = optuna.suggest_categorical(param, values)
+                    search_space[param] = {'type': 'categorical', 'choices': values}
             else:
-                search_space[param] = optuna.suggest_categorical(param, ['auto', 0.5, 0.8, 1.0])
+                search_space[param] = {'type': 'categorical', 'choices': ['auto', 0.5, 0.8, 1.0]}
         elif param == 'max_features':
             # Float parameter
             if isinstance(values, list):
-                search_space[param] = optuna.suggest_float(param, min(values), max(values))
+                search_space[param] = {'type': 'float', 'min': min(values), 'max': max(values)}
             else:
-                search_space[param] = optuna.suggest_float(param, 0.1, 1.0)
+                search_space[param] = {'type': 'float', 'min': 0.1, 'max': 1.0}
         elif param == 'contamination':
             # Can be 'auto' or float
             if isinstance(values, list):
-                search_space[param] = optuna.suggest_categorical(param, values)
+                search_space[param] = {'type': 'categorical', 'choices': values}
             else:
-                search_space[param] = optuna.suggest_categorical(param, ['auto'])
+                search_space[param] = {'type': 'categorical', 'choices': ['auto']}
         elif param == 'bootstrap':
             # Boolean parameter
-            search_space[param] = optuna.suggest_categorical(param, [True, False])
+            search_space[param] = {'type': 'categorical', 'choices': [True, False]}
         else:
             # Default: categorical
-            search_space[param] = optuna.suggest_categorical(param, values)
+            search_space[param] = {'type': 'categorical', 'choices': values}
     
     return search_space
 
@@ -465,10 +465,16 @@ def _create_optuna_objective(
     
     def objective(trial: optuna.Trial) -> float:
         """Objective function for Optuna."""
-        # Sample parameters
+        # Sample parameters using trial.suggest_* methods
         params = {}
-        for param, suggest_func in search_space.items():
-            params[param] = suggest_func(trial)
+        for param, config in search_space.items():
+            param_type = config['type']
+            if param_type == 'int':
+                params[param] = trial.suggest_int(param, config['min'], config['max'])
+            elif param_type == 'float':
+                params[param] = trial.suggest_float(param, config['min'], config['max'])
+            elif param_type == 'categorical':
+                params[param] = trial.suggest_categorical(param, config['choices'])
         
         # Ensure parameter types are correct
         params['n_estimators'] = int(params.get('n_estimators', 100))
