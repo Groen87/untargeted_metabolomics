@@ -20,7 +20,7 @@ non_feature_columns:
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
 # Log IQR analysis
-log_iqr_feature_filter: null  # Filter features for IQR analysis. Options: null (no filter), 'hmdb', or custom string/list
+log_iqr_feature_filter: hmdb  # Filter features for IQR analysis. Options: null (no filter), 'hmdb', or custom string/list
 
 # Classification values
 normal_classification: 0    # Samples with this classification are used for training
@@ -45,14 +45,14 @@ random_seed: 42
 # ============================================================================
 # Sparse PCA for Dimensionality Reduction
 # ============================================================================
-use_sparse_pca: false      # Toggle sparse PCA on/off
+use_sparse_pca: true      # Toggle sparse PCA on/off
 n_components: 100          # Number of principal components to keep
 alpha: 1.0                # Sparsity controlling parameter (higher = more sparse)
 max_iter: 1000            # Maximum iterations for sparse PCA
 pca_random_state: 42      # Random seed for sparse PCA
 save_pca_model: true      # Save the fitted PCA model
 pca_nan_strategy: drop_columns  # How to handle NaN: 'drop_columns', 'drop_rows', or 'impute_mean'
-pca_method: sparse         # PCA method: 'regular', 'sparse', 'mini_batch_sparse', 'two_phase'
+pca_method: reular         # PCA method: 'regular', 'sparse', 'mini_batch_sparse', 'two_phase'
 pca_batch_size: 1000       # Batch size for mini_batch_sparse
 pca_intermediate_components: null  # Intermediate components for two_phase (null = auto: min(500, n_components*5))
 
@@ -70,15 +70,15 @@ contamination: "auto"     # Expected proportion of outliers (auto or float)
 # ============================================================================
 # Cross-Validation
 # ============================================================================
-n_splits: 5              # Number of CV folds (for training set)
+n_splits: 3              # Number of CV folds (for training set)
 use_cv_with_abnormal: true  # Include abnormal samples in CV folds for realistic evaluation              # Number of CV folds (for training set)
 use_cv_with_abnormal: true  # Include abnormal samples in CV folds for realistic evaluation
 
 # ============================================================================
 # Hyperparameter Tuning
 # ============================================================================
-use_hyperparameter_tuning: false  # Toggle hyperparameter tuning on/off
-n_splits_tuning: 5               # Number of CV folds for tuning
+use_hyperparameter_tuning: true  # Toggle hyperparameter tuning on/off
+n_splits_tuning: 3               # Number of CV folds for tuning
 tuning_scoring: pr_auc          # Metric to optimize ('f1', 'precision', 'recall', 'roc_auc', 'pr_auc', 'prauc')
 
 # Parameter grid for tuning (used if use_hyperparameter_tuning is true)
