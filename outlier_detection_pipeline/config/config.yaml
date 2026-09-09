@@ -76,8 +76,19 @@ contamination: "auto"     # Expected proportion of outliers (auto or float)
 # Cross-Validation
 # ============================================================================
 n_splits: 3              # Number of CV folds (for training set)
-use_cv_with_abnormal: true  # Include abnormal samples in CV folds for realistic evaluation              # Number of CV folds (for training set)
 use_cv_with_abnormal: true  # Include abnormal samples in CV folds for realistic evaluation
+
+# ============================================================================
+# Evaluation Strategy
+# ============================================================================
+evaluation_strategy: realistic  # 'standard' or 'realistic' - Use realistic for LOO abnormal testing
+
+# ============================================================================
+# Realistic Evaluation
+# ============================================================================
+realistic_test_contamination: 0.02  # Target contamination rate for realistic testing
+realistic_n_iterations: 36  # Number of LOO iterations
+realistic_n_outliers_true: null  # Number of true outliers (optional, overrides contamination)
 
 # ============================================================================
 # Hyperparameter Tuning
