@@ -150,6 +150,9 @@ def _filter_out_drug_features(
     Removes any features whose column names contain DrugBank drug or
     drug metabolite names (case-insensitive substring matching).
     
+    HMDB features are ALWAYS kept, even if they match DrugBank names,
+    to preserve endogenous metabolites that may also appear in DrugBank.
+    
     Args:
         features: DataFrame with feature columns
         drugbank_names: Set of DrugBank compound names (uppercase)
@@ -164,14 +167,23 @@ def _filter_out_drug_features(
     original_cols = set(features.columns)
     
     # Find columns that DO NOT contain any DrugBank name
+    # EXCEPT: always keep columns containing 'HMDB' (endogenous metabolites)
     non_drug_columns = []
     for col in features.columns:
         col_upper = str(col).upper()
+        
+        # Always keep HMDB features regardless of DrugBank match
+        if 'HMDB' in col_upper:
+            non_drug_columns.append(col)
+            continue
+        
+        # Check if this column matches any DrugBank name
         is_drug = False
         for name in drugbank_names:
             if name in col_upper:
                 is_drug = True
                 break
+        
         if not is_drug:
             non_drug_columns.append(col)
     
