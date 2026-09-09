@@ -219,26 +219,28 @@ def _filter_out_drug_features(
             continue
         
         # Check if this column matches any DrugBank name
-        # Use word boundary matching: the DrugBank name must match as a whole word
-        # or be at the start/end of the feature name, not just a substring
+        # Use EXACT matching (case-insensitive) - the feature name must contain
+        # the DrugBank name as an exact substring, but we need to be careful:
+        # Only match if the DrugBank name appears as a distinct part of the feature name
+        # surrounded by non-alphanumeric characters or at boundaries
         is_drug = False
         matching_name = None
-        col_upper_words = col_upper.split()
         
         for name in drugbank_names:
-            # Skip very short names that cause false positives (2 chars or less)
-            if len(name) <= 2:
+            # Skip very short names that cause false positives (3 chars or less)
+            if len(name) <= 3:
                 continue
             
-            # Check if DrugBank name matches as a complete word in the feature name
-            # OR if feature name starts/ends with the DrugBank name
             name_upper = name  # Already uppercase
             
-            # Exact word match or starts/ends with
-            if (name_upper in col_upper_words or
-                col_upper.startswith(name_upper + ' ') or
-                col_upper.endswith(' ' + name_upper) or
-                col_upper == name_upper):
+            # Use regex-like matching: the DrugBank name must appear as a
+            # standalone word or phrase in the feature name, not as part of
+            # a larger word. We check for word boundaries.
+            # Pattern: (^|[^A-Z0-9])NAME([^A-Z0-9]|$)
+            import re
+            # Create pattern that matches the name as a whole word
+            pattern = r'(^|[^A-Z0-9])' + re.escape(name_upper) + r'([^A-Z0-9]|$)'
+            if re.search(pattern, col_upper):
                 is_drug = True
                 matching_name = name
                 break
