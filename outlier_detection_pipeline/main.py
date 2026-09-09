@@ -463,6 +463,7 @@ def _save_outputs(
     test_metrics: Optional[Dict[str, Any]] = None,
     realistic_results: Optional[Dict[str, Any]] = None,
     pca: Optional[SparsePCAWrapper] = None,
+    original_features: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """Save all pipeline outputs."""
     _log_section_header("Saving outputs")
@@ -471,17 +472,17 @@ def _save_outputs(
     save_model = config.get('save_model', True)
     save_preds = config.get('save_predictions', True)
 
-    # Perform outlier analysis
+    # Perform outlier analysis using original features (before PCA/filtering)
     outlier_mask = (test_preds == -1)
     outlier_indices = list(X_test.index[outlier_mask])
     log_iqr_feature_filter = config.get('log_iqr_feature_filter', None)
 
-    if len(outlier_indices) > 0:
+    if len(outlier_indices) > 0 and original_features is not None:
         outlier_analysis = analyze_outliers_log_iqr(
-            X_test, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter
+            original_features, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter
         )
         save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
-        plot_outlier_log_iqr(outlier_analysis, X_test, output_dir, n_top=20)
+        plot_outlier_log_iqr(outlier_analysis, original_features, output_dir, n_top=20)
 
     if save_model:
         model.save(output_dir / "model.joblib")
@@ -527,6 +528,10 @@ def _save_outputs(
             outlier_classes=outlier_classes,
             pos_label=-1,
         )
+        
+        # For realistic evaluation, also save the realistic confusion matrix
+        if realistic_results is not None:
+            plot_realistic_results(realistic_results, output_dir)
 
     return {
         'test_metrics': test_metrics,
@@ -667,6 +672,7 @@ def run_pipeline(
         test_metrics=test_metrics if evaluation_strategy != 'realistic' else None,
         realistic_results=realistic_results,
         pca=pca,
+        original_features=original_features,
     )
 
     return results
