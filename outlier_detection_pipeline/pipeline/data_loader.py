@@ -71,6 +71,7 @@ def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) ->
         current_names = set()
         in_drug = False
         depth = 0
+        skip_depth = -1  # Track depth at which we should skip
         
         for event, elem in context:
             tag_lower = elem.tag.lower().split('}')[-1]
@@ -81,8 +82,9 @@ def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) ->
                     in_drug = True
                     depth = 0
                     current_names = set()
+                    skip_depth = -1
                 
-                if in_drug:
+                if in_drug and skip_depth == -1:
                     depth += 1
                     
                     # Only collect from specific drug name fields
@@ -93,40 +95,64 @@ def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) ->
                                 'polypeptide', 'protein', 'gene', 'pathway',
                                 'reactions', 'reaction', 'external_identifiers',
                                 'external_identifier', 'snp_effects', 'snp_adverse_effects',
-                                'drug_interactions', 'food_interactions', 'sequences'}
+                                'drug_interactions', 'food_interactions', 'sequences',
+                                'salt', 'salts', 'mixture', 'product', 'pack', 'dose'}
                     
                     if tag_lower in skip_tags:
-                        # Skip this entire subtree
+                        # Mark this depth to skip
+                        skip_depth = depth
+                    elif skip_depth != -1:
+                        # We're inside a skipped section, don't process
                         pass
                     elif tag_lower == 'name':
                         if elem.text and elem.text.strip():
-                            current_names.add(elem.text.strip())
+                            name = elem.text.strip()
+                            # Only keep names that are reasonable length
+                            if len(name) >= 3:
+                                current_names.add(name)
                     elif tag_lower == 'generic_name' or tag_lower == 'generic-name':
                         if elem.text and elem.text.strip():
-                            current_names.add(elem.text.strip())
+                            name = elem.text.strip()
+                            if len(name) >= 3:
+                                current_names.add(name)
                     elif tag_lower in ('synonym', 'synonyms'):
                         if elem.text and elem.text.strip():
-                            current_names.add(elem.text.strip())
-                    elif tag_lower == 'international_brand_name' or tag_lower == 'brand_name':
+                            name = elem.text.strip()
+                            if len(name) >= 3:
+                                current_names.add(name)
+                    elif tag_lower in ('international_brand_name', 'brand_name', 'brand'):
                         if elem.text and elem.text.strip():
-                            current_names.add(elem.text.strip())
+                            name = elem.text.strip()
+                            if len(name) >= 3:
+                                current_names.add(name)
                     elif tag_lower == 'cas_number':
                         # CAS numbers are specific drug identifiers
                         if elem.text and elem.text.strip():
-                            current_names.add(elem.text.strip())
+                            name = elem.text.strip()
+                            if len(name) >= 3:
+                                current_names.add(name)
             
             elif event == 'end':
                 if in_drug:
+                    tag_lower = elem.tag.lower().split('}')[-1]
+                    
+                    # When skipped section ends, reset skip_depth
+                    if skip_depth != -1 and depth == skip_depth:
+                        skip_depth = -1
+                    
                     # When drug entry ends, add collected names to master set
                     if tag_lower == 'drug' and current_names:
                         compound_names.update(current_names)
                         current_names = set()
                     
+                    if in_drug:
+                        depth -= 1
+                    
                     # Clear processed elements to free memory
                     elem.clear()
         
         # Normalize all names to uppercase for case-insensitive matching
-        compound_names = {name.upper() for name in compound_names if name}
+        compound_names = {name.upper() for name in compound_names if name and len(name) >= 3}
         
         # Save to cache for future runs - NEW CACHE due to selective extraction
         if use_cache:
@@ -193,10 +219,26 @@ def _filter_out_drug_features(
             continue
         
         # Check if this column matches any DrugBank name
+        # Use word boundary matching: the DrugBank name must match as a whole word
+        # or be at the start/end of the feature name, not just a substring
         is_drug = False
         matching_name = None
+        col_upper_words = col_upper.split()
+        
         for name in drugbank_names:
-            if name in col_upper:
+            # Skip very short names that cause false positives (2 chars or less)
+            if len(name) <= 2:
+                continue
+            
+            # Check if DrugBank name matches as a complete word in the feature name
+            # OR if feature name starts/ends with the DrugBank name
+            name_upper = name  # Already uppercase
+            
+            # Exact word match or starts/ends with
+            if (name_upper in col_upper_words or
+                col_upper.startswith(name_upper + ' ') or
+                col_upper.endswith(' ' + name_upper) or
+                col_upper == name_upper):
                 is_drug = True
                 matching_name = name
                 break
