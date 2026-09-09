@@ -397,6 +397,9 @@ def _evaluate_realistic(
     # Save realistic results
     if save_realistic_results_flag:
         save_realistic_results(realistic_results, output_dir)
+    
+    # Save realistic plots (always save if plots are enabled)
+    if save_plots:
         plot_realistic_results(realistic_results, output_dir)
 
     # Also run standard evaluation for comparison
