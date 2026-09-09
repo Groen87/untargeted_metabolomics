@@ -39,10 +39,12 @@ def _get_drugbank_cache_path(drugbank_file: str) -> Path:
 
 def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) -> set:
     """
-    Load all compound names and synonyms from DrugBank XML file.
+    Load drug names and synonyms from DrugBank XML file.
     
-    Extracts drug names, synonyms, and metabolite names to create a comprehensive
-    set that can be matched against feature column names for filtering.
+    Extracts ONLY official drug names, generic names, and synonyms from
+    DrugBank drug entries. Explicitly skips targets, enzymes, metabolites,
+    and other non-drug entities to avoid false positives with endogenous
+    metabolites that may have similar names.
     
     Uses iterparse to handle large files efficiently.
     
@@ -51,7 +53,7 @@ def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) ->
         use_cache: Whether to use cached results if available
         
     Returns:
-        Set of all drug and drug metabolite names (normalized to uppercase)
+        Set of drug and drug synonym names (normalized to uppercase)
     """
     try:
         cache_path = _get_drugbank_cache_path(drugbank_file)
@@ -67,72 +69,77 @@ def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) ->
         context = ET.iterparse(drugbank_file, events=('start', 'end'))
         
         current_names = set()
-        in_synonyms = False
-        in_calculated_properties = False
+        in_drug = False
+        depth = 0
         
         for event, elem in context:
+            tag_lower = elem.tag.lower().split('}')[-1]
+            
             if event == 'start':
-                tag_lower = elem.tag.lower().split('}')[-1]
-                
-                # Check for drug/drugbank entry
-                if 'drug' in tag_lower or tag_lower == 'drugbank':
+                # Track when we enter a drug element
+                if tag_lower == 'drug':
+                    in_drug = True
+                    depth = 0
                     current_names = set()
                 
-                # Check for name element
-                elif tag_lower == 'name':
-                    if elem.text and elem.text.strip():
-                        current_names.add(elem.text.strip())
-                
-                # Check for generic_name
-                elif tag_lower == 'generic_name':
-                    if elem.text and elem.text.strip():
-                        current_names.add(elem.text.strip())
-                
-                # Check for synonyms container
-                elif tag_lower in ('synonyms', 'synonym'):
-                    in_synonyms = True
-                    if elem.text and elem.text.strip():
-                        current_names.add(elem.text.strip())
-                
-                # Check for calculated properties (contains metabolites)
-                elif tag_lower == 'calculated_properties':
-                    in_calculated_properties = True
-                
-                # Check for metabolites
-                elif tag_lower == 'metabolites' or tag_lower == 'metabolite':
-                    if elem.text and elem.text.strip():
-                        current_names.add(elem.text.strip())
+                if in_drug:
+                    depth += 1
+                    
+                    # Only collect from specific drug name fields
+                    # Skip targets, enzymes, metabolites, etc.
+                    skip_tags = {'targets', 'target', 'enzymes', 'enzyme', 
+                                'transporters', 'transporter', 'carriers', 'carrier',
+                                'metabolites', 'metabolite', 'calculated_properties',
+                                'polypeptide', 'protein', 'gene', 'pathway',
+                                'reactions', 'reaction', 'external_identifiers',
+                                'external_identifier', 'snp_effects', 'snp_adverse_effects',
+                                'drug_interactions', 'food_interactions', 'sequences'}
+                    
+                    if tag_lower in skip_tags:
+                        # Skip this entire subtree
+                        pass
+                    elif tag_lower == 'name':
+                        if elem.text and elem.text.strip():
+                            current_names.add(elem.text.strip())
+                    elif tag_lower == 'generic_name' or tag_lower == 'generic-name':
+                        if elem.text and elem.text.strip():
+                            current_names.add(elem.text.strip())
+                    elif tag_lower in ('synonym', 'synonyms'):
+                        if elem.text and elem.text.strip():
+                            current_names.add(elem.text.strip())
+                    elif tag_lower == 'international_brand_name' or tag_lower == 'brand_name':
+                        if elem.text and elem.text.strip():
+                            current_names.add(elem.text.strip())
+                    elif tag_lower == 'cas_number':
+                        # CAS numbers are specific drug identifiers
+                        if elem.text and elem.text.strip():
+                            current_names.add(elem.text.strip())
             
             elif event == 'end':
-                tag_lower = elem.tag.lower().split('}')[-1]
-                
-                # When drug entry ends, add collected names to master set
-                if 'drug' in tag_lower and current_names:
-                    compound_names.update(current_names)
-                    current_names = set()
-                
-                # End of synonyms
-                if tag_lower in ('synonyms', 'synonym'):
-                    in_synonyms = False
-                
-                if tag_lower == 'calculated_properties':
-                    in_calculated_properties = False
-                
-                # Clear processed elements to free memory
-                elem.clear()
+                if in_drug:
+                    # When drug entry ends, add collected names to master set
+                    if tag_lower == 'drug' and current_names:
+                        compound_names.update(current_names)
+                        current_names = set()
+                    
+                    # Clear processed elements to free memory
+                    elem.clear()
         
         # Normalize all names to uppercase for case-insensitive matching
         compound_names = {name.upper() for name in compound_names if name}
         
-        # Save to cache for future runs
+        # Save to cache for future runs - NEW CACHE due to selective extraction
         if use_cache:
+            # Remove old cache if it exists (different extraction method)
+            if cache_path.exists():
+                cache_path.unlink()
             with open(cache_path, 'wb') as f:
                 pickle.dump(compound_names, f)
             logger.info(f"Saved DrugBank compound names cache to {cache_path}")
         
-        logger.info(f"Loaded {len(compound_names)} DrugBank compound names and synonyms from {drugbank_file}")
+        logger.info(f"Loaded {len(compound_names)} DrugBank drug names and synonyms from {drugbank_file}")
         if len(compound_names) == 0:
-            logger.warning(f"No DrugBank compound names found in {drugbank_file}. Check XML structure.")
+            logger.warning(f"No DrugBank drug names found in {drugbank_file}. Check XML structure.")
         return compound_names
         
     except Exception as e:
