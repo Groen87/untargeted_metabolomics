@@ -7,20 +7,17 @@ merged_data_with_classification.csv with cross-validation.
 
 Data structure:
 - Input CSV has patient IDs as rows and features as columns
-- Two non-feature columns: 'Oordeel trageted' and 'Classification'
+- Two non-feature columns: 'Oordeel targeted' and 'Classification'
 - Classification 0 = normal (used for training)
 - Classification 1, 2, 3 = outliers (split between validation and test)
 
 Workflow:
 1. Load data from merged_data_with_classification.csv
-2. Split data:
-   - 80% of Classification 0 -> train
-   - 10% of Classification 0 -> validation
-   - 10% of Classification 0 -> test
-   - Classification 1,2,3 -> split between validation and test
-3. Train Extended Isolation Forest on training set with CV
-4. Evaluate on validation and test sets
-5. Save predictions, metrics, and model
+2. Split data into train and test sets
+3. Optional PCA for dimensionality reduction
+4. Train Extended Isolation Forest on training set with CV
+5. Evaluate on test set
+6. Save predictions, metrics, and model
 
 Usage:
     python outlier_detection_pipeline/main.py
@@ -32,9 +29,10 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, Any
-import pandas as pd
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
+import pandas as pd
 
 from outlier_detection_pipeline.config.config import Config
 from outlier_detection_pipeline.pipeline.data_loader import load_data, split_data
@@ -63,7 +61,7 @@ from outlier_detection_pipeline.pipeline.hyperparameter_tuning import (
     tune_hyperparameters,
 )
 
-# Configure logging (stream handler only, file handler added later)
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -74,441 +72,421 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline(
-    input_file: str,
-    output_dir: str = "outputs/outlier_detection",
-    config_path: str = None,
-) -> Dict[str, Any]:
-    """
-    Run the complete outlier detection pipeline.
-    
-    Args:
-        input_file: Path to merged_data_with_classification.csv
-        output_dir: Output directory
-        config_path: Path to config YAML file
-        
-    Returns:
-        Dictionary with results and metrics
-    """
-    # Load configuration
-    if config_path:
-        config = Config(config_path)
-    else:
-        config = Config()
-    
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create logs directory
+def _setup_logging(output_dir: Path) -> None:
+    """Setup file logging in addition to stream logging."""
     logs_dir = output_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Add file handler for logging
+
     file_handler = logging.FileHandler(logs_dir / "outlier_detection.log")
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(file_handler)
-    
-    logger.info(f"\n{'='*70}")
-    logger.info("OUTLIER DETECTION PIPELINE")
-    logger.info(f"{'='*70}")
-    logger.info(f"Input file: {input_file}")
-    logger.info(f"Output directory: {output_dir}")
-    
-    # Step 1: Load data
-    logger.info(f"\n{'='*70}")
-    logger.info("STEP 1: Loading data")
-    logger.info(f"{'='*70}")
-    
-    non_feature_cols = config.get_list('non_feature_columns', ['Oordeel targeted', 'Classification'])
-    patient_id_col = config.get('patient_id_column', None)
-    
-    features, classification, oordeel = load_data(
-        input_file=input_file,
-        non_feature_columns=non_feature_cols,
-        patient_id_column=patient_id_col,
-    )
-    
-    logger.info(f"Loaded {len(features)} samples with {len(features.columns)} features")
-    logger.info(f"Classification distribution: {classification.value_counts().to_dict()}")
 
-    # Step 1.2: Optional feature filtering
-    feature_filter = config.get('feature_filter', None)
-    if feature_filter:
-        original_n_features = len(features.columns)
-        if feature_filter == 'hmdb':
-            features = features[[col for col in features.columns if 'HMDB' in col]]
-        elif isinstance(feature_filter, str):
-            # Custom substring filter
-            features = features[[col for col in features.columns if feature_filter in col]]
-        elif isinstance(feature_filter, list):
-            # List of substrings - keep features containing any of them
-            features = features[[col for col in features.columns if any(s in col for s in feature_filter)]]
-        
-        n_filtered = original_n_features - len(features.columns)
-        logger.info(f"Filtered features: {n_filtered} removed, {len(features.columns)} remaining (filter: {feature_filter})")
-    
-    # Step 2: Split data (stratified train-test split)
-    logger.info(f"\n{'='*70}")
-    logger.info("STEP 2: Splitting data (stratified train-test)")
-    logger.info(f"{'='*70}")
-    
-    normal_class = config.get('normal_classification', 0)
-    outlier_classes = config.get_list('outlier_classifications', [1, 2, 3])
-    train_ratio = config.get('train_ratio', 0.8)
-    test_ratio = config.get('test_ratio', 0.2)
-    random_seed = config.get('random_seed', 42)
-    
-    splits = split_data(
-        features=features,
-        classification=classification,
-        normal_classification=normal_class,
-        outlier_classifications=outlier_classes,
-        train_ratio=train_ratio,
-        test_ratio=test_ratio,
-        random_seed=random_seed,
-    )
-    
-    X_train, y_train = splits['train']
-    X_test, y_test = splits['test']
 
-    # Step 1.5: Optional PCA for dimensionality reduction
-    use_sparse_pca = config.get('use_sparse_pca', False)
-    if use_sparse_pca:
-        n_components = config.get('n_components', 100)
-        alpha = config.get('alpha', 1.0)
-        max_iter = config.get('max_iter', 1000)
-        pca_random_state = config.get('pca_random_state', 42)
-        save_pca_model = config.get('save_pca_model', True)
-        nan_strategy = config.get('pca_nan_strategy', 'drop_columns')
-        pca_method = config.get('pca_method', 'sparse')
-        batch_size = config.get('pca_batch_size', 1000)
-        intermediate_components = config.get('pca_intermediate_components', None)
-        
-        logger.info(f"\n{'='*70}")
-        logger.info("STEP 1.5: PCA Dimensionality Reduction")
-        logger.info(f"{'='*70}")
-        
-        # Handle NaN values before PCA (SparsePCA doesn't support NaN)
-        # Apply to X_train and X_test separately to maintain consistency
-        nan_count_train = X_train.isna().sum().sum()
-        nan_count_test = X_test.isna().sum().sum()
-        total_nan = nan_count_train + nan_count_test
-        
-        if total_nan > 0:
-            logger.warning(f"Found {total_nan} NaN values in data. Strategy: {nan_strategy}")
-            
-            if nan_strategy == 'drop_columns':
-                # Drop columns with NaN from both train and test
-                # Find columns with NaN in either train or test
-                cols_with_nan_train = set(X_train.columns[X_train.isna().any()])
-                cols_with_nan_test = set(X_test.columns[X_test.isna().any()])
-                cols_with_nan = list(cols_with_nan_train | cols_with_nan_test)
-                n_dropped = len(cols_with_nan)
-                X_train = X_train.drop(columns=cols_with_nan)
-                X_test = X_test.drop(columns=cols_with_nan)
-                logger.warning(f"Dropped {n_dropped} columns with NaN values: {cols_with_nan[:5]}{'...' if len(cols_with_nan) > 5 else ''}")
-            elif nan_strategy == 'drop_rows':
-                # Drop rows with NaN from both train and test
-                rows_with_nan_train = X_train.index[X_train.isna().any(axis=1)].tolist()
-                rows_with_nan_test = X_test.index[X_test.isna().any(axis=1)].tolist()
-                n_dropped = len(rows_with_nan_train) + len(rows_with_nan_test)
-                X_train = X_train.dropna(axis=0)
-                y_train = y_train[X_train.index]
-                X_test = X_test.dropna(axis=0)
-                y_test = y_test[X_test.index]
-                logger.warning(f"Dropped {n_dropped} rows with NaN values")
-            elif nan_strategy == 'impute_mean':
-                # Impute separately for train and test to avoid leakage
-                X_train = X_train.fillna(X_train.mean())
-                X_test = X_test.fillna(X_test.mean())
-                logger.warning("Imputed NaN values with column means (separately for train/test)")
-            else:
-                raise ValueError(f"Unknown nan_strategy: {nan_strategy}. Use 'drop_columns', 'drop_rows', or 'impute_mean'.")
-        
-        logger.info(f"Train shape after NaN handling: {X_train.shape}")
-        logger.info(f"Test shape after NaN handling: {X_test.shape}")
-        
-        pca = SparsePCAWrapper(
-            n_components=n_components,
-            alpha=alpha,
-            max_iter=max_iter,
-            random_state=pca_random_state,
-            method=pca_method,
-            batch_size=batch_size,
-            intermediate_components=intermediate_components,
-        )
-        
-        # Fit PCA on NORMAL training data only (no data leakage from abnormalities)
-        X_train_normals = X_train[y_train == normal_class]
-        pca.fit(X_train_normals)
-        
-        # Transform normals using the fitted PCA
-        X_train_transformed = pca.transform(X_train_normals)
-        
-        # Transform abnormalities if they exist
-        X_train_abnormals_mask = (y_train != normal_class)
-        if X_train_abnormals_mask.any():
-            X_train_abnormals = pca.transform(X_train[X_train_abnormals_mask])
-            # Combine back for training (normals first, then abnormalities)
-            X_train = pd.concat([X_train_transformed, X_train_abnormals])
-            y_train = pd.concat([y_train[~X_train_abnormals_mask], y_train[X_train_abnormals_mask]])
-        else:
-            # No abnormalities in training set
-            X_train = X_train_transformed
-            y_train = y_train[y_train == normal_class]  # Use normals only
-        
-        # Transform test set
-        X_test = pca.transform(X_test)
-        
-        logger.info(f"Features reduced from original to {X_train.shape[1]} components")
-        
-        if save_pca_model:
-            pca.save(output_dir / "pca_model.joblib")
-    
-    logger.info(f"Train: {len(X_train)} samples")
-    logger.info(f"Test: {len(X_test)} samples")
-    logger.info(f"Train class distribution: {y_train.value_counts().to_dict()}")
-    logger.info(f"Test class distribution: {y_test.value_counts().to_dict()}")
-    
-    # Step 3: Train model with cross-validation
+def _log_section_header(title: str) -> None:
+    """Log a section header."""
     logger.info(f"\n{'='*70}")
-    logger.info("STEP 3: Training Extended Isolation Forest with CV")
+    logger.info(title)
     logger.info(f"{'='*70}")
-    
-    # Step 3: Hyperparameter tuning or use config defaults
-    use_hyperparameter_tuning = config.get('use_hyperparameter_tuning', False)
-    
-    if use_hyperparameter_tuning:
-        logger.info(f"\n{'='*70}")
-        logger.info("STEP 3: Hyperparameter Tuning with CV")
-        logger.info(f"{'='*70}")
-        
-        # Define parameter grid for tuning
-        param_grid = config.get('param_grid', None)
-        if param_grid is None:
-            param_grid = {
-                'n_estimators': [50, 100, 200],
-                'max_samples': ['auto', 0.5, 0.8],
-                'max_features': [0.5, 0.8, 1.0],
-                'contamination': ['auto'],
-                'bootstrap': [False, True],
-            }
-        
-        n_jobs = config.get('n_jobs', -1)
-        random_state = config.get('random_state', 42)
-        n_splits_tuning = config.get('n_splits_tuning', 5)
-        tuning_scoring = config.get('tuning_scoring', 'pr_auc')
-        
-        # Optuna configuration
-        use_optuna = config.get('use_optuna', False)
-        n_trials = config.get('n_trials', 100)
-        optuna_sampler = config.get('optuna_sampler', 'tpe')
-        optuna_pruner = config.get('optuna_pruner', 'median')
-        optuna_storage_url = config.get('optuna_storage_url', None)
-        optuna_study_name = config.get('optuna_study_name', None)
-        
-        # Run hyperparameter tuning
-        best_model, scaler, best_params, tuning_results = tune_and_train(
-            X_train=X_train,
-            y_train=y_train,
-            normal_classification=normal_class,
-            param_grid=param_grid,
-            n_splits=n_splits_tuning,
-            random_state=random_state,
-            n_jobs=n_jobs,
-            scoring=tuning_scoring,
-            output_dir=output_dir,
-            use_optuna=use_optuna,
-            n_trials=n_trials,
-            optuna_sampler=optuna_sampler,
-            optuna_pruner=optuna_pruner,
-            study_name=optuna_study_name,
-            storage_url=optuna_storage_url,
-        )
-        
-        # Create ExtendedIsolationForestModel wrapper with best parameters
-        model = ExtendedIsolationForestModel(
-            n_estimators=best_params['n_estimators'],
-            max_samples=best_params['max_samples'],
-            max_features=best_params['max_features'],
-            bootstrap=best_params['bootstrap'],
-            n_jobs=n_jobs,
-            random_state=random_state,
-            contamination=best_params.get('contamination', 'auto'),
-        )
-        model.model = best_model
-        model.scaler = scaler
-        model.is_fitted_ = True
-        
-        logger.info(f"\n{'='*70}")
-        logger.info("Best hyperparameters found:")
-        logger.info(f"{'='*70}")
-        for key, value in best_params.items():
-            logger.info(f"  {key}: {value}")
-        
-        # Save tuning results
-        tuning_results.to_csv(output_dir / "tuning_results.csv", index=False)
-        logger.info(f"Tuning results saved to {output_dir / 'tuning_results.csv'}")
-        
-        # Run CV with best model for evaluation
-        cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
-            X=X_train,
-            y=y_train,
-            normal_classification=normal_class,
-            n_splits=n_splits_tuning,
-        )
-        
+
+
+def _apply_feature_filter(
+    features: pd.DataFrame,
+    feature_filter: Optional[str],
+) -> pd.DataFrame:
+    """Apply feature filtering based on configuration."""
+    if not feature_filter:
+        return features
+
+    original_n_features = len(features.columns)
+
+    if feature_filter == 'hmdb':
+        features = features[[col for col in features.columns if 'HMDB' in col]]
+    elif isinstance(feature_filter, str):
+        features = features[[col for col in features.columns if feature_filter in col]]
+    elif isinstance(feature_filter, list):
+        features = features[[col for col in features.columns if any(s in col for s in feature_filter)]]
+
+    n_filtered = original_n_features - len(features.columns)
+    logger.info(f"Filtered features: {n_filtered} removed, {len(features.columns)} remaining (filter: {feature_filter})")
+
+    return features
+
+
+def _handle_nan_values(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    y_train: pd.Series,
+    y_test: pd.Series,
+    nan_strategy: str,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+    """Handle NaN values in data based on configured strategy."""
+    nan_count_train = X_train.isna().sum().sum()
+    nan_count_test = X_test.isna().sum().sum()
+    total_nan = nan_count_train + nan_count_test
+
+    if total_nan == 0:
+        return X_train, X_test, y_train, y_test
+
+    logger.warning(f"Found {total_nan} NaN values in data. Strategy: {nan_strategy}")
+
+    if nan_strategy == 'drop_columns':
+        cols_with_nan_train = set(X_train.columns[X_train.isna().any()])
+        cols_with_nan_test = set(X_test.columns[X_test.isna().any()])
+        cols_with_nan = list(cols_with_nan_train | cols_with_nan_test)
+        n_dropped = len(cols_with_nan)
+        X_train = X_train.drop(columns=cols_with_nan)
+        X_test = X_test.drop(columns=cols_with_nan)
+        logger.warning(f"Dropped {n_dropped} columns with NaN values: {cols_with_nan[:5]}{'...' if len(cols_with_nan) > 5 else ''}")
+
+    elif nan_strategy == 'drop_rows':
+        rows_with_nan_train = X_train.index[X_train.isna().any(axis=1)].tolist()
+        rows_with_nan_test = X_test.index[X_test.isna().any(axis=1)].tolist()
+        n_dropped = len(rows_with_nan_train) + len(rows_with_nan_test)
+        X_train = X_train.dropna(axis=0)
+        y_train = y_train[X_train.index]
+        X_test = X_test.dropna(axis=0)
+        y_test = y_test[X_test.index]
+        logger.warning(f"Dropped {n_dropped} rows with NaN values")
+
+    elif nan_strategy == 'impute_mean':
+        X_train = X_train.fillna(X_train.mean())
+        X_test = X_test.fillna(X_test.mean())
+        logger.warning("Imputed NaN values with column means (separately for train/test)")
+
     else:
-        # Use config defaults without tuning
-        n_estimators = config.get('n_estimators', 100)
-        max_samples = config.get('max_samples', 'auto')
-        max_features = config.get('max_features', 1.0)
-        bootstrap = config.get('bootstrap', False)
-        n_jobs = config.get('n_jobs', -1)
-        random_state = config.get('random_state', 42)
-        contamination = config.get('contamination', 'auto')
-        n_splits = config.get('n_splits', 5)
-        
-        model = ExtendedIsolationForestModel(
-            n_estimators=n_estimators,
-            max_samples=max_samples,
-            max_features=max_features,
-            bootstrap=bootstrap,
-            n_jobs=n_jobs,
-            random_state=random_state,
-            contamination=contamination,
-        )
-        
-        # Train with cross-validation (unsupervised: train on normals only)
-        logger.info(f"\n{'='*70}")
-        logger.info("STEP 3: Training with CV (train on normals, validate on full)")
-        logger.info(f"{'='*70}")
-        
-        # Note: For Extended Isolation Forest (unsupervised):
-        # - We do CV on the train set
-        # - Each fold: train on normal samples only, validate on full fold (normals + abnormalities)
-        # - Final model: trained on ALL normal samples from train set
-        
-        cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
-            X=X_train,
-            y=y_train,
-            normal_classification=normal_class,
-            n_splits=n_splits,
-        )
-    
+        raise ValueError(f"Unknown nan_strategy: {nan_strategy}. Use 'drop_columns', 'drop_rows', or 'impute_mean'.")
+
+    logger.info(f"Train shape after NaN handling: {X_train.shape}")
+    logger.info(f"Test shape after NaN handling: {X_test.shape}")
+
+    return X_train, X_test, y_train, y_test
+
+
+def _apply_pca(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    y_train: pd.Series,
+    y_test: pd.Series,
+    config: Config,
+    output_dir: Path,
+    normal_class: int,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, SparsePCAWrapper]:
+    """Apply PCA dimensionality reduction if configured."""
+    use_sparse_pca = config.get('use_sparse_pca', False)
+
+    if not use_sparse_pca:
+        return X_train, X_test, y_train, y_test, None
+
+    _log_section_header("PCA Dimensionality Reduction")
+
+    n_components = config.get('n_components', 100)
+    alpha = config.get('alpha', 1.0)
+    max_iter = config.get('max_iter', 1000)
+    pca_random_state = config.get('pca_random_state', 42)
+    save_pca_model = config.get('save_pca_model', True)
+    nan_strategy = config.get('pca_nan_strategy', 'drop_columns')
+    pca_method = config.get('pca_method', 'sparse')
+    batch_size = config.get('pca_batch_size', 1000)
+    intermediate_components = config.get('pca_intermediate_components', None)
+
+    # Handle NaN values before PCA
+    X_train, X_test, y_train, y_test = _handle_nan_values(
+        X_train, X_test, y_train, y_test, nan_strategy
+    )
+
+    pca = SparsePCAWrapper(
+        n_components=n_components,
+        alpha=alpha,
+        max_iter=max_iter,
+        random_state=pca_random_state,
+        method=pca_method,
+        batch_size=batch_size,
+        intermediate_components=intermediate_components,
+    )
+
+    # Fit PCA on NORMAL training data only (no data leakage from abnormalities)
+    X_train_normals = X_train[y_train == normal_class]
+    pca.fit(X_train_normals)
+
+    # Transform normals using the fitted PCA
+    X_train_transformed = pca.transform(X_train_normals)
+
+    # Transform abnormalities if they exist
+    X_train_abnormals_mask = (y_train != normal_class)
+    if X_train_abnormals_mask.any():
+        X_train_abnormals = pca.transform(X_train[X_train_abnormals_mask])
+        # Combine back for training (normals first, then abnormalities)
+        X_train = pd.concat([X_train_transformed, X_train_abnormals])
+        y_train = pd.concat([y_train[~X_train_abnormals_mask], y_train[X_train_abnormals_mask]])
+    else:
+        X_train = X_train_transformed
+        y_train = y_train[y_train == normal_class]
+
+    # Transform test set
+    X_test = pca.transform(X_test)
+
+    logger.info(f"Features reduced from original to {X_train.shape[1]} components")
+
+    if save_pca_model:
+        pca.save(output_dir / "pca_model.joblib")
+
+    return X_train, X_test, y_train, y_test, pca
+
+
+def _train_with_hyperparameter_tuning(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    config: Config,
+    output_dir: Path,
+    normal_class: int,
+) -> Tuple[ExtendedIsolationForestModel, Dict[str, Any]]:
+    """Train model with hyperparameter tuning."""
+    _log_section_header("Hyperparameter Tuning with CV")
+
+    param_grid = config.get('param_grid', None)
+    if param_grid is None:
+        param_grid = {
+            'n_estimators': [50, 100, 200],
+            'max_samples': ['auto', 0.5, 0.8],
+            'max_features': [0.5, 0.8, 1.0],
+            'contamination': ['auto'],
+            'bootstrap': [False, True],
+        }
+
+    n_jobs = config.get('n_jobs', -1)
+    random_state = config.get('random_state', 42)
+    n_splits_tuning = config.get('n_splits_tuning', 5)
+    tuning_scoring = config.get('tuning_scoring', 'pr_auc')
+
+    # Optuna configuration
+    use_optuna = config.get('use_optuna', False)
+    n_trials = config.get('n_trials', 100)
+    optuna_sampler = config.get('optuna_sampler', 'tpe')
+    optuna_pruner = config.get('optuna_pruner', 'median')
+    optuna_storage_url = config.get('optuna_storage_url', None)
+    optuna_study_name = config.get('optuna_study_name', None)
+
+    # Run hyperparameter tuning
+    best_model, scaler, best_params, tuning_results = tune_and_train(
+        X_train=X_train,
+        y_train=y_train,
+        normal_classification=normal_class,
+        param_grid=param_grid,
+        n_splits=n_splits_tuning,
+        random_state=random_state,
+        n_jobs=n_jobs,
+        scoring=tuning_scoring,
+        output_dir=output_dir,
+        use_optuna=use_optuna,
+        n_trials=n_trials,
+        optuna_sampler=optuna_sampler,
+        optuna_pruner=optuna_pruner,
+        study_name=optuna_study_name,
+        storage_url=optuna_storage_url,
+    )
+
+    # Create ExtendedIsolationForestModel wrapper with best parameters
+    model = ExtendedIsolationForestModel(
+        n_estimators=best_params['n_estimators'],
+        max_samples=best_params['max_samples'],
+        max_features=best_params['max_features'],
+        bootstrap=best_params['bootstrap'],
+        n_jobs=n_jobs,
+        random_state=random_state,
+        contamination=best_params.get('contamination', 'auto'),
+    )
+    model.model = best_model
+    model.scaler = scaler
+    model.is_fitted_ = True
+
+    logger.info("\nBest hyperparameters found:")
+    for key, value in best_params.items():
+        logger.info(f"  {key}: {value}")
+
+    # Save tuning results
+    tuning_results.to_csv(output_dir / "tuning_results.csv", index=False)
+    logger.info(f"Tuning results saved to {output_dir / 'tuning_results.csv'}")
+
+    return model, best_params
+
+
+def _train_without_tuning(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    config: Config,
+    normal_class: int,
+) -> ExtendedIsolationForestModel:
+    """Train model without hyperparameter tuning using config defaults."""
+    _log_section_header("Training with CV (train on normals, validate on full)")
+
+    n_estimators = config.get('n_estimators', 100)
+    max_samples = config.get('max_samples', 'auto')
+    max_features = config.get('max_features', 1.0)
+    bootstrap = config.get('bootstrap', False)
+    n_jobs = config.get('n_jobs', -1)
+    random_state = config.get('random_state', 42)
+    contamination = config.get('contamination', 'auto')
+    n_splits = config.get('n_splits', 5)
+
+    model = ExtendedIsolationForestModel(
+        n_estimators=n_estimators,
+        max_samples=max_samples,
+        max_features=max_features,
+        bootstrap=bootstrap,
+        n_jobs=n_jobs,
+        random_state=random_state,
+        contamination=contamination,
+    )
+
+    # Train with cross-validation
+    cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
+        X=X_train,
+        y=y_train,
+        normal_classification=normal_class,
+        n_splits=n_splits,
+    )
+
     logger.info("Training with cross-validation complete.")
     logger.info(f"Final model trained on all {len(y_train[y_train == normal_class])} normal samples from train set")
-    
 
-    # Step 4: Evaluation (Standard or Realistic)
-    evaluation_strategy = config.get('evaluation_strategy', 'standard')
+    return model
+
+
+def _evaluate_realistic(
+    model: ExtendedIsolationForestModel,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    config: Config,
+    output_dir: Path,
+    normal_class: int,
+    outlier_classes: List[int],
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    """Run realistic evaluation."""
+    _log_section_header("Realistic Evaluation (LOO Abnormal)")
+
+    realistic_contamination = config.get('realistic_test_contamination', 0.02)
+    realistic_n_iterations = config.get('realistic_n_iterations', 50)
+    random_state = config.get('random_state', 42)
     save_realistic_results_flag = config.get('save_realistic_results', True)
 
-    if evaluation_strategy == 'realistic':
-        # Realistic evaluation: LOO abnormal with target contamination
-        realistic_contamination = config.get('realistic_test_contamination', 0.02)
-        realistic_n_iterations = config.get('realistic_n_iterations', 50)
-        
-        # Separate test set into normal and abnormal
-        X_test_normal = X_test[y_test == normal_class]
-        y_test_normal = y_test[y_test == normal_class]
-        X_test_abnormal = X_test[y_test.isin(outlier_classes)]
-        y_test_abnormal = y_test[y_test.isin(outlier_classes)]
-        
-        logger.info(f"\n{'='*70}")
-        logger.info("STEP 4: Realistic Evaluation (LOO Abnormal)")
-        logger.info(f"{'='*70}")
-        
-        # Use the CV-trained model (already trained on normals only)
-        model_final = model  # model was trained on normals in cross_val_predict
-        
-        # Run realistic evaluation
-        realistic_results = run_realistic_evaluation(
-            model=model_final,
-            X_normal_test=X_test_normal,
-            X_abnormal_test=X_test_abnormal,
-            y_normal_test=y_test_normal,
-            y_abnormal_test=y_test_abnormal,
-            target_contamination=realistic_contamination,
-            n_iterations=realistic_n_iterations,
-            random_seed=random_state,
-            outlier_classes=outlier_classes,
-            X_normal_train=X_train[y_train == normal_class],
-            y_normal_train=y_train[y_train == normal_class],
-        )
-        
-        # Save realistic results
-        if save_realistic_results_flag:
-            save_realistic_results(realistic_results, output_dir)
-            plot_realistic_results(realistic_results, output_dir)
-        
-        # Also run standard evaluation for comparison
-        test_preds = model_final.predict(X_test)
-        test_scores = model_final.decision_function(X_test)
-        
-    else:
-        # Standard evaluation (original behavior)
-        logger.info(f"\n{'='*70}")
-        logger.info("STEP 4: Evaluating on test set")
-        logger.info(f"{'='*70}")
-        
-        test_scores = model.decision_function(X_test)
-        
-        # Calculate test set contamination for proper threshold
-        test_contamination = (y_test != normal_class).mean()
-        logger.info(f"Test set contamination: {test_contamination:.2%}")
-        
-        # Use score-based threshold matching test contamination
-        n_outliers_expected = int(np.round(test_contamination * len(X_test)))
-        if n_outliers_expected > 0:
-            sorted_scores = np.sort(test_scores)
-            threshold_idx = min(n_outliers_expected - 1, len(sorted_scores) - 1)
-            threshold = sorted_scores[threshold_idx]
-            test_preds = np.where(test_scores <= threshold, -1, 1)
-        else:
-            test_preds = model.predict(X_test)
-        
-        logger.info(f"Flagging {np.sum(test_preds == -1)} outliers (expected ~{n_outliers_expected})")
+    # Separate test set into normal and abnormal
+    X_test_normal = X_test[y_test == normal_class]
+    y_test_normal = y_test[y_test == normal_class]
+    X_test_abnormal = X_test[y_test.isin(outlier_classes)]
+    y_test_abnormal = y_test[y_test.isin(outlier_classes)]
 
-        # Compute metrics for standard evaluation
-        metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
-        test_metrics = evaluate_model(
-            y_true=y_test,
-            y_pred=test_preds,
-            y_scores=test_scores,
-            metrics=metrics_list,
-            pos_label=-1,
-            outlier_classes=outlier_classes,
-        )
-        print_metrics(test_metrics)
-    
-    # Step 5: Save outputs
-    logger.info(f"\n{'='*70}")
-    # Log IQR analysis for outliers
-    outlier_mask = (test_preds == -1)
-    outlier_indices = list(X_test.index[outlier_mask])
-    log_iqr_feature_filter = config.get('log_iqr_feature_filter', None)
-    if len(outlier_indices) > 0:
-        outlier_analysis = analyze_outliers_log_iqr(features, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter)
-        save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
-        plot_outlier_log_iqr(outlier_analysis, features, output_dir, n_top=20)
-    
-    logger.info("STEP 5: Saving outputs")
-    logger.info(f"{'='*70}")
-    
+    # Use the CV-trained model (already trained on normals only)
+    model_final = model
+
+    # Run realistic evaluation
+    realistic_results = run_realistic_evaluation(
+        model=model_final,
+        X_normal_test=X_test_normal,
+        X_abnormal_test=X_test_abnormal,
+        y_normal_test=y_test_normal,
+        y_abnormal_test=y_test_abnormal,
+        target_contamination=realistic_contamination,
+        n_iterations=realistic_n_iterations,
+        random_seed=random_state,
+        outlier_classes=outlier_classes,
+        X_normal_train=X_test[y_test == normal_class],
+        y_normal_train=y_test[y_test == normal_class],
+    )
+
+    # Save realistic results
+    if save_realistic_results_flag:
+        save_realistic_results(realistic_results, output_dir)
+        plot_realistic_results(realistic_results, output_dir)
+
+    # Also run standard evaluation for comparison
+    test_preds = model_final.predict(X_test)
+    test_scores = model_final.decision_function(X_test)
+
+    return test_preds, test_scores, realistic_results
+
+
+def _evaluate_standard(
+    model: ExtendedIsolationForestModel,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    config: Config,
+    normal_class: int,
+    outlier_classes: List[int],
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    """Run standard evaluation."""
+    _log_section_header("Evaluating on test set")
+
+    test_scores = model.decision_function(X_test)
+
+    # Calculate test set contamination for proper threshold
+    test_contamination = (y_test != normal_class).mean()
+    logger.info(f"Test set contamination: {test_contamination:.2%}")
+
+    # Use score-based threshold matching test contamination
+    n_outliers_expected = int(np.round(test_contamination * len(X_test)))
+    if n_outliers_expected > 0:
+        sorted_scores = np.sort(test_scores)
+        threshold_idx = min(n_outliers_expected - 1, len(sorted_scores) - 1)
+        threshold = sorted_scores[threshold_idx]
+        test_preds = np.where(test_scores <= threshold, -1, 1)
+    else:
+        test_preds = model.predict(X_test)
+
+    logger.info(f"Flagging {np.sum(test_preds == -1)} outliers (expected ~{n_outliers_expected})")
+
+    # Compute metrics for standard evaluation
+    metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
+    test_metrics = evaluate_model(
+        y_true=y_test,
+        y_pred=test_preds,
+        y_scores=test_scores,
+        metrics=metrics_list,
+        pos_label=-1,
+        outlier_classes=outlier_classes,
+    )
+    print_metrics(test_metrics)
+
+    return test_preds, test_scores, test_metrics
+
+
+def _save_outputs(
+    model: ExtendedIsolationForestModel,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    test_preds: np.ndarray,
+    test_scores: np.ndarray,
+    config: Config,
+    output_dir: Path,
+    normal_class: int,
+    outlier_classes: List[int],
+    test_metrics: Optional[Dict[str, Any]] = None,
+    realistic_results: Optional[Dict[str, Any]] = None,
+    pca: Optional[SparsePCAWrapper] = None,
+) -> Dict[str, Any]:
+    """Save all pipeline outputs."""
+    _log_section_header("Saving outputs")
+
     save_plots = config.get('save_plots', True)
     save_model = config.get('save_model', True)
     save_preds = config.get('save_predictions', True)
-    
+
+    # Perform outlier analysis
+    outlier_mask = (test_preds == -1)
+    outlier_indices = list(X_test.index[outlier_mask])
+    log_iqr_feature_filter = config.get('log_iqr_feature_filter', None)
+
+    if len(outlier_indices) > 0:
+        outlier_analysis = analyze_outliers_log_iqr(
+            X_test, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter
+        )
+        save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
+        plot_outlier_log_iqr(outlier_analysis, X_test, output_dir, n_top=20)
+
     if save_model:
-        if evaluation_strategy == 'realistic':
-            model_final.save(output_dir / "model.joblib")
-        else:
-            model.save(output_dir / "model.joblib")
-    
+        model.save(output_dir / "model.joblib")
+
     if save_preds:
-        # Save test predictions
         save_predictions(
             predictions=test_preds,
             scores=test_scores,
@@ -517,10 +495,9 @@ def run_pipeline(
             output_dir=output_dir,
             split_name="test",
         )
-    
-    
-    # Compute test_metrics if not already done (for realistic evaluation path)
-    if evaluation_strategy == 'realistic':
+
+    # Save metrics
+    if test_metrics is None:
         metrics_list = config.get_list('metrics', ['accuracy', 'f1', 'f1_weighted', 'precision', 'recall', 'roc_auc', 'confusion_matrix'])
         test_metrics = evaluate_model(
             y_true=y_test,
@@ -531,10 +508,9 @@ def run_pipeline(
             outlier_classes=outlier_classes,
         )
         print_metrics(test_metrics)
-    
-    # Save metrics
+
     save_metrics(test_metrics, output_dir / "test")
-    
+
     # Generate and save plots
     if save_plots:
         plot_confusion_matrix(
@@ -551,16 +527,149 @@ def run_pipeline(
             outlier_classes=outlier_classes,
             pos_label=-1,
         )
-    
+
     return {
         'test_metrics': test_metrics,
-        'model': model_final if evaluation_strategy == 'realistic' else model,
+        'model': model,
         'splits': {
-            'train': len(X_train),
+            'train': len(X_test),
             'test': len(X_test),
         },
-        'realistic_results': realistic_results if evaluation_strategy == 'realistic' else None,
+        'realistic_results': realistic_results,
     }
+
+
+def run_pipeline(
+    input_file: str,
+    output_dir: str = "outputs/outlier_detection",
+    config_path: str = None,
+) -> Dict[str, Any]:
+    """
+    Run the complete outlier detection pipeline.
+
+    Args:
+        input_file: Path to merged_data_with_classification.csv
+        output_dir: Output directory
+        config_path: Path to config YAML file
+
+    Returns:
+        Dictionary with results and metrics
+    """
+    # Load configuration
+    config = Config(config_path) if config_path else Config()
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Setup logging
+    _setup_logging(output_dir)
+
+    logger.info(f"\n{'='*70}")
+    logger.info("OUTLIER DETECTION PIPELINE")
+    logger.info(f"{'='*70}")
+    logger.info(f"Input file: {input_file}")
+    logger.info(f"Output directory: {output_dir}")
+
+    # Step 1: Load data
+    _log_section_header("STEP 1: Loading data")
+
+    non_feature_cols = config.get_list('non_feature_columns', ['Oordeel targeted', 'Classification'])
+    patient_id_col = config.get('patient_id_column', None)
+
+    features, classification, oordeel = load_data(
+        input_file=input_file,
+        non_feature_columns=non_feature_cols,
+        patient_id_column=patient_id_col,
+    )
+
+    logger.info(f"Loaded {len(features)} samples with {len(features.columns)} features")
+    logger.info(f"Classification distribution: {classification.value_counts().to_dict()}")
+
+    # Step 1.2: Optional feature filtering
+    feature_filter = config.get('feature_filter', None)
+    features = _apply_feature_filter(features, feature_filter)
+
+    # Step 2: Split data (stratified train-test split)
+    _log_section_header("STEP 2: Splitting data (stratified train-test)")
+
+    normal_class = config.get('normal_classification', 0)
+    outlier_classes = config.get_list('outlier_classifications', [1, 2, 3])
+    train_ratio = config.get('train_ratio', 0.8)
+    test_ratio = config.get('test_ratio', 0.2)
+    random_seed = config.get('random_seed', 42)
+
+    splits = split_data(
+        features=features,
+        classification=classification,
+        normal_classification=normal_class,
+        outlier_classifications=outlier_classes,
+        train_ratio=train_ratio,
+        test_ratio=test_ratio,
+        random_seed=random_seed,
+    )
+
+    X_train, y_train = splits['train']
+    X_test, y_test = splits['test']
+
+    # Step 1.5: Optional PCA for dimensionality reduction
+    X_train, X_test, y_train, y_test, pca = _apply_pca(
+        X_train, X_test, y_train, y_test, config, output_dir, normal_class
+    )
+
+    logger.info(f"Train: {len(X_train)} samples")
+    logger.info(f"Test: {len(X_test)} samples")
+    logger.info(f"Train class distribution: {y_train.value_counts().to_dict()}")
+    logger.info(f"Test class distribution: {y_test.value_counts().to_dict()}")
+
+    # Step 3: Train model with cross-validation
+    _log_section_header("STEP 3: Training Extended Isolation Forest with CV")
+
+    use_hyperparameter_tuning = config.get('use_hyperparameter_tuning', False)
+
+    if use_hyperparameter_tuning:
+        model, best_params = _train_with_hyperparameter_tuning(
+            X_train, y_train, config, output_dir, normal_class
+        )
+        # Run CV with best model for evaluation
+        cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
+            X=X_train,
+            y=y_train,
+            normal_classification=normal_class,
+            n_splits=config.get('n_splits_tuning', 5),
+        )
+    else:
+        model = _train_without_tuning(X_train, y_train, config, normal_class)
+
+    # Step 4: Evaluation (Standard or Realistic)
+    evaluation_strategy = config.get('evaluation_strategy', 'standard')
+
+    if evaluation_strategy == 'realistic':
+        test_preds, test_scores, realistic_results = _evaluate_realistic(
+            model, X_test, y_test, config, output_dir, normal_class, outlier_classes
+        )
+    else:
+        test_preds, test_scores, test_metrics = _evaluate_standard(
+            model, X_test, y_test, config, normal_class, outlier_classes
+        )
+        realistic_results = None
+
+    # Step 5: Save outputs
+    results = _save_outputs(
+        model=model,
+        X_test=X_test,
+        y_test=y_test,
+        test_preds=test_preds,
+        test_scores=test_scores,
+        config=config,
+        output_dir=output_dir,
+        normal_class=normal_class,
+        outlier_classes=outlier_classes,
+        test_metrics=test_metrics if evaluation_strategy != 'realistic' else None,
+        realistic_results=realistic_results,
+        pca=pca,
+    )
+
+    return results
 
 
 def main():
@@ -568,7 +677,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run outlier detection pipeline with Extended Isolation Forest"
     )
-    
+
     parser.add_argument(
         "--input",
         default=None,
@@ -584,14 +693,14 @@ def main():
         default=None,
         help="Path to config YAML file (default: outlier_detection_pipeline/config/config.yaml)",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Use default input from config if not provided
     if args.input is None:
         config = Config(args.config)
         args.input = config.get('input_file', 'data/merged_data_with_classification.csv')
-    
+
     try:
         run_pipeline(
             input_file=args.input,
