@@ -219,10 +219,9 @@ def _filter_out_drug_features(
             continue
         
         # Check if this column matches any DrugBank name
-        # Use EXACT matching (case-insensitive) - the feature name must contain
-        # the DrugBank name as an exact substring, but we need to be careful:
-        # Only match if the DrugBank name appears as a distinct part of the feature name
-        # surrounded by non-alphanumeric characters or at boundaries
+        # Use EXACT matching (case-insensitive) - the feature column name
+        # must EXACTLY equal the DrugBank name to be filtered out.
+        # This prevents partial matches like 'PHOSPHATE' matching 'something phosphate'
         is_drug = False
         matching_name = None
         
@@ -231,16 +230,8 @@ def _filter_out_drug_features(
             if len(name) <= 3:
                 continue
             
-            name_upper = name  # Already uppercase
-            
-            # Use regex-like matching: the DrugBank name must appear as a
-            # standalone word or phrase in the feature name, not as part of
-            # a larger word. We check for word boundaries.
-            # Pattern: (^|[^A-Z0-9])NAME([^A-Z0-9]|$)
-            import re
-            # Create pattern that matches the name as a whole word
-            pattern = r'(^|[^A-Z0-9])' + re.escape(name_upper) + r'([^A-Z0-9]|$)'
-            if re.search(pattern, col_upper):
+            # Exact match only (case-insensitive)
+            if col_upper == name:
                 is_drug = True
                 matching_name = name
                 break
