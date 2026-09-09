@@ -587,6 +587,9 @@ def run_pipeline(
         patient_id_column=patient_id_col,
     )
 
+    # Store original features for IQR analysis (before any filtering or PCA)
+    original_features = features.copy()
+
     logger.info(f"Loaded {len(features)} samples with {len(features.columns)} features")
     logger.info(f"Classification distribution: {classification.value_counts().to_dict()}")
 
