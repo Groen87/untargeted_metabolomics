@@ -140,6 +140,12 @@ def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) ->
         logger.info(f"Loaded {len(compound_names)} DrugBank drug names and synonyms from {drugbank_file}")
         if len(compound_names) == 0:
             logger.warning(f"No DrugBank drug names found in {drugbank_file}. Check XML structure.")
+        
+        # Log some sample names for debugging
+        if len(compound_names) > 0:
+            sample_names = list(compound_names)[:10]
+            logger.info(f"Sample DrugBank names: {sample_names}{'...' if len(compound_names) > 10 else ''}")
+        
         return compound_names
         
     except Exception as e:
@@ -176,6 +182,8 @@ def _filter_out_drug_features(
     # Find columns that DO NOT contain any DrugBank name
     # EXCEPT: always keep columns containing 'HMDB' (endogenous metabolites)
     non_drug_columns = []
+    removed_cols_with_matches = []
+    
     for col in features.columns:
         col_upper = str(col).upper()
         
@@ -186,12 +194,16 @@ def _filter_out_drug_features(
         
         # Check if this column matches any DrugBank name
         is_drug = False
+        matching_name = None
         for name in drugbank_names:
             if name in col_upper:
                 is_drug = True
+                matching_name = name
                 break
         
-        if not is_drug:
+        if is_drug:
+            removed_cols_with_matches.append((col, matching_name))
+        else:
             non_drug_columns.append(col)
     
     filtered_features = features[non_drug_columns]
@@ -202,6 +214,17 @@ def _filter_out_drug_features(
     if n_removed > 0:
         removed_cols = list(original_cols - set(non_drug_columns))[:10]
         logger.info(f"Example removed drug features: {removed_cols}{'...' if n_removed > 10 else ''}")
+        
+        # Log matching details for debugging
+        if n_removed <= 50:
+            for col, match in removed_cols_with_matches[:10]:
+                logger.info(f"  Removed '{col}' -> matched DrugBank name: '{match}'")
+        else:
+            # Sample and show
+            import random
+            sample = random.sample(removed_cols_with_matches, min(10, len(removed_cols_with_matches)))
+            for col, match in sample:
+                logger.info(f"  Removed '{col}' -> matched DrugBank name: '{match}'")
     
     return filtered_features
 
