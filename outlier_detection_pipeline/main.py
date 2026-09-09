@@ -369,6 +369,7 @@ def _evaluate_realistic(
     realistic_n_iterations = config.get('realistic_n_iterations', 50)
     random_state = config.get('random_state', 42)
     save_realistic_results_flag = config.get('save_realistic_results', True)
+    save_plots = config.get('save_plots', True)
 
     # Separate test set into normal and abnormal
     X_test_normal = X_test[y_test == normal_class]
