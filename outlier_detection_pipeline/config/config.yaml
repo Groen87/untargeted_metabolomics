@@ -20,7 +20,7 @@ non_feature_columns:
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
 # Log IQR analysis
-log_iqr_feature_filter: hmdb  # Filter features for IQR analysis. Options: null (no filter), 'hmdb', or custom string/list
+log_iqr_feature_filter: null  # Filter features for IQR analysis. Options: null (no filter), 'hmdb', or custom string/list
 
 # Classification values
 normal_classification: 0    # Samples with this classification are used for training
@@ -52,7 +52,7 @@ max_iter: 1000            # Maximum iterations for sparse PCA
 pca_random_state: 42      # Random seed for sparse PCA
 save_pca_model: true      # Save the fitted PCA model
 pca_nan_strategy: drop_columns  # How to handle NaN: 'drop_columns', 'drop_rows', or 'impute_mean'
-pca_method: reular         # PCA method: 'regular', 'sparse', 'mini_batch_sparse', 'two_phase'
+pca_method: regular         # PCA method: 'regular', 'sparse', 'mini_batch_sparse', 'two_phase'
 pca_batch_size: 1000       # Batch size for mini_batch_sparse
 pca_intermediate_components: null  # Intermediate components for two_phase (null = auto: min(500, n_components*5))
 
