@@ -4,6 +4,7 @@ Data loading and preprocessing module for outlier detection pipeline.
 Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
+- Filtering out drug/drug metabolite features from DrugBank XML
 - Splitting data into train/validation/test sets based on Classification
 """
 
@@ -12,22 +13,198 @@ import numpy as np
 from typing import Tuple, Dict, List, Optional
 from sklearn.model_selection import train_test_split
 import logging
+import xml.etree.ElementTree as ET
+from pathlib import Path
+import pickle
+import hashlib
 
 logger = logging.getLogger(__name__)
+
+
+def _get_drugbank_cache_path(drugbank_file: str) -> Path:
+    """
+    Get the cache file path for a given DrugBank file.
+    
+    Args:
+        drugbank_file: Path to DrugBank XML file
+        
+    Returns:
+        Path to the cache pickle file
+    """
+    cache_dir = Path.home() / ".cache" / "drugbank_metabolomics"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    file_hash = hashlib.md5(drugbank_file.encode()).hexdigest()[:16]
+    return cache_dir / f"drugbank_names_{file_hash}.pkl"
+
+
+def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) -> set:
+    """
+    Load all compound names and synonyms from DrugBank XML file.
+    
+    Extracts drug names, synonyms, and metabolite names to create a comprehensive
+    set that can be matched against feature column names for filtering.
+    
+    Uses iterparse to handle large files efficiently.
+    
+    Args:
+        drugbank_file: Path to DrugBank XML file
+        use_cache: Whether to use cached results if available
+        
+    Returns:
+        Set of all drug and drug metabolite names (normalized to uppercase)
+    """
+    try:
+        cache_path = _get_drugbank_cache_path(drugbank_file)
+        
+        # Try to load from cache first
+        if use_cache and cache_path.exists():
+            with open(cache_path, 'rb') as f:
+                compound_names = pickle.load(f)
+            logger.info(f"Loaded {len(compound_names)} DrugBank compound names from cache: {cache_path}")
+            return compound_names
+        
+        compound_names = set()
+        context = ET.iterparse(drugbank_file, events=('start', 'end'))
+        
+        current_names = set()
+        in_synonyms = False
+        in_calculated_properties = False
+        
+        for event, elem in context:
+            if event == 'start':
+                tag_lower = elem.tag.lower().split('}')[-1]
+                
+                # Check for drug/drugbank entry
+                if 'drug' in tag_lower or tag_lower == 'drugbank':
+                    current_names = set()
+                
+                # Check for name element
+                elif tag_lower == 'name':
+                    if elem.text and elem.text.strip():
+                        current_names.add(elem.text.strip())
+                
+                # Check for generic_name
+                elif tag_lower == 'generic_name':
+                    if elem.text and elem.text.strip():
+                        current_names.add(elem.text.strip())
+                
+                # Check for synonyms container
+                elif tag_lower in ('synonyms', 'synonym'):
+                    in_synonyms = True
+                    if elem.text and elem.text.strip():
+                        current_names.add(elem.text.strip())
+                
+                # Check for calculated properties (contains metabolites)
+                elif tag_lower == 'calculated_properties':
+                    in_calculated_properties = True
+                
+                # Check for metabolites
+                elif tag_lower == 'metabolites' or tag_lower == 'metabolite':
+                    if elem.text and elem.text.strip():
+                        current_names.add(elem.text.strip())
+            
+            elif event == 'end':
+                tag_lower = elem.tag.lower().split('}')[-1]
+                
+                # When drug entry ends, add collected names to master set
+                if 'drug' in tag_lower and current_names:
+                    compound_names.update(current_names)
+                    current_names = set()
+                
+                # End of synonyms
+                if tag_lower in ('synonyms', 'synonym'):
+                    in_synonyms = False
+                
+                if tag_lower == 'calculated_properties':
+                    in_calculated_properties = False
+                
+                # Clear processed elements to free memory
+                elem.clear()
+        
+        # Normalize all names to uppercase for case-insensitive matching
+        compound_names = {name.upper() for name in compound_names if name}
+        
+        # Save to cache for future runs
+        if use_cache:
+            with open(cache_path, 'wb') as f:
+                pickle.dump(compound_names, f)
+            logger.info(f"Saved DrugBank compound names cache to {cache_path}")
+        
+        logger.info(f"Loaded {len(compound_names)} DrugBank compound names and synonyms from {drugbank_file}")
+        if len(compound_names) == 0:
+            logger.warning(f"No DrugBank compound names found in {drugbank_file}. Check XML structure.")
+        return compound_names
+        
+    except Exception as e:
+        logger.error(f"Failed to load DrugBank file {drugbank_file}: {e}")
+        return set()
+
+
+def _filter_out_drug_features(
+    features: pd.DataFrame,
+    drugbank_names: set,
+) -> pd.DataFrame:
+    """
+    Filter out feature columns that match DrugBank compound names.
+    
+    Removes any features whose column names contain DrugBank drug or
+    drug metabolite names (case-insensitive substring matching).
+    
+    Args:
+        features: DataFrame with feature columns
+        drugbank_names: Set of DrugBank compound names (uppercase)
+        
+    Returns:
+        Filtered DataFrame with drug features removed
+    """
+    if not drugbank_names:
+        logger.warning("No DrugBank names provided. Returning all features.")
+        return features
+    
+    original_cols = set(features.columns)
+    
+    # Find columns that DO NOT contain any DrugBank name
+    non_drug_columns = []
+    for col in features.columns:
+        col_upper = str(col).upper()
+        is_drug = False
+        for name in drugbank_names:
+            if name in col_upper:
+                is_drug = True
+                break
+        if not is_drug:
+            non_drug_columns.append(col)
+    
+    filtered_features = features[non_drug_columns]
+    
+    n_removed = len(original_cols) - len(non_drug_columns)
+    logger.info(f"Filtered out drug features: {n_removed} drug features removed, {len(non_drug_columns)} non-drug features retained")
+    
+    if n_removed > 0:
+        removed_cols = list(original_cols - set(non_drug_columns))[:10]
+        logger.info(f"Example removed drug features: {removed_cols}{'...' if n_removed > 10 else ''}")
+    
+    return filtered_features
 
 
 def load_data(
     input_file: str,
     non_feature_columns: List[str],
     patient_id_column: Optional[str] = None,
+    drugbank_file: Optional[str] = None,
+    filter_drugs: bool = False,
+    use_drugbank_cache: bool = True,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
-    Load data from CSV file.
+    Load data from CSV file and optionally filter out drug features.
 
     Args:
         input_file: Path to CSV file
         non_feature_columns: List of column names that are NOT features
         patient_id_column: Column name for patient IDs (if not index)
+        drugbank_file: Path to DrugBank XML file for drug feature filtering
+        filter_drugs: Whether to filter out features matching DrugBank compounds
+        use_drugbank_cache: Whether to use cached DrugBank data if available
 
     Returns:
         Tuple of:
@@ -79,7 +256,19 @@ def load_data(
     feature_cols = [col for col in df.columns if col not in non_feature_columns]
     features = df[feature_cols]
 
-    logger.info(f"Feature columns: {len(feature_cols)}")
+    # Filter out drug features if requested
+    if filter_drugs and drugbank_file:
+        drugbank_path = Path(drugbank_file)
+        if drugbank_path.exists():
+            drugbank_names = _load_drugbank_compound_names(str(drugbank_path), use_cache=use_drugbank_cache)
+            if drugbank_names:
+                features = _filter_out_drug_features(features, drugbank_names)
+            else:
+                logger.warning(f"Could not load DrugBank names from {drugbank_file}. Using all features.")
+        else:
+            logger.warning(f"DrugBank file not found at {drugbank_file}. Using all features.")
+
+    logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
 
     return features, classification, oordeel

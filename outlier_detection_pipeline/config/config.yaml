@@ -19,6 +19,11 @@ non_feature_columns:
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
+# DrugBank filtering
+filter_drugs: false  # Filter out features matching DrugBank drugs/drug metabolites
+use_drugbank_cache: true  # Use cached DrugBank data to avoid re-parsing XML file
+drugbank_file: "data/drugbank.xml"  # Path to DrugBank XML file
+
 # Log IQR analysis
 log_iqr_feature_filter: null  # Filter features for IQR analysis. Options: null (no filter), 'hmdb', or custom string/list
 
