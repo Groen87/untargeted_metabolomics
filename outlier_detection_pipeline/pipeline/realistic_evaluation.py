@@ -7,22 +7,23 @@ Implements the recommended strategy:
 3. Repeat N iterations for stable metrics
 """
 
-import pandas as pd
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
-from typing import Dict, Any, List, Tuple, Optional
+import pandas as pd
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
+    confusion_matrix,
     f1_score,
+    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
-    confusion_matrix,
-    precision_recall_curve,
-    average_precision_score,
 )
 import logging
-import json
-from pathlib import Path
 
 try:
     import matplotlib.pyplot as plt
@@ -49,14 +50,14 @@ def run_realistic_evaluation(
 ) -> Dict[str, Any]:
     """
     Run realistic LOO evaluation with target contamination rate.
-    
+
     For each iteration:
     1. Select 1 abnormal sample (randomly from abnormal pool)
     2. Combine with ALL normal samples (train + test) for better distribution
     3. This creates a test set with ~2% contamination (1 abnormal / ~all normals)
     4. Get outlier scores from model
     5. Check if abnormal sample is in top N% (where N = target_contamination * 100)
-    
+
     Args:
         model: Trained ExtendedIsolationForestModel (trained on normals only)
         X_normal_test: Normal test samples features
@@ -69,7 +70,7 @@ def run_realistic_evaluation(
         outlier_classes: List of classification values that are outliers
         X_normal_train: Normal training samples (optional, for larger normal pool)
         y_normal_train: Normal training labels (optional)
-        
+
     Returns:
         Dictionary with:
         - detection_rate: % of iterations where abnormal was detected
@@ -80,107 +81,93 @@ def run_realistic_evaluation(
     """
     if outlier_classes is None:
         outlier_classes = [1, 2, 3]
-    
+
     np.random.seed(random_seed)
-    
+
     # For realistic evaluation: use ONLY test normals (unseen during training)
-    # The model was trained on X_normal_train only
-    # So we test with X_normal_test + 1 abnormal (truly unseen data)
     X_normal_combined = X_normal_test
     y_normal_combined = y_normal_test
-    
+
     n_normal = len(X_normal_combined)
     n_abnormal = len(X_abnormal_test)
-    
+
     # For realistic evaluation: we use a threshold corresponding to target contamination
-    # Each iteration: n_normal test normals + 1 abnormal = n_test_total samples
-    # At target_contamination, we expect to flag ~target_contamination * n_test_total outliers
-    # Since we have exactly 1 abnormal, we check if it's among the most anomalous
-    
     n_test_total = n_normal + 1
     expected_outliers = target_contamination * n_test_total
-    
+
     # Use ceil to ensure we flag enough, but at minimum 1
     n_top = max(1, int(np.ceil(expected_outliers)))
-    
-    # Also ensure n_top doesn't exceed total samples
     n_top = min(n_top, n_test_total)
-    
+
     if n_top < 1:
         n_top = 1  # Always flag at least 1
-    
+
     logger.info(f"\n{'='*70}")
     logger.info("REALISTIC EVALUATION (LOO Abnormal)")
     logger.info(f"{'='*70}")
-    logger.info(f"Normal samples (train + test): {n_normal}")
+    logger.info(f"Normal samples (test): {n_normal}")
     logger.info(f"Abnormal test samples: {n_abnormal}")
     logger.info(f"Target contamination: {target_contamination:.2%}")
     logger.info(f"Top N outliers to flag: {n_top}")
     logger.info(f"Iterations: {n_iterations}")
-    
+
     # Store results for each iteration
     per_iteration_results = []
     all_true_labels = []
     all_pred_labels = []
     all_scores = []
-    
+
     # For tracking
     detected_count = 0
     fp_count = 0
     total_normal_samples = 0
-    
+
     for iteration in range(n_iterations):
         # Select one random abnormal sample
         abnormal_idx = np.random.randint(0, n_abnormal)
         X_abnormal_selected = X_abnormal_test.iloc[[abnormal_idx]]
         y_abnormal_selected = y_abnormal_test.iloc[[abnormal_idx]]
-        
+
         # Create test set: all normals + 1 abnormal
         X_test_iter = pd.concat([X_normal_combined, X_abnormal_selected])
         y_test_iter = pd.concat([y_normal_combined, y_abnormal_selected])
-        
-        # Get scores (lower = more anomalous for IsolationForest)
+
+        # Get scores
         scores = model.decision_function(X_test_iter)
-        
+
         # Get predictions using model's trained threshold
         raw_preds = model.predict(X_test_iter)
-        model_preds_binary = np.where(raw_preds == -1, 1, 0)  # -1 = outlier, 1 = inlier
-        
-        # For realistic evaluation: we want to use a threshold that corresponds
-        # to the target contamination rate on THIS test set (n_normal + 1 samples)
-        # Sort scores and find the threshold at position (n_test_total - n_top)
-        sorted_scores = np.sort(scores)  # ascending: lowest = most anomalous
+        model_preds_binary = np.where(raw_preds == -1, 1, 0)
+
+        # For realistic evaluation: use a threshold that corresponds to the target contamination
+        sorted_scores = np.sort(scores)
         if n_top >= len(sorted_scores):
-            threshold_score = sorted_scores[0]  # Most anomalous
+            threshold_score = sorted_scores[0]
         else:
-            threshold_score = sorted_scores[n_top - 1]  # n_top-th most anomalous
-        
-        # Flag samples with score <= threshold (more anomalous than threshold)
+            threshold_score = sorted_scores[n_top - 1]
+
+        # Flag samples with score <= threshold
         y_pred_iter = (scores <= threshold_score).astype(int)
-        
-        # Convert ground truth to binary (0=normal, 1=outlier)
+
+        # Convert ground truth to binary
         y_true_binary = (y_test_iter.isin(outlier_classes)).astype(int)
-        
-        # Check if abnormal sample was detected by threshold method
-        # The abnormal sample is at position n_normal (last position in X_test_iter)
+
+        # Check if abnormal sample was detected
         abnormal_position = n_normal
         abnormal_detected = y_pred_iter[abnormal_position] == 1
-        
-        # Also track model's raw prediction
         abnormal_detected_by_model = model_preds_binary[abnormal_position] == 1
-        
+
         if abnormal_detected:
             detected_count += 1
-        
-        # Count false positives (normal samples flagged as outliers)
+
+        # Count false positives
         fp_iter = np.sum(y_pred_iter[:n_normal] == 1)
         fp_count += fp_iter
         total_normal_samples += n_normal
-        
-        # Also track model's raw predictions for comparison
+
+        # Track model's raw predictions for comparison
         model_fp_iter = np.sum(model_preds_binary[:n_normal] == 1)
-        
-        # Compute metrics for this iteration
+
         iter_results = {
             'iteration': iteration,
             'abnormal_sample_id': X_abnormal_test.index[abnormal_idx],
@@ -192,49 +179,47 @@ def run_realistic_evaluation(
             'false_positives': int(fp_iter),
             'n_top': n_top,
         }
-        
+
         per_iteration_results.append(iter_results)
-        
+
         # Store for aggregated metrics
         all_true_labels.extend(y_true_binary.tolist())
         all_pred_labels.extend(y_pred_iter.tolist())
         all_scores.extend(scores.tolist())
-    
+
     # Compute aggregated metrics
     detection_rate = detected_count / n_iterations
     false_positive_rate = fp_count / total_normal_samples if total_normal_samples > 0 else 0
-    
+
     # Aggregated confusion matrix
     cm = confusion_matrix(all_true_labels, all_pred_labels)
-    
+
     # Compute various metrics
     try:
         accuracy = accuracy_score(all_true_labels, all_pred_labels)
-    except:
+    except Exception:
         accuracy = float('nan')
-    
+
     try:
         precision = precision_score(all_true_labels, all_pred_labels)
-    except:
+    except Exception:
         precision = float('nan')
-    
+
     try:
         recall = recall_score(all_true_labels, all_pred_labels)
-    except:
+    except Exception:
         recall = float('nan')
-    
+
     try:
         f1 = f1_score(all_true_labels, all_pred_labels)
-    except:
+    except Exception:
         f1 = float('nan')
-    
+
     try:
-        # For ROC AUC: higher values should indicate more anomalous
-        # Since IsolationForest gives lower scores for anomalies, we negate
         roc_auc = roc_auc_score(all_true_labels, -np.array(all_scores))
-    except:
+    except Exception:
         roc_auc = float('nan')
-    
+
     results = {
         'evaluation_strategy': 'realistic',
         'n_iterations': n_iterations,
@@ -253,7 +238,7 @@ def run_realistic_evaluation(
         'confusion_matrix_labels': ['Normal', 'Outlier'],
         'per_iteration_results': per_iteration_results,
     }
-    
+
     logger.info(f"\n{'='*70}")
     logger.info("REALISTIC EVALUATION RESULTS")
     logger.info(f"{'='*70}")
@@ -266,8 +251,26 @@ def run_realistic_evaluation(
     logger.info(f"ROC AUC: {roc_auc:.4f}")
     logger.info(f"Confusion Matrix:\n{cm}")
     logger.info(f"{'='*70}")
-    
+
     return results
+
+
+def _make_serializable(obj: Any) -> Any:
+    """Recursively convert numpy types to Python types for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: _make_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_make_serializable(item) for item in obj]
+    elif hasattr(obj, 'item'):
+        return obj.item() if hasattr(obj, 'item') else float(obj)
+    elif isinstance(obj, (np.integer, np.floating)):
+        return int(obj) if isinstance(obj, np.integer) else float(obj)
+    elif isinstance(obj, pd.Timestamp):
+        return str(obj)
+    elif isinstance(obj, pd.Index):
+        return obj.tolist()
+    else:
+        return obj
 
 
 def save_realistic_results(
@@ -277,39 +280,23 @@ def save_realistic_results(
     """Save realistic evaluation results to files."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Convert numpy types to Python types for JSON serialization
-    def make_serializable(obj):
-        if isinstance(obj, dict):
-            return {k: make_serializable(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [make_serializable(item) for item in obj]
-        elif hasattr(obj, 'item'):  # numpy types
-            return obj.item() if hasattr(obj, 'item') else float(obj)
-        elif isinstance(obj, (np.integer, np.floating)):
-            return int(obj) if isinstance(obj, np.integer) else float(obj)
-        elif isinstance(obj, pd.Timestamp):
-            return str(obj)
-        elif isinstance(obj, pd.Index):
-            return obj.tolist()
-        else:
-            return obj
-    
-    serializable_results = make_serializable(results)
-    
+    serializable_results = _make_serializable(results)
+
     # Save aggregated metrics
     metrics_path = output_dir / "realistic_metrics.json"
     with open(metrics_path, 'w') as f:
         json.dump(serializable_results, f, indent=2)
     logger.info(f"Realistic metrics saved to {metrics_path}")
-    
+
     # Save per-iteration results as CSV
     if 'per_iteration_results' in results:
         iter_df = pd.DataFrame(results['per_iteration_results'])
         iter_path = output_dir / "realistic_iteration_results.csv"
         iter_df.to_csv(iter_path, index=False)
         logger.info(f"Per-iteration results saved to {iter_path}")
-    
+
     # Save summary
     summary = {
         'detection_rate': results['detection_rate'],
@@ -333,18 +320,18 @@ def plot_realistic_results(
     if not HAS_MATPLOTLIB:
         logger.warning("matplotlib/seaborn not available. Skipping plots.")
         return
-    
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Plot 1: Detection by iteration and False positives
     plt.figure(figsize=(12, 6))
-    
+
     # Extract iteration data
     iterations = [r['iteration'] for r in results['per_iteration_results']]
     detected = [1 if r['abnormal_detected'] else 0 for r in results['per_iteration_results']]
     fps = [r['false_positives'] for r in results['per_iteration_results']]
-    
+
     # Detection rate over iterations
     plt.subplot(1, 2, 1)
     plt.plot(iterations, detected, 'o-', color='blue', alpha=0.5)
@@ -355,7 +342,7 @@ def plot_realistic_results(
     plt.title('Abnormal Sample Detection by Iteration')
     plt.legend()
     plt.grid(True, alpha=0.3)
-    
+
     # False positives over iterations
     plt.subplot(1, 2, 2)
     plt.plot(iterations, fps, 'o-', color='green', alpha=0.5)
@@ -366,18 +353,18 @@ def plot_realistic_results(
     plt.title('False Positives by Iteration')
     plt.legend()
     plt.grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
     plt.savefig(output_dir / "realistic_detection_plot.png", dpi=300, bbox_inches='tight')
     plt.close()
-    
+
     logger.info(f"Realistic evaluation plot saved to {output_dir / 'realistic_detection_plot.png'}")
-    
+
     # Plot 2: Confusion Matrix for aggregated results
     if 'confusion_matrix' in results:
         cm = np.array(results['confusion_matrix'])
         labels = results.get('confusion_matrix_labels', ['Normal', 'Outlier'])
-        
+
         plt.figure(figsize=(8, 6))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                     xticklabels=labels, yticklabels=labels)
@@ -389,5 +376,5 @@ def plot_realistic_results(
         plt.tight_layout()
         plt.savefig(output_dir / "realistic_confusion_matrix.png", dpi=300, bbox_inches='tight')
         plt.close()
-        
+
         logger.info(f"Realistic confusion matrix saved to {output_dir / 'realistic_confusion_matrix.png'}")
