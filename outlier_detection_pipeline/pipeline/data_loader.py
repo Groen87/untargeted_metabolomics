@@ -46,11 +46,13 @@ def _load_chembl_compound_names_from_sqlite(sqlite_path: str) -> set:
         
         try:
             # Check if it's a tarball
-            if str(path).endswith('.tar.gz') or str(path).endswith('.tgz'):
+            if str(path).endswith('.tar.gz') or str(path).endswith('.tgz') or str(path).endswith('.tar'):
                 logger.info(f"Extracting database from tarball: {path}")
                 temp_dir = tempfile.mkdtemp()
                 
-                with tarfile.open(path, 'r:gz') as tar:
+                # Use appropriate mode based on extension
+                mode = 'r:gz' if str(path).endswith('.tar.gz') or str(path).endswith('.tgz') else 'r'
+                with tarfile.open(path, mode) as tar:
                     # Find the database file inside
                     for member in tar.getmembers():
                         if member.name.endswith('.db') or member.name.endswith('.sqlite'):
