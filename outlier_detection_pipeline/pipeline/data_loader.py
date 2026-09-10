@@ -4,7 +4,7 @@ Data loading and preprocessing module for outlier detection pipeline.
 Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
-- Filtering out drug/drug metabolite features from ChEMBL API
+- Filtering out drug/drug metabolite features from ChEMBL API or SQLite database
 - Splitting data into train/validation/test sets based on Classification
 """
 
@@ -18,6 +18,10 @@ import pickle
 import hashlib
 import re
 import time
+import sqlite3
+import tarfile
+import tempfile
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -82,13 +86,143 @@ def _load_chembl_compound_names_from_file(file_path: str) -> set:
         return set()
 
 
-def _load_chembl_compound_names_from_api(use_cache: bool = True, names_file: Optional[str] = None) -> set:
+def _load_chembl_compound_names_from_sqlite(sqlite_path: str) -> set:
+    """
+    Load compound names directly from ChEMBL SQLite database.
+    
+    Extracts ChEMBL IDs, preferred names, and synonyms from the database.
+    Handles both .db files and .tar.gz archives containing .db files.
+    
+    Args:
+        sqlite_path: Path to SQLite database file or .tar.gz archive
+        
+    Returns:
+        Set of compound names (uppercase)
+    """
+    try:
+        path = Path(sqlite_path)
+        if not path.exists():
+            logger.error(f"ChEMBL SQLite file not found: {sqlite_path}")
+            return set()
+        
+        db_path = None
+        temp_dir = None
+        
+        try:
+            # Check if it's a tarball
+            if str(path).endswith('.tar.gz') or str(path).endswith('.tgz'):
+                logger.info(f"Extracting database from tarball: {path}")
+                temp_dir = tempfile.mkdtemp()
+                
+                with tarfile.open(path, 'r:gz') as tar:
+                    # Find the database file inside
+                    for member in tar.getmembers():
+                        if member.name.endswith('.db') or member.name.endswith('.sqlite'):
+                            db_path = Path(temp_dir) / member.name
+                            db_path.parent.mkdir(parents=True, exist_ok=True)
+                            with open(db_path, 'wb') as f:
+                                f.write(tar.extractfile(member).read())
+                            logger.info(f"  Extracted database: {db_path}")
+                            break
+                
+                if not db_path:
+                    logger.error(f"No .db or .sqlite file found in {path}")
+                    return set()
+            
+            # Check if it's already a database file
+            elif str(path).endswith('.db') or str(path).endswith('.sqlite'):
+                db_path = path
+                logger.info(f"Using SQLite database directly: {db_path}")
+            
+            else:
+                logger.error(f"Unsupported file type: {path}. Expected .db, .sqlite, or .tar.gz")
+                return set()
+            
+            # Connect to database and extract names
+            logger.info(f"Connecting to SQLite database: {db_path}")
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            
+            # Get table list
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+            tables = [row[0] for row in cursor.fetchall()]
+            logger.info(f"Found {len(tables)} tables")
+            
+            names = set()
+            
+            # Primary source: molecule_dictionary
+            if 'molecule_dictionary' in tables:
+                logger.info("Extracting from molecule_dictionary table...")
+                cursor.execute("SELECT chembl_id, pref_name, molecule_type FROM molecule_dictionary")
+                count = 0
+                for row in cursor.fetchall():
+                    for val in row:
+                        if val and isinstance(val, str):
+                            name = val.strip().upper()
+                            if len(name) >= 3:
+                                names.add(name)
+                                count += 1
+                logger.info(f"  Found {count} names from molecule_dictionary")
+            
+            # Secondary source: compound_synonyms
+            if 'compound_synonyms' in tables:
+                logger.info("Extracting from compound_synonyms table...")
+                cursor.execute("SELECT chembl_id, synonyms FROM compound_synonyms")
+                syn_count = 0
+                for row in cursor.fetchall():
+                    # chembl_id
+                    if row[0] and isinstance(row[0], str):
+                        name = row[0].strip().upper()
+                        if len(name) >= 3:
+                            names.add(name)
+                            syn_count += 1
+                    
+                    # synonyms
+                    if row[1] and isinstance(row[1], str):
+                        for syn in row[1].split('|'):
+                            syn = syn.strip().upper()
+                            if len(syn) >= 3:
+                                names.add(syn)
+                                syn_count += 1
+                logger.info(f"  Added {syn_count} names from synonyms")
+            
+            # Additional: compound_structures
+            if 'compound_structures' in tables:
+                logger.info("Extracting from compound_structures table...")
+                cursor.execute("SELECT chembl_id FROM compound_structures")
+                struct_count = 0
+                for row in cursor.fetchall():
+                    if row[0] and isinstance(row[0], str):
+                        name = row[0].strip().upper()
+                        if len(name) >= 3 and name not in names:
+                            names.add(name)
+                            struct_count += 1
+                logger.info(f"  Added {struct_count} names from compound_structures")
+            
+            logger.info(f"Total unique ChEMBL compound names: {len(names)}")
+            return names
+            
+        finally:
+            if 'conn' in locals():
+                conn.close()
+            if temp_dir and Path(temp_dir).exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        
+    except Exception as e:
+        logger.error(f"Failed to load ChEMBL names from SQLite {sqlite_path}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return set()
+
+
+def _load_chembl_compound_names_from_api(use_cache: bool = True, names_file: Optional[str] = None, sqlite_file: Optional[str] = None) -> set:
     """
     Load compound names from ChEMBL API.
     
     Uses the ChEMBL web resource client to fetch all compound names.
     Falls back to requests if chembl_webresource_client is not available.
-    Falls back to local file if API fails and file is provided.
+    Falls back to SQLite database if provided.
+    Falls back to local TXT file if API fails and file is provided.
     
     Extracts:
     - ChEMBL IDs
@@ -98,10 +232,18 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True, names_file: Opt
     Args:
         use_cache: Whether to use cached results if available
         names_file: Optional path to local TXT file with compound names (fallback)
+        sqlite_file: Optional path to SQLite database file or .tar.gz archive
         
     Returns:
         Set of compound names and IDs (normalized to uppercase)
     """
+    # Try SQLite database first if provided
+    if sqlite_file:
+        logger.info(f"Using ChEMBL SQLite database: {sqlite_file}")
+        names = _load_chembl_compound_names_from_sqlite(sqlite_file)
+        if names:
+            return names
+        logger.warning(f"Failed to load from SQLite {sqlite_file}, falling back to API")
     try:
         cache_path = _get_chembl_cache_path()
         
@@ -261,6 +403,13 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True, names_file: Opt
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         
+        # Fall back to SQLite if provided
+        if sqlite_file:
+            logger.info(f"Falling back to ChEMBL SQLite database: {sqlite_file}")
+            names = _load_chembl_compound_names_from_sqlite(sqlite_file)
+            if names:
+                return names
+        
         # Fall back to local file if provided
         if names_file:
             logger.info(f"Falling back to local ChEMBL names file: {names_file}")
@@ -359,6 +508,7 @@ def load_data(
     use_chembl_cache: bool = True,
     use_chembl_api: bool = True,
     chembl_names_file: Optional[str] = None,
+    chembl_sqlite_file: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter out ChEMBL features.
@@ -422,9 +572,14 @@ def load_data(
     features = df[feature_cols]
 
     # Filter out ChEMBL features if requested
-    if filter_chembl and use_chembl_api:
+    if filter_chembl and chembl_sqlite_file:
+        logger.info(f"Using ChEMBL SQLite database: {chembl_sqlite_file}")
+        chembl_names = _load_chembl_compound_names_from_sqlite(chembl_sqlite_file)
+        if chembl_names:
+            features = _filter_out_chembl_features(features, chembl_names)
+    elif filter_chembl and use_chembl_api:
         logger.info("Using ChEMBL API to fetch compound names...")
-        chembl_names = _load_chembl_compound_names_from_api(use_cache=use_chembl_cache, names_file=chembl_names_file)
+        chembl_names = _load_chembl_compound_names_from_api(use_cache=use_chembl_cache, names_file=chembl_names_file, sqlite_file=chembl_sqlite_file)
         if chembl_names:
             features = _filter_out_chembl_features(features, chembl_names)
     elif filter_chembl and chembl_names_file:
@@ -433,7 +588,7 @@ def load_data(
         if chembl_names:
             features = _filter_out_chembl_features(features, chembl_names)
     elif filter_chembl:
-        logger.warning("ChEMBL filtering requested but use_chembl_api is False and no chembl_names_file provided. Set use_chembl_api: true or provide chembl_names_file in config.")
+        logger.warning("ChEMBL filtering requested but no method specified. Set use_chembl_api: true, provide chembl_sqlite_file, or chembl_names_file in config.")
 
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
