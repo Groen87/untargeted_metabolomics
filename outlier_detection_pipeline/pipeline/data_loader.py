@@ -76,7 +76,6 @@ def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set
         with open_func(chembl_file, mode, encoding=encoding) as f:
             current_name = None
             current_chembl_id = None
-            in_property_section = False
             
             for line in f:
                 line = line.strip()
@@ -85,42 +84,54 @@ def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set
                 if line == '$$$$':
                     current_name = None
                     current_chembl_id = None
-                    in_property_section = False
                     continue
                 
                 # New molecule record starts with a header line (compound name)
-                # This is the FIRST line of a record, before any > tags
-                if line and not line.startswith('>') and not line.startswith('$') and not in_property_section:
+                # This is the FIRST line of a record
+                if line and not line.startswith('>') and not line.startswith('$'):
+                    # Check if this looks like an atom line (starts with number or coordinate pattern)
+                    if line[0].isdigit() or re.match(r'^[\d\s.-]+$', line[:20]):
+                        # This is an atom/bond line, skip
+                        continue
+                    
                     # This is the molecule header line (compound name)
                     current_name = line.strip()
                     current_chembl_id = None
                     
-                    # Add the compound name if reasonable length and looks like a name (not coordinates)
-                    # Skip lines that look like atom records (start with numbers/coordinates)
+                    # Add the compound name if reasonable length
                     if current_name and len(current_name) >= 3:
-                        # Skip if it looks like an atom line (starts with number or coordinate-like)
-                        if not (current_name[0].isdigit() or 
-                                re.match(r'^[\d\s.-]+$', current_name[:20])):
-                            compound_names.add(current_name)
+                        compound_names.add(current_name)
                     
                     continue
                 
                 # Property section starts with >
                 if line.startswith('>'):
-                    in_property_section = True
-                    prop_name = line[1:].strip()
+                    prop_name = line[1:].strip().upper()
                     
-                    if prop_name == '<CHEMBL_ID>':
+                    # Extract compound names from various property fields
+                    name_tags = [
+                        '<PREF_NAME>', 'PREF_NAME',
+                        '<GENERIC_NAME>', 'GENERIC_NAME',
+                        '<MOLECULE_TYPE>', 'MOLECULE_TYPE',
+                        '<COMPOUND_NAME>', 'COMPOUND_NAME',
+                        '<NAME>', 'NAME',
+                        '<TITLE>', 'TITLE',
+                    ]
+                    
+                    if prop_name in name_tags:
+                        # Next line contains the name
+                        name_line = next(f, '').strip()
+                        if name_line and len(name_line) >= 3:
+                            compound_names.add(name_line)
+                    
+                    elif prop_name == '<CHEMBL_ID>' or prop_name == 'CHEMBL_ID':
                         # Next line contains the ChEMBL ID
                         chembl_id_line = next(f, '').strip()
                         if chembl_id_line and len(chembl_id_line) >= 3:
                             current_chembl_id = chembl_id_line
+                            # Also add CHEMBL ID as it might be used in feature names
                             compound_names.add(chembl_id_line)
                     
-                    elif prop_name == '<CHEMBL_COMPOUND>':
-                        # Some SDF files have this
-                        pass
-                        
                     elif prop_name == 'SYNONYMS':
                         # Read synonyms - next line contains them
                         synonyms_line = next(f, '').strip()
@@ -131,10 +142,10 @@ def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set
                                 syn = syn.strip()
                                 if syn and len(syn) >= 3:
                                     compound_names.add(syn)
-                
-                else:
-                    # In molecule block (atoms, bonds) - skip these lines
-                    in_property_section = False
+                    
+                    elif prop_name == '<CHEMBL_COMPOUND>':
+                        # Some SDF files have this
+                        pass
         
         # Normalize all names to uppercase for case-insensitive matching
         compound_names = {name.upper() for name in compound_names if name and len(name) >= 3}
