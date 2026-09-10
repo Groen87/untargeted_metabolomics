@@ -4,8 +4,7 @@ Data loading and preprocessing module for outlier detection pipeline.
 Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
-- Filtering out drug/drug metabolite features from ChEMBL SQLite database
-- Caching ChEMBL compound names to TXT file for faster subsequent runs
+- Filtering features to keep only ChEBI human metabolites (role: CHEBI:77746) from SDF
 - Splitting data into train/validation/test sets based on Classification
 """
 
@@ -15,304 +14,164 @@ from typing import Tuple, Dict, List, Optional
 from sklearn.model_selection import train_test_split
 import logging
 from pathlib import Path
-import sqlite3
-import tarfile
-import tempfile
-import shutil
-import hashlib
+import re
 
 logger = logging.getLogger(__name__)
 
 
-def _get_chembl_cache_path() -> Path:
+def _load_chebi_human_metabolite_names(sdf_path: str) -> set:
     """
-    Get the cache file path for ChEMBL compound names.
+    Load compound names from ChEBI SDF file, filtering for human metabolites.
     
-    Returns:
-        Path to the cache TXT file
-    """
-    cache_dir = Path.home() / ".cache" / "chembl_metabolomics"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "chembl_names.txt"
-
-
-def _load_chembl_compound_names_from_file(file_path: str) -> set:
-    """
-    Load compound names from a local TXT file.
+    Extracts compound names and synonyms for compounds with role 'CHEBI:77746' (human metabolites).
     
-    Expected format: one compound name per line.
-    Empty lines and lines starting with # are skipped.
-    Names are normalized to uppercase.
+    SDF format:
+    - Compounds separated by $$$$
+    - First line of each compound: compound name
+    - Property tags: > <TAG>
+    - Property values: line immediately following the tag
     
     Args:
-        file_path: Path to the TXT file containing compound names
+        sdf_path: Path to ChEBI SDF file
         
     Returns:
-        Set of compound names (uppercase)
+        Set of compound names and synonyms (uppercase) for human metabolites
     """
     try:
-        path = Path(file_path)
+        path = Path(sdf_path)
         if not path.exists():
-            logger.error(f"ChEMBL names file not found: {file_path}")
+            logger.error(f"ChEBI SDF file not found: {sdf_path}")
             return set()
         
-        compound_names = set()
-        with open(path, 'r', encoding='utf-8') as f:
+        names = set()
+        current_compound = {'names': set(), 'role': None}
+        expect_value = False
+        current_tag = None
+        
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
-                line = line.strip()
-                # Skip empty lines and comments
-                if not line or line.startswith('#'):
-                    continue
-                # Normalize to uppercase
-                name = line.upper()
-                if len(name) >= 3:
-                    compound_names.add(name)
-        
-        logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from file: {file_path}")
-        return compound_names
-        
-    except Exception as e:
-        logger.error(f"Failed to load ChEMBL names from file {file_path}: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return set()
-
-
-def _load_chembl_compound_names_from_sqlite(sqlite_path: str, use_cache: bool = True) -> set:
-    """
-    Load compound names directly from ChEMBL SQLite database.
-    
-    Extracts ChEMBL IDs, preferred names, and synonyms from the database.
-    Handles both .db files and .tar.gz archives containing .db files.
-    
-    Args:
-        sqlite_path: Path to SQLite database file or .tar.gz archive
-        
-    Returns:
-        Set of compound names (uppercase)
-    """
-    try:
-        # Try to load from cache first
-        cache_path = _get_chembl_cache_path()
-        if use_cache and cache_path.exists():
-            logger.info(f"Loading ChEMBL names from cache: {cache_path}")
-            return _load_chembl_compound_names_from_file(str(cache_path))
-        
-        path = Path(sqlite_path)
-        if not path.exists():
-            logger.error(f"ChEMBL SQLite file not found: {sqlite_path}")
-            return set()
-        
-        db_path = None
-        temp_dir = None
-        
-        try:
-            # Check if it's a tarball
-            if str(path).endswith('.tar.gz') or str(path).endswith('.tgz') or str(path).endswith('.tar'):
-                logger.info(f"Extracting database from tarball: {path}")
-                temp_dir = tempfile.mkdtemp()
+                line = line.rstrip('\n\r')
                 
-                # Use appropriate mode based on extension
-                mode = 'r:gz' if str(path).endswith('.tar.gz') or str(path).endswith('.tgz') else 'r'
-                with tarfile.open(path, mode) as tar:
-                    # Find the database file inside
-                    for member in tar.getmembers():
-                        if member.name.endswith('.db') or member.name.endswith('.sqlite'):
-                            db_path = Path(temp_dir) / member.name
-                            db_path.parent.mkdir(parents=True, exist_ok=True)
-                            with open(db_path, 'wb') as f:
-                                f.write(tar.extractfile(member).read())
-                            logger.info(f"  Extracted database: {db_path}")
-                            break
-                
-                if not db_path:
-                    logger.error(f"No .db or .sqlite file found in {path}")
-                    return set()
-            
-            # Check if it's already a database file
-            elif str(path).endswith('.db') or str(path).endswith('.sqlite'):
-                db_path = path
-                logger.info(f"Using SQLite database directly: {db_path}")
-            
-            else:
-                logger.error(f"Unsupported file type: {path}. Expected .db, .sqlite, or .tar.gz")
-                return set()
-            
-            # Connect to database and extract names
-            logger.info(f"Connecting to SQLite database: {db_path}")
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
-            
-            # Get table list
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
-            tables = [row[0] for row in cursor.fetchall()]
-            logger.info(f"Found {len(tables)} tables")
-            
-            names = set()
-            
-            # Primary source: molecule_dictionary
-            if 'molecule_dictionary' in tables:
-                logger.info("Extracting from molecule_dictionary table...")
-                cursor.execute("SELECT chembl_id, pref_name, molecule_type FROM molecule_dictionary")
-                count = 0
-                for row in cursor.fetchall():
-                    for val in row:
-                        if val and isinstance(val, str):
-                            name = val.strip().upper()
+                # End of compound record
+                if line == '$$$$':
+                    # Process completed compound
+                    if current_compound.get('role') == 'CHEBI:77746':
+                        for name in current_compound['names']:
                             if len(name) >= 3:
                                 names.add(name)
-                                count += 1
-                logger.info(f"  Found {count} names from molecule_dictionary")
-            
-            # Secondary source: compound_synonyms
-            if 'compound_synonyms' in tables:
-                logger.info("Extracting from compound_synonyms table...")
-                cursor.execute("SELECT chembl_id, synonyms FROM compound_synonyms")
-                syn_count = 0
-                for row in cursor.fetchall():
-                    # chembl_id
-                    if row[0] and isinstance(row[0], str):
-                        name = row[0].strip().upper()
-                        if len(name) >= 3:
-                            names.add(name)
-                            syn_count += 1
                     
-                    # synonyms
-                    if row[1] and isinstance(row[1], str):
-                        for syn in row[1].split('|'):
-                            syn = syn.strip().upper()
-                            if len(syn) >= 3:
-                                names.add(syn)
-                                syn_count += 1
-                logger.info(f"  Added {syn_count} names from synonyms")
-            
-            # Additional: compound_structures (try different column names)
-            if 'compound_structures' in tables:
-                logger.info("Extracting from compound_structures table...")
-                # Try to find the ID column - different ChEMBL versions use different names
-                cursor.execute("PRAGMA table_info(compound_structures);")
-                columns = [col[1] for col in cursor.fetchall()]
-                id_col = None
-                for col in columns:
-                    if 'chembl' in col.lower() or 'id' in col.lower():
-                        id_col = col
-                        break
+                    # Reset for next compound
+                    current_compound = {'names': set(), 'role': None}
+                    expect_value = False
+                    current_tag = None
+                    continue
                 
-                if id_col:
-                    cursor.execute(f"SELECT {id_col} FROM compound_structures")
-                    struct_count = 0
-                    for row in cursor.fetchall():
-                        if row[0] and isinstance(row[0], str):
-                            name = row[0].strip().upper()
-                            if len(name) >= 3 and name not in names:
-                                names.add(name)
-                                struct_count += 1
-                    logger.info(f"  Added {struct_count} names from compound_structures")
-                else:
-                    logger.info("  No ID column found in compound_structures, skipping")
-            
-            logger.info(f"Total unique ChEMBL compound names: {len(names)}")
-            
-            # Save to cache for faster subsequent runs
-            if use_cache:
-                with open(cache_path, 'w', encoding='utf-8') as f:
-                    for name in sorted(names):
-                        f.write(name + '\n')
-                logger.info(f"Saved ChEMBL compound names cache to {cache_path}")
-            
-            return names
-            
-        finally:
-            if 'conn' in locals():
-                conn.close()
-            if temp_dir and Path(temp_dir).exists():
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                # Skip empty lines
+                if not line.strip():
+                    continue
+                
+                # Property tag line
+                if line.startswith('>') and '<' in line:
+                    # Extract tag name
+                    tag_match = re.search(r'\>(\s*)<([^>]+)>', line)
+                    if tag_match:
+                        current_tag = tag_match.group(2).strip()
+                        expect_value = True
+                    continue
+                
+                # Property value line (immediately after tag)
+                if expect_value and current_tag:
+                    value = line.strip()
+                    
+                    # Store role
+                    if current_tag in ['CHEBML_ROLE', 'Role']:
+                        current_compound['role'] = value
+                    
+                    # Store name/synonym
+                    elif current_tag in ['CHEBML_NAME', 'Name', 'IUPAC', 'SYNONYMS', 'ChEBI Name']:
+                        # Handle multi-line values (split by newlines or semicolons)
+                        for v in value.split(';'):
+                            v = v.strip().upper()
+                            if len(v) >= 3:
+                                current_compound['names'].add(v)
+                    
+                    expect_value = False
+                    current_tag = None
+                    continue
+                
+                # If not a tag and not a value, it might be the compound name (first line)
+                if current_tag is None and not current_compound['names']:
+                    current_compound['names'].add(line.strip().upper())
+        
+        # Process the last compound
+        if current_compound.get('role') == 'CHEBI:77746':
+            for name in current_compound['names']:
+                if len(name) >= 3:
+                    names.add(name)
+        
+        logger.info(f"Loaded {len(names)} ChEBI human metabolite names from SDF: {sdf_path}")
+        
+        # Log sample names for debugging
+        if len(names) > 0:
+            sample_names = list(names)[:10]
+            logger.info(f"Sample ChEBI human metabolite names: {sample_names}{'...' if len(names) > 10 else ''}")
+        
+        return names
         
     except Exception as e:
-        logger.error(f"Failed to load ChEMBL names from SQLite {sqlite_path}: {e}")
+        logger.error(f"Failed to load ChEBI names from SDF {sdf_path}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         return set()
 
 
-def _filter_out_chembl_features(
+def _filter_features_by_chebi_names(
     features: pd.DataFrame,
-    chembl_names: set,
+    chebi_names: set,
 ) -> pd.DataFrame:
     """
-    Filter out feature columns that match ChEMBL compound names.
+    Filter feature columns to keep ONLY those that match ChEBI human metabolite names.
     
-    Removes any features whose column names EXACTLY match (case-insensitive)
-    ChEMBL compound names or IDs.
-    
-    HMDB features are ALWAYS kept, even if they match ChEMBL names,
-    to preserve endogenous metabolites that may also appear in ChEMBL.
+    This is the INVERSE of the ChEMBL filtering - we KEEP matches, not remove them.
     
     Args:
         features: DataFrame with feature columns
-        chembl_names: Set of ChEMBL compound names (uppercase)
+        chebi_names: Set of ChEBI human metabolite names (uppercase)
         
     Returns:
-        Filtered DataFrame with ChEMBL features removed
+        Filtered DataFrame with only ChEBI human metabolite features
     """
-    if not chembl_names:
-        logger.warning("No ChEMBL names provided. Returning all features.")
+    if not chebi_names:
+        logger.warning("No ChEBI names provided. Returning all features.")
         return features
     
-    original_cols = set(features.columns)
-    
-    # Find columns that DO NOT exactly match any ChEMBL name
-    # EXCEPT: always keep columns containing 'HMDB' (endogenous metabolites)
-    non_chembl_columns = []
-    removed_cols_with_matches = []
+    # Find columns that match any ChEBI human metabolite name (case-insensitive)
+    kept_columns = []
+    removed_count = 0
     
     for col in features.columns:
         col_upper = str(col).upper()
         
-        # Always keep HMDB features regardless of ChEMBL match
-        if 'HMDB' in col_upper:
-            non_chembl_columns.append(col)
-            continue
-        
-        # Check if this column EXACTLY matches any ChEMBL name
-        is_chembl = False
-        matching_name = None
-        
-        for name in chembl_names:
-            # Skip very short names that cause false positives (3 chars or less)
-            if len(name) <= 3:
-                continue
-            
-            # Exact match only (case-insensitive)
-            if col_upper == name:
-                is_chembl = True
-                matching_name = name
+        # Check for exact match
+        matched = False
+        for name in chebi_names:
+            if len(name) > 3 and col_upper == name:
+                matched = True
                 break
         
-        if is_chembl:
-            removed_cols_with_matches.append((col, matching_name))
+        if matched:
+            kept_columns.append(col)
         else:
-            non_chembl_columns.append(col)
+            removed_count += 1
     
-    filtered_features = features[non_chembl_columns]
+    filtered_features = features[kept_columns]
     
-    n_removed = len(original_cols) - len(non_chembl_columns)
-    logger.info(f"Filtered out ChEMBL features: {n_removed} ChEMBL features removed, {len(non_chembl_columns)} non-ChEMBL features retained")
+    n_kept = len(kept_columns)
+    logger.info(f"Filtered features by ChEBI human metabolites: {removed_count} removed, {n_kept} ChEBI human metabolite features kept")
     
-    if n_removed > 0:
-        removed_cols = list(original_cols - set(non_chembl_columns))[:10]
-        logger.info(f"Example removed ChEMBL features: {removed_cols}{'...' if n_removed > 10 else ''}")
-        
-        # Log matching details for debugging
-        if n_removed <= 50:
-            for col, match in removed_cols_with_matches[:10]:
-                logger.info(f"  Removed '{col}' -> matched ChEMBL name: '{match}'")
-        else:
-            # Sample and show
-            import random
-            sample = random.sample(removed_cols_with_matches, min(10, len(removed_cols_with_matches)))
-            for col, match in sample:
-                logger.info(f"  Removed '{col}' -> matched ChEMBL name: '{match}'")
+    if n_kept > 0:
+        kept_sample = kept_columns[:10]
+        logger.info(f"Example kept features: {kept_sample}{'...' if n_kept > 10 else ''}")
     
     return filtered_features
 
@@ -321,19 +180,18 @@ def load_data(
     input_file: str,
     non_feature_columns: List[str],
     patient_id_column: Optional[str] = None,
-    filter_chembl: bool = False,
-    chembl_sqlite_file: Optional[str] = None,
-    use_chembl_cache: bool = True,
+    filter_chebi_human_metabolites: bool = False,
+    chebi_sdf_file: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
-    Load data from CSV file and optionally filter out ChEMBL features.
+    Load data from CSV file and optionally filter features to ChEBI human metabolites.
 
     Args:
         input_file: Path to CSV file
         non_feature_columns: List of column names that are NOT features
         patient_id_column: Column name for patient IDs (if not index)
-        filter_chembl: Whether to filter out features matching ChEMBL compounds
-        chembl_sqlite_file: Path to ChEMBL SQLite database file or .tar.gz archive
+        filter_chebi_human_metabolites: Whether to filter features to keep only ChEBI human metabolites
+        chebi_sdf_file: Path to ChEBI SDF file with role information
 
     Returns:
         Tuple of:
@@ -385,14 +243,14 @@ def load_data(
     feature_cols = [col for col in df.columns if col not in non_feature_columns]
     features = df[feature_cols]
 
-    # Filter out ChEMBL features if requested
-    if filter_chembl and chembl_sqlite_file:
-        logger.info(f"Using ChEMBL SQLite database: {chembl_sqlite_file}")
-        chembl_names = _load_chembl_compound_names_from_sqlite(chembl_sqlite_file, use_cache=use_chembl_cache)
-        if chembl_names:
-            features = _filter_out_chembl_features(features, chembl_names)
-    elif filter_chembl:
-        logger.warning("ChEMBL filtering requested but no chembl_sqlite_file provided. Set chembl_sqlite_file in config.")
+    # Filter features to keep only ChEBI human metabolites if requested
+    if filter_chebi_human_metabolites and chebi_sdf_file:
+        logger.info(f"Filtering features to keep only ChEBI human metabolites from: {chebi_sdf_file}")
+        chebi_names = _load_chebi_human_metabolite_names(chebi_sdf_file)
+        if chebi_names:
+            features = _filter_features_by_chebi_names(features, chebi_names)
+    elif filter_chebi_human_metabolites:
+        logger.warning("ChEBI human metabolite filtering requested but no chebi_sdf_file provided. Set chebi_sdf_file in config.")
 
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")

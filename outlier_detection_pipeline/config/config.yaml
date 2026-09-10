@@ -19,34 +19,13 @@ non_feature_columns:
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
-# ChEMBL filtering (via SQLite database with auto-caching)
-filter_chembl: false  # Filter out features matching ChEMBL compounds
-chembl_sqlite_file: null  # Path to ChEMBL SQLite database file or .tar.gz archive (e.g., "data/chembl_37_sqlite.tar.gz")
-use_chembl_cache: true  # Cache extracted names to ~/.cache/chembl_metabolomics/chembl_names.txt for faster subsequent runs
+# ChEBI filtering - keep only human metabolite features
+filter_chebi_human_metabolites: false  # Filter features to keep only ChEBI human metabolites (role: CHEBI:77746)
+chebi_sdf_file: null  # Path to ChEBI SDF file (e.g., "data/chebi.sdf")
 
 # Outlier analysis
 use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis
 log_iqr_feature_filter: null  # Filter features for analysis. Options: null (no filter), 'hmdb', or custom string/list
-
-# Classification values
-normal_classification: 0    # Samples with this classification are used for training
-outlier_classifications:    # Other classifications are split between val/test
-  - 1
-  - 2
-  - 3
-
-# ============================================================================
-# Data Splitting
-# ============================================================================
-# Stratified train-test split (maintains class distribution)
-# Train set: 80% of all samples (normal + abnormal)
-# Test set: 20% of all samples (normal + abnormal)
-# During CV: train on normal samples only, validate on full folds (normal + abnormal)
-train_ratio: 0.8           # 80% for training (stratified)
-test_ratio: 0.2            # 20% for test
-
-# Random seed for reproducibility
-random_seed: 42
 
 # ============================================================================
 # Sparse PCA for Dimensionality Reduction
@@ -111,13 +90,6 @@ optuna_sampler: tpe       # Sampler type: 'tpe', 'random', 'cmaes'
 optuna_pruner: median      # Pruner type: 'median', 'halving', or null for no pruning
 optuna_storage_url: null   # Storage URL for Optuna study (e.g., 'sqlite:///optuna.db')
 optuna_study_name: null    # Name for Optuna study (null = auto-generated)
-# Example custom grid:
-# param_grid:
-#   n_estimators: [50, 100, 200]
-#   max_samples: ['auto', 0.5, 0.8]
-#   max_features: [0.5, 0.8, 1.0]
-#   contamination: ['auto']
-#   bootstrap: [false, true]
 
 # ============================================================================
 # Evaluation Metrics

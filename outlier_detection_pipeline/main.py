@@ -596,17 +596,17 @@ def run_pipeline(
 
     non_feature_cols = config.get_list('non_feature_columns', ['Oordeel targeted', 'Classification'])
     patient_id_col = config.get('patient_id_column', None)
-    filter_chembl = config.get('filter_chembl', False)
-    chembl_sqlite_file = config.get('chembl_sqlite_file', None)
-    use_chembl_cache = config.get('use_chembl_cache', True)
+    filter_chebi_human_metabolites = config.get('filter_chebi_human_metabolites', False)
+    
+    chebi_sdf_file = config.get('chebi_sdf_file', None)
 
     features, classification, oordeel = load_data(
         input_file=input_file,
         non_feature_columns=non_feature_cols,
         patient_id_column=patient_id_col,
-        filter_chembl=filter_chembl,
-        chembl_sqlite_file=chembl_sqlite_file,
-        use_chembl_cache=use_chembl_cache,
+        filter_chebi_human_metabolites=filter_chebi_human_metabolites,
+        chebi_sdf_file=chebi_sdf_file,
+        
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)
