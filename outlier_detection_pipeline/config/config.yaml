@@ -19,10 +19,11 @@ non_feature_columns:
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
-# ChEMBL filtering (via API)
+# ChEMBL filtering (via API or local file)
 filter_chembl: false  # Filter out features matching ChEMBL compounds
 use_chembl_cache: true  # Use cached ChEMBL data to avoid re-fetching from API
-use_chembl_api: true  # Must be True - uses ChEMBL API to fetch compound names
+use_chembl_api: true  # Use ChEMBL API to fetch compound names
+chembl_names_file: null  # Optional path to local TXT file with ChEMBL compound names (one per line) - used as fallback if API fails
 
 # Outlier analysis
 use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis

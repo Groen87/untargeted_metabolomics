@@ -599,6 +599,7 @@ def run_pipeline(
     filter_chembl = config.get('filter_chembl', False)
     use_chembl_cache = config.get('use_chembl_cache', True)
     use_chembl_api = config.get('use_chembl_api', True)
+    chembl_names_file = config.get('chembl_names_file', None)
 
     features, classification, oordeel = load_data(
         input_file=input_file,
@@ -607,6 +608,7 @@ def run_pipeline(
         filter_chembl=filter_chembl,
         use_chembl_cache=use_chembl_cache,
         use_chembl_api=use_chembl_api,
+        chembl_names_file=chembl_names_file,
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)

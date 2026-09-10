@@ -34,12 +34,61 @@ def _get_chembl_cache_path() -> Path:
     return cache_dir / "chembl_api_names.pkl"
 
 
-def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
+def _load_chembl_compound_names_from_file(file_path: str) -> set:
+    """
+    Load compound names from a local TXT file.
+    
+    Expected format: one compound name per line.
+    Empty lines and lines starting with # are skipped.
+    Names are normalized to uppercase.
+    
+    Args:
+        file_path: Path to the TXT file containing compound names
+        
+    Returns:
+        Set of compound names (uppercase)
+    """
+    try:
+        path = Path(file_path)
+        if not path.exists():
+            logger.error(f"ChEMBL names file not found: {file_path}")
+            return set()
+        
+        compound_names = set()
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                # Normalize to uppercase
+                name = line.upper()
+                if len(name) >= 3:
+                    compound_names.add(name)
+        
+        logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from file: {file_path}")
+        
+        # Log sample names for debugging
+        if len(compound_names) > 0:
+            sample_names = list(compound_names)[:10]
+            logger.info(f"Sample ChEMBL names from file: {sample_names}{'...' if len(compound_names) > 10 else ''}")
+        
+        return compound_names
+        
+    except Exception as e:
+        logger.error(f"Failed to load ChEMBL names from file {file_path}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return set()
+
+
+def _load_chembl_compound_names_from_api(use_cache: bool = True, names_file: Optional[str] = None) -> set:
     """
     Load compound names from ChEMBL API.
     
     Uses the ChEMBL web resource client to fetch all compound names.
     Falls back to requests if chembl_webresource_client is not available.
+    Falls back to local file if API fails and file is provided.
     
     Extracts:
     - ChEMBL IDs
@@ -48,6 +97,7 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
     
     Args:
         use_cache: Whether to use cached results if available
+        names_file: Optional path to local TXT file with compound names (fallback)
         
     Returns:
         Set of compound names and IDs (normalized to uppercase)
@@ -210,6 +260,12 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
         logger.error(f"Failed to load ChEMBL names from API: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Fall back to local file if provided
+        if names_file:
+            logger.info(f"Falling back to local ChEMBL names file: {names_file}")
+            return _load_chembl_compound_names_from_file(names_file)
+        
         return set()
 
 
@@ -302,6 +358,7 @@ def load_data(
     filter_chembl: bool = False,
     use_chembl_cache: bool = True,
     use_chembl_api: bool = True,
+    chembl_names_file: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter out ChEMBL features.
@@ -367,11 +424,16 @@ def load_data(
     # Filter out ChEMBL features if requested
     if filter_chembl and use_chembl_api:
         logger.info("Using ChEMBL API to fetch compound names...")
-        chembl_names = _load_chembl_compound_names_from_api(use_cache=use_chembl_cache)
+        chembl_names = _load_chembl_compound_names_from_api(use_cache=use_chembl_cache, names_file=chembl_names_file)
+        if chembl_names:
+            features = _filter_out_chembl_features(features, chembl_names)
+    elif filter_chembl and chembl_names_file:
+        logger.info(f"Using local ChEMBL names file: {chembl_names_file}")
+        chembl_names = _load_chembl_compound_names_from_file(chembl_names_file)
         if chembl_names:
             features = _filter_out_chembl_features(features, chembl_names)
     elif filter_chembl:
-        logger.warning("ChEMBL filtering requested but use_chembl_api is False. Set use_chembl_api: true in config.")
+        logger.warning("ChEMBL filtering requested but use_chembl_api is False and no chembl_names_file provided. Set use_chembl_api: true or provide chembl_names_file in config.")
 
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
