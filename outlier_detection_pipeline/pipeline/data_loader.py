@@ -90,7 +90,7 @@ def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set
                 # This is the FIRST line of a record
                 if line and not line.startswith('>') and not line.startswith('$'):
                     # Check if this looks like an atom line (starts with number or coordinate pattern)
-                    if line[0].isdigit() or re.match(r'^[\d\s.-]+$', line[:20]):
+                    if line and (line[0].isdigit() or re.match(r'^[\d\s.-]+$', line[:20])):
                         # This is an atom/bond line, skip
                         continue
                     
@@ -98,41 +98,54 @@ def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set
                     current_name = line.strip()
                     current_chembl_id = None
                     
-                    # Add the compound name if reasonable length
+                    # Add the compound name if reasonable length and looks like a real name
+                    # (not just an ID like CHEMBL123456)
                     if current_name and len(current_name) >= 3:
-                        compound_names.add(current_name)
+                        # Only add if it contains at least one letter (not just numbers/dashes)
+                        if re.search(r'[a-zA-Z]', current_name):
+                            compound_names.add(current_name)
                     
                     continue
                 
                 # Property section starts with >
                 if line.startswith('>'):
-                    prop_name = line[1:].strip().upper()
+                    prop_name = line[1:].strip()
+                    
+                    # Normalize property name for comparison
+                    prop_name_upper = prop_name.upper()
                     
                     # Extract compound names from various property fields
+                    # Try multiple possible field name formats
                     name_tags = [
                         '<PREF_NAME>', 'PREF_NAME',
+                        '<PREFERRED_NAME>', 'PREFERRED_NAME',
                         '<GENERIC_NAME>', 'GENERIC_NAME',
                         '<MOLECULE_TYPE>', 'MOLECULE_TYPE',
                         '<COMPOUND_NAME>', 'COMPOUND_NAME',
                         '<NAME>', 'NAME',
                         '<TITLE>', 'TITLE',
+                        '<COMMON_NAME>', 'COMMON_NAME',
+                        '<TRADITIONAL_NAME>', 'TRADITIONAL_NAME',
                     ]
                     
-                    if prop_name in name_tags:
+                    # Check if this is a name field
+                    is_name_field = any(tag in prop_name_upper for tag in name_tags)
+                    
+                    if is_name_field:
                         # Next line contains the name
                         name_line = next(f, '').strip()
                         if name_line and len(name_line) >= 3:
                             compound_names.add(name_line)
                     
-                    elif prop_name == '<CHEMBL_ID>' or prop_name == 'CHEMBL_ID':
-                        # Next line contains the ChEMBL ID
+                    elif prop_name_upper == '<CHEMBL_ID>' or prop_name_upper == 'CHEMBL_ID':
+                        # Next line contains the ChEMBL ID - we still want this for matching
                         chembl_id_line = next(f, '').strip()
                         if chembl_id_line and len(chembl_id_line) >= 3:
                             current_chembl_id = chembl_id_line
-                            # Also add CHEMBL ID as it might be used in feature names
+                            # Add CHEMBL ID to match against features that use CHEMBL IDs
                             compound_names.add(chembl_id_line)
                     
-                    elif prop_name == 'SYNONYMS':
+                    elif prop_name_upper == 'SYNONYMS':
                         # Read synonyms - next line contains them
                         synonyms_line = next(f, '').strip()
                         if synonyms_line:
@@ -140,12 +153,25 @@ def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set
                             synonyms = re.split(r'[;,]', synonyms_line)
                             for syn in synonyms:
                                 syn = syn.strip()
-                                if syn and len(syn) >= 3:
+                                if syn and len(syn) >= 3 and re.search(r'[a-zA-Z]', syn):
                                     compound_names.add(syn)
                     
-                    elif prop_name == '<CHEMBL_COMPOUND>':
+                    elif prop_name_upper == '<CHEMBL_COMPOUND>':
                         # Some SDF files have this
                         pass
+                    
+                    # Also try to read ALL property values that look like names
+                    # Sometimes ChEMBL uses non-standard field names
+                    elif not is_name_field and prop_name_upper not in ['<CHEMBL_ID>', 'CHEMBL_ID', 'SYNONYMS', '<CHEMBL_COMPOUND>', 'M  END']:
+                        # Read the value line
+                        try:
+                            value_line = next(f, '').strip()
+                            if value_line and len(value_line) >= 3 and len(value_line) < 100:
+                                # Check if it looks like a chemical name (has letters and reasonable length)
+                                if re.search(r'[a-zA-Z]', value_line) and not re.match(r'^CHEMBL\d+$', value_line):
+                                    compound_names.add(value_line)
+                        except StopIteration:
+                            pass
         
         # Normalize all names to uppercase for case-insensitive matching
         compound_names = {name.upper() for name in compound_names if name and len(name) >= 3}
