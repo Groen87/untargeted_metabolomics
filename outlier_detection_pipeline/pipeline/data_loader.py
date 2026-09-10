@@ -5,6 +5,7 @@ Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
 - Filtering out drug/drug metabolite features from ChEMBL SQLite database
+- Caching ChEMBL compound names to TXT file for faster subsequent runs
 - Splitting data into train/validation/test sets based on Classification
 """
 
@@ -18,11 +19,66 @@ import sqlite3
 import tarfile
 import tempfile
 import shutil
+import hashlib
 
 logger = logging.getLogger(__name__)
 
 
-def _load_chembl_compound_names_from_sqlite(sqlite_path: str) -> set:
+def _get_chembl_cache_path() -> Path:
+    """
+    Get the cache file path for ChEMBL compound names.
+    
+    Returns:
+        Path to the cache TXT file
+    """
+    cache_dir = Path.home() / ".cache" / "chembl_metabolomics"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / "chembl_names.txt"
+
+
+def _load_chembl_compound_names_from_file(file_path: str) -> set:
+    """
+    Load compound names from a local TXT file.
+    
+    Expected format: one compound name per line.
+    Empty lines and lines starting with # are skipped.
+    Names are normalized to uppercase.
+    
+    Args:
+        file_path: Path to the TXT file containing compound names
+        
+    Returns:
+        Set of compound names (uppercase)
+    """
+    try:
+        path = Path(file_path)
+        if not path.exists():
+            logger.error(f"ChEMBL names file not found: {file_path}")
+            return set()
+        
+        compound_names = set()
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                # Skip empty lines and comments
+                if not line or line.startswith('#'):
+                    continue
+                # Normalize to uppercase
+                name = line.upper()
+                if len(name) >= 3:
+                    compound_names.add(name)
+        
+        logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from file: {file_path}")
+        return compound_names
+        
+    except Exception as e:
+        logger.error(f"Failed to load ChEMBL names from file {file_path}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return set()
+
+
+def _load_chembl_compound_names_from_sqlite(sqlite_path: str, use_cache: bool = True) -> set:
     """
     Load compound names directly from ChEMBL SQLite database.
     
@@ -36,6 +92,12 @@ def _load_chembl_compound_names_from_sqlite(sqlite_path: str) -> set:
         Set of compound names (uppercase)
     """
     try:
+        # Try to load from cache first
+        cache_path = _get_chembl_cache_path()
+        if use_cache and cache_path.exists():
+            logger.info(f"Loading ChEMBL names from cache: {cache_path}")
+            return _load_chembl_compound_names_from_file(str(cache_path))
+        
         path = Path(sqlite_path)
         if not path.exists():
             logger.error(f"ChEMBL SQLite file not found: {sqlite_path}")
@@ -150,6 +212,14 @@ def _load_chembl_compound_names_from_sqlite(sqlite_path: str) -> set:
                     logger.info("  No ID column found in compound_structures, skipping")
             
             logger.info(f"Total unique ChEMBL compound names: {len(names)}")
+            
+            # Save to cache for faster subsequent runs
+            if use_cache:
+                with open(cache_path, 'w', encoding='utf-8') as f:
+                    for name in sorted(names):
+                        f.write(name + '\n')
+                logger.info(f"Saved ChEMBL compound names cache to {cache_path}")
+            
             return names
             
         finally:
@@ -253,6 +323,7 @@ def load_data(
     patient_id_column: Optional[str] = None,
     filter_chembl: bool = False,
     chembl_sqlite_file: Optional[str] = None,
+    use_chembl_cache: bool = True,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter out ChEMBL features.
@@ -317,7 +388,7 @@ def load_data(
     # Filter out ChEMBL features if requested
     if filter_chembl and chembl_sqlite_file:
         logger.info(f"Using ChEMBL SQLite database: {chembl_sqlite_file}")
-        chembl_names = _load_chembl_compound_names_from_sqlite(chembl_sqlite_file)
+        chembl_names = _load_chembl_compound_names_from_sqlite(chembl_sqlite_file, use_cache=use_chembl_cache)
         if chembl_names:
             features = _filter_out_chembl_features(features, chembl_names)
     elif filter_chembl:

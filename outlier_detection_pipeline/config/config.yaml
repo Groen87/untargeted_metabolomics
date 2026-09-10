@@ -19,9 +19,10 @@ non_feature_columns:
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
-# ChEMBL filtering (via SQLite database)
+# ChEMBL filtering (via SQLite database with auto-caching)
 filter_chembl: false  # Filter out features matching ChEMBL compounds
 chembl_sqlite_file: null  # Path to ChEMBL SQLite database file or .tar.gz archive (e.g., "data/chembl_37_sqlite.tar.gz")
+use_chembl_cache: true  # Cache extracted names to ~/.cache/chembl_metabolomics/chembl_names.txt for faster subsequent runs
 
 # Outlier analysis
 use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis

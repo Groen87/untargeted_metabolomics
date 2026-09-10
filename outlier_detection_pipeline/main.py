@@ -598,6 +598,7 @@ def run_pipeline(
     patient_id_col = config.get('patient_id_column', None)
     filter_chembl = config.get('filter_chembl', False)
     chembl_sqlite_file = config.get('chembl_sqlite_file', None)
+    use_chembl_cache = config.get('use_chembl_cache', True)
 
     features, classification, oordeel = load_data(
         input_file=input_file,
@@ -605,6 +606,7 @@ def run_pipeline(
         patient_id_column=patient_id_col,
         filter_chembl=filter_chembl,
         chembl_sqlite_file=chembl_sqlite_file,
+        use_chembl_cache=use_chembl_cache,
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)
