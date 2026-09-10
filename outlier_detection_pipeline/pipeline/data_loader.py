@@ -124,18 +124,30 @@ def _load_chembl_compound_names_from_sqlite(sqlite_path: str) -> set:
                                 syn_count += 1
                 logger.info(f"  Added {syn_count} names from synonyms")
             
-            # Additional: compound_structures
+            # Additional: compound_structures (try different column names)
             if 'compound_structures' in tables:
                 logger.info("Extracting from compound_structures table...")
-                cursor.execute("SELECT chembl_id FROM compound_structures")
-                struct_count = 0
-                for row in cursor.fetchall():
-                    if row[0] and isinstance(row[0], str):
-                        name = row[0].strip().upper()
-                        if len(name) >= 3 and name not in names:
-                            names.add(name)
-                            struct_count += 1
-                logger.info(f"  Added {struct_count} names from compound_structures")
+                # Try to find the ID column - different ChEMBL versions use different names
+                cursor.execute("PRAGMA table_info(compound_structures);")
+                columns = [col[1] for col in cursor.fetchall()]
+                id_col = None
+                for col in columns:
+                    if 'chembl' in col.lower() or 'id' in col.lower():
+                        id_col = col
+                        break
+                
+                if id_col:
+                    cursor.execute(f"SELECT {id_col} FROM compound_structures")
+                    struct_count = 0
+                    for row in cursor.fetchall():
+                        if row[0] and isinstance(row[0], str):
+                            name = row[0].strip().upper()
+                            if len(name) >= 3 and name not in names:
+                                names.add(name)
+                                struct_count += 1
+                    logger.info(f"  Added {struct_count} names from compound_structures")
+                else:
+                    logger.info("  No ID column found in compound_structures, skipping")
             
             logger.info(f"Total unique ChEMBL compound names: {len(names)}")
             return names
