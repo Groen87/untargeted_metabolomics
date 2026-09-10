@@ -24,8 +24,9 @@ filter_drugs: false  # Filter out features matching DrugBank drugs/drug metaboli
 use_drugbank_cache: true  # Use cached DrugBank data to avoid re-parsing XML file
 drugbank_file: "data/drugbank.xml"  # Path to DrugBank XML file
 
-# Log IQR analysis
-log_iqr_feature_filter: null  # Filter features for IQR analysis. Options: null (no filter), 'hmdb', or custom string/list
+# Outlier analysis
+use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis
+log_iqr_feature_filter: null  # Filter features for analysis. Options: null (no filter), 'hmdb', or custom string/list
 
 # Classification values
 normal_classification: 0    # Samples with this classification are used for training

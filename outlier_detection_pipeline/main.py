@@ -47,6 +47,9 @@ from outlier_detection_pipeline.pipeline.evaluation import (
     plot_precision_recall_curve,
 )
 from outlier_detection_pipeline.pipeline.outlier_analysis import (
+    analyze_outliers,
+    plot_outlier_analysis,
+    save_outlier_analysis_results,
     analyze_outliers_log_iqr,
     plot_outlier_log_iqr,
     save_outlier_log_iqr_results,
@@ -480,13 +483,22 @@ def _save_outputs(
     outlier_mask = (test_preds == -1)
     outlier_indices = list(X_test.index[outlier_mask])
     log_iqr_feature_filter = config.get('log_iqr_feature_filter', None)
+    use_zscore = config.get('use_zscore_analysis', True)
 
     if len(outlier_indices) > 0 and original_features is not None:
-        outlier_analysis = analyze_outliers_log_iqr(
-            original_features, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter
-        )
-        save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
-        plot_outlier_log_iqr(outlier_analysis, original_features, output_dir, n_top=20)
+        if use_zscore:
+            outlier_analysis = analyze_outliers(
+                original_features, outlier_indices, n_top=20, 
+                feature_filter=log_iqr_feature_filter, use_zscore=True
+            )
+            save_outlier_analysis_results(outlier_analysis, output_dir, n_top=20, use_zscore=True)
+            plot_outlier_analysis(outlier_analysis, original_features, output_dir, n_top=20, use_zscore=True)
+        else:
+            outlier_analysis = analyze_outliers_log_iqr(
+                original_features, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter
+            )
+            save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
+            plot_outlier_log_iqr(outlier_analysis, original_features, output_dir, n_top=20)
 
     if save_model:
         model.save(output_dir / "model.joblib")
