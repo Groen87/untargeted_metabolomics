@@ -64,8 +64,16 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
         
         compound_names = set()
         
+        # Configure requests to bypass proxy for EBI domains
+        import os
+        os.environ['NO_PROXY'] = 'www.ebi.ac.uk,ebi.ac.uk,*.ebi.ac.uk'
+        os.environ['no_proxy'] = 'www.ebi.ac.uk,ebi.ac.uk,*.ebi.ac.uk'
+        
         # Try using chembl_webresource_client first
         try:
+            import requests
+            requests.packages.urllib3.disable_warnings()
+            
             from chembl_webresource_client.new_client import new_client
             molecule_client = new_client.molecule
             
@@ -116,6 +124,10 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
             logger.info("chembl_webresource_client not available, trying requests...")
             import requests
             
+            # Configure session to bypass proxy
+            session = requests.Session()
+            session.trust_env = False
+            
             base_url = "https://www.ebi.ac.uk/chembl/api/data/molecule"
             page = 0
             page_size = 1000
@@ -129,7 +141,7 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
                 }
                 
                 try:
-                    response = requests.get(base_url, params=params, timeout=30)
+                    response = session.get(base_url, params=params, timeout=30)
                     response.raise_for_status()
                     data = response.json()
                     
