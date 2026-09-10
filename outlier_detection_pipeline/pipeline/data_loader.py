@@ -76,8 +76,10 @@ def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set
         # First, scan to find all available property tags in this SDF file
         # This helps us understand the structure
         all_prop_tags = set()
+        sample_header_lines = []
         
         with open_func(chembl_file, mode, encoding=encoding) as f:
+            header_count = 0
             for line in f:
                 line = line.strip()
                 if line.startswith('>') and line != '>':
@@ -85,8 +87,14 @@ def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set
                     all_prop_tags.add(tag.upper())
                 elif line == '$$$$':
                     break  # Just scan first record for tags
+                else:
+                    # This might be a header line
+                    if header_count < 5:
+                        sample_header_lines.append(line)
+                        header_count += 1
         
-        logger.info(f"Found property tags in ChEMBL SDF: {sorted(list(all_prop_tags)[:20])}{'...' if len(all_prop_tags) > 20 else ''}")
+        logger.info(f"Found property tags in ChEMBL SDF: {sorted(list(all_prop_tags))}")
+        logger.info(f"Sample header/first lines: {sample_header_lines}")
         
         # Now parse the file properly
         with open_func(chembl_file, mode, encoding=encoding) as f:
