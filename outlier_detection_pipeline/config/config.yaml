@@ -21,8 +21,9 @@ feature_filter: null  # Filter features by substring. Options: null (no filter),
 
 # ChEMBL filtering
 filter_chembl: false  # Filter out features matching ChEMBL compounds
-use_chembl_cache: true  # Use cached ChEMBL data to avoid re-parsing SDF file
-chembl_file: "data/chembl_37.sdf.gz"  # Path to ChEMBL SDF file
+use_chembl_cache: true  # Use cached ChEMBL data to avoid re-fetching from API
+use_chembl_api: false  # Use ChEMBL API (True) instead of SDF file (False) for compound names
+chembl_file: "data/chembl_37.sdf.gz"  # Path to ChEMBL SDF file (used if use_chembl_api=False)
 
 # Outlier analysis
 use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis
