@@ -597,9 +597,6 @@ def run_pipeline(
     non_feature_cols = config.get_list('non_feature_columns', ['Oordeel targeted', 'Classification'])
     patient_id_col = config.get('patient_id_column', None)
     filter_chembl = config.get('filter_chembl', False)
-    use_chembl_cache = config.get('use_chembl_cache', True)
-    use_chembl_api = config.get('use_chembl_api', True)
-    chembl_names_file = config.get('chembl_names_file', None)
     chembl_sqlite_file = config.get('chembl_sqlite_file', None)
 
     features, classification, oordeel = load_data(
@@ -607,9 +604,6 @@ def run_pipeline(
         non_feature_columns=non_feature_cols,
         patient_id_column=patient_id_col,
         filter_chembl=filter_chembl,
-        use_chembl_cache=use_chembl_cache,
-        use_chembl_api=use_chembl_api,
-        chembl_names_file=chembl_names_file,
         chembl_sqlite_file=chembl_sqlite_file,
     )
 

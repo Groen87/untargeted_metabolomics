@@ -4,7 +4,7 @@ Data loading and preprocessing module for outlier detection pipeline.
 Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
-- Filtering out drug/drug metabolite features from ChEMBL API or SQLite database
+- Filtering out drug/drug metabolite features from ChEMBL SQLite database
 - Splitting data into train/validation/test sets based on Classification
 """
 
@@ -14,76 +14,12 @@ from typing import Tuple, Dict, List, Optional
 from sklearn.model_selection import train_test_split
 import logging
 from pathlib import Path
-import pickle
-import hashlib
-import re
-import time
 import sqlite3
 import tarfile
 import tempfile
 import shutil
 
 logger = logging.getLogger(__name__)
-
-
-def _get_chembl_cache_path() -> Path:
-    """
-    Get the cache file path for ChEMBL compound names from API.
-    
-    Returns:
-        Path to the cache pickle file
-    """
-    cache_dir = Path.home() / ".cache" / "chembl_metabolomics"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "chembl_api_names.pkl"
-
-
-def _load_chembl_compound_names_from_file(file_path: str) -> set:
-    """
-    Load compound names from a local TXT file.
-    
-    Expected format: one compound name per line.
-    Empty lines and lines starting with # are skipped.
-    Names are normalized to uppercase.
-    
-    Args:
-        file_path: Path to the TXT file containing compound names
-        
-    Returns:
-        Set of compound names (uppercase)
-    """
-    try:
-        path = Path(file_path)
-        if not path.exists():
-            logger.error(f"ChEMBL names file not found: {file_path}")
-            return set()
-        
-        compound_names = set()
-        with open(path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                # Skip empty lines and comments
-                if not line or line.startswith('#'):
-                    continue
-                # Normalize to uppercase
-                name = line.upper()
-                if len(name) >= 3:
-                    compound_names.add(name)
-        
-        logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from file: {file_path}")
-        
-        # Log sample names for debugging
-        if len(compound_names) > 0:
-            sample_names = list(compound_names)[:10]
-            logger.info(f"Sample ChEMBL names from file: {sample_names}{'...' if len(compound_names) > 10 else ''}")
-        
-        return compound_names
-        
-    except Exception as e:
-        logger.error(f"Failed to load ChEMBL names from file {file_path}: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return set()
 
 
 def _load_chembl_compound_names_from_sqlite(sqlite_path: str) -> set:
@@ -215,209 +151,6 @@ def _load_chembl_compound_names_from_sqlite(sqlite_path: str) -> set:
         return set()
 
 
-def _load_chembl_compound_names_from_api(use_cache: bool = True, names_file: Optional[str] = None, sqlite_file: Optional[str] = None) -> set:
-    """
-    Load compound names from ChEMBL API.
-    
-    Uses the ChEMBL web resource client to fetch all compound names.
-    Falls back to requests if chembl_webresource_client is not available.
-    Falls back to SQLite database if provided.
-    Falls back to local TXT file if API fails and file is provided.
-    
-    Extracts:
-    - ChEMBL IDs
-    - Preferred names (pref_name)
-    - Synonyms
-    
-    Args:
-        use_cache: Whether to use cached results if available
-        names_file: Optional path to local TXT file with compound names (fallback)
-        sqlite_file: Optional path to SQLite database file or .tar.gz archive
-        
-    Returns:
-        Set of compound names and IDs (normalized to uppercase)
-    """
-    # Try SQLite database first if provided
-    if sqlite_file:
-        logger.info(f"Using ChEMBL SQLite database: {sqlite_file}")
-        names = _load_chembl_compound_names_from_sqlite(sqlite_file)
-        if names:
-            return names
-        logger.warning(f"Failed to load from SQLite {sqlite_file}, falling back to API")
-    try:
-        cache_path = _get_chembl_cache_path()
-        
-        # Try to load from cache first
-        if use_cache and cache_path.exists():
-            with open(cache_path, 'rb') as f:
-                compound_names = pickle.load(f)
-            logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from API cache: {cache_path}")
-            return compound_names
-        
-        compound_names = set()
-        
-        # Configure requests to bypass proxy for EBI domains
-        import os
-        os.environ['NO_PROXY'] = 'www.ebi.ac.uk,ebi.ac.uk,*.ebi.ac.uk'
-        os.environ['no_proxy'] = 'www.ebi.ac.uk,ebi.ac.uk,*.ebi.ac.uk'
-        
-        # Try using chembl_webresource_client first
-        try:
-            import requests
-            requests.packages.urllib3.disable_warnings()
-            
-            from chembl_webresource_client.new_client import new_client
-            molecule_client = new_client.molecule
-            
-            logger.info("Fetching ChEMBL compound names from API...")
-            
-            # Fetch all molecules with names in batches
-            batch_size = 1000
-            total_fetched = 0
-            
-            # Get all molecules with pref_name not null
-            all_molecules = molecule_client.filter(pref_name__isnull=False).only(['chembl_id', 'pref_name', 'synonyms'])
-            
-            for mol in all_molecules:
-                if mol.get('chembl_id'):
-                    chembl_id = mol['chembl_id']
-                    compound_names.add(chembl_id.upper())
-                    
-                if mol.get('pref_name'):
-                    pref_name = mol['pref_name']
-                    if pref_name and len(pref_name) >= 3:
-                        compound_names.add(pref_name.upper())
-                    
-                if mol.get('synonyms'):
-                    synonyms = mol['synonyms']
-                    if isinstance(synonyms, str):
-                        # Split by semicolon, comma, or pipe
-                        syn_list = re.split(r'[;,|]', synonyms)
-                        for syn in syn_list:
-                            syn = syn.strip().upper()
-                            if syn and len(syn) >= 3:
-                                compound_names.add(syn)
-                
-                total_fetched += 1
-                
-                # Log progress every 1000 molecules
-                if total_fetched % 1000 == 0:
-                    logger.info(f"Fetched {total_fetched} molecules from ChEMBL API...")
-                
-                # Safety limit
-                if total_fetched > 2000000:  # 2M compounds max
-                    logger.warning(f"Hit safety limit of 2M compounds. Stopping.")
-                    break
-            
-            logger.info(f"Fetched {total_fetched} total molecules from ChEMBL API")
-            
-        except ImportError:
-            # Try using requests directly
-            logger.info("chembl_webresource_client not available, trying requests...")
-            import requests
-            
-            # Configure session to bypass proxy
-            session = requests.Session()
-            session.trust_env = False
-            
-            base_url = "https://www.ebi.ac.uk/chembl/api/data/molecule"
-            page = 0
-            page_size = 1000
-            total_fetched = 0
-            
-            while True:
-                params = {
-                    'format': 'json',
-                    'limit': page_size,
-                    'offset': page * page_size,
-                }
-                
-                try:
-                    response = session.get(base_url, params=params, timeout=30)
-                    response.raise_for_status()
-                    data = response.json()
-                    
-                    if not data.get('molecules'):
-                        break
-                    
-                    molecules = data['molecules']
-                    for mol in molecules:
-                        if mol.get('chembl_id'):
-                            chembl_id = mol['chembl_id']
-                            compound_names.add(chembl_id.upper())
-                            
-                        if mol.get('pref_name'):
-                            pref_name = mol['pref_name']
-                            if pref_name and len(pref_name) >= 3:
-                                compound_names.add(pref_name.upper())
-                        
-                        if mol.get('synonyms'):
-                            synonyms = mol['synonyms']
-                            if isinstance(synonyms, str):
-                                syn_list = re.split(r'[;,|]', synonyms)
-                                for syn in syn_list:
-                                    syn = syn.strip().upper()
-                                    if syn and len(syn) >= 3:
-                                        compound_names.add(syn)
-                    
-                    total_fetched += len(molecules)
-                    page += 1
-                    logger.info(f"Fetched page {page}: {len(molecules)} molecules, total: {total_fetched}")
-                    
-                    # Rate limiting
-                    time.sleep(0.5)
-                    
-                    # Safety limit
-                    if total_fetched > 2000000:
-                        break
-                        
-                except requests.exceptions.RequestException as e:
-                    logger.error(f"API request failed: {e}")
-                    break
-        
-        # Filter out very short names
-        filtered_names = set()
-        for name in compound_names:
-            if len(name) >= 3:
-                filtered_names.add(name)
-        
-        compound_names = filtered_names
-        
-        # Save to cache
-        if use_cache:
-            with open(cache_path, 'wb') as f:
-                pickle.dump(compound_names, f)
-            logger.info(f"Saved ChEMBL compound names cache to {cache_path}")
-        
-        logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from API")
-        
-        # Log some sample names for debugging
-        if len(compound_names) > 0:
-            sample_names = list(compound_names)[:10]
-            logger.info(f"Sample ChEMBL names from API: {sample_names}{'...' if len(compound_names) > 10 else ''}")
-        
-        return compound_names
-        
-    except Exception as e:
-        logger.error(f"Failed to load ChEMBL names from API: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        # Fall back to SQLite if provided
-        if sqlite_file:
-            logger.info(f"Falling back to ChEMBL SQLite database: {sqlite_file}")
-            names = _load_chembl_compound_names_from_sqlite(sqlite_file)
-            if names:
-                return names
-        
-        # Fall back to local file if provided
-        if names_file:
-            logger.info(f"Falling back to local ChEMBL names file: {names_file}")
-            return _load_chembl_compound_names_from_file(names_file)
-        
-        return set()
-
-
 def _filter_out_chembl_features(
     features: pd.DataFrame,
     chembl_names: set,
@@ -505,9 +238,6 @@ def load_data(
     non_feature_columns: List[str],
     patient_id_column: Optional[str] = None,
     filter_chembl: bool = False,
-    use_chembl_cache: bool = True,
-    use_chembl_api: bool = True,
-    chembl_names_file: Optional[str] = None,
     chembl_sqlite_file: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
@@ -518,8 +248,7 @@ def load_data(
         non_feature_columns: List of column names that are NOT features
         patient_id_column: Column name for patient IDs (if not index)
         filter_chembl: Whether to filter out features matching ChEMBL compounds
-        use_chembl_cache: Whether to use cached ChEMBL data if available
-        use_chembl_api: Whether to use ChEMBL API (must be True)
+        chembl_sqlite_file: Path to ChEMBL SQLite database file or .tar.gz archive
 
     Returns:
         Tuple of:
@@ -577,18 +306,8 @@ def load_data(
         chembl_names = _load_chembl_compound_names_from_sqlite(chembl_sqlite_file)
         if chembl_names:
             features = _filter_out_chembl_features(features, chembl_names)
-    elif filter_chembl and use_chembl_api:
-        logger.info("Using ChEMBL API to fetch compound names...")
-        chembl_names = _load_chembl_compound_names_from_api(use_cache=use_chembl_cache, names_file=chembl_names_file, sqlite_file=chembl_sqlite_file)
-        if chembl_names:
-            features = _filter_out_chembl_features(features, chembl_names)
-    elif filter_chembl and chembl_names_file:
-        logger.info(f"Using local ChEMBL names file: {chembl_names_file}")
-        chembl_names = _load_chembl_compound_names_from_file(chembl_names_file)
-        if chembl_names:
-            features = _filter_out_chembl_features(features, chembl_names)
     elif filter_chembl:
-        logger.warning("ChEMBL filtering requested but no method specified. Set use_chembl_api: true, provide chembl_sqlite_file, or chembl_names_file in config.")
+        logger.warning("ChEMBL filtering requested but no chembl_sqlite_file provided. Set chembl_sqlite_file in config.")
 
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
