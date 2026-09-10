@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 from outlier_detection_pipeline.config.config import Config
-from outlier_detection_pipeline.pipeline.data_loader import load_data, split_data
+from outlier_detection_pipeline.pipeline.data_loader import load_data, split_data, get_class_distribution
 from outlier_detection_pipeline.pipeline.model import ExtendedIsolationForestModel
 from outlier_detection_pipeline.pipeline.pca import SparsePCAWrapper
 from outlier_detection_pipeline.pipeline.evaluation import (
@@ -596,17 +596,17 @@ def run_pipeline(
 
     non_feature_cols = config.get_list('non_feature_columns', ['Oordeel targeted', 'Classification'])
     patient_id_col = config.get('patient_id_column', None)
-    filter_drugs = config.get('filter_drugs', False)
-    use_drugbank_cache = config.get('use_drugbank_cache', True)
-    drugbank_file = config.get('drugbank_file', None)
+    filter_chembl = config.get('filter_chembl', False)
+    use_chembl_cache = config.get('use_chembl_cache', True)
+    chembl_file = config.get('chembl_file', None)
 
     features, classification, oordeel = load_data(
         input_file=input_file,
         non_feature_columns=non_feature_cols,
         patient_id_column=patient_id_col,
-        drugbank_file=drugbank_file,
-        filter_drugs=filter_drugs,
-        use_drugbank_cache=use_drugbank_cache,
+        chembl_file=chembl_file,
+        filter_chembl=filter_chembl,
+        use_chembl_cache=use_chembl_cache,
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)

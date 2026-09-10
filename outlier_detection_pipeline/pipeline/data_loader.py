@@ -4,7 +4,7 @@ Data loading and preprocessing module for outlier detection pipeline.
 Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
-- Filtering out drug/drug metabolite features from DrugBank XML
+- Filtering out drug/drug metabolite features from ChEMBL SDF
 - Splitting data into train/validation/test sets based on Classification
 """
 
@@ -13,253 +13,222 @@ import numpy as np
 from typing import Tuple, Dict, List, Optional
 from sklearn.model_selection import train_test_split
 import logging
-import xml.etree.ElementTree as ET
+import gzip
 from pathlib import Path
 import pickle
 import hashlib
+import re
 
 logger = logging.getLogger(__name__)
 
 
-def _get_drugbank_cache_path(drugbank_file: str) -> Path:
+def _get_chembl_cache_path(chembl_file: str) -> Path:
     """
-    Get the cache file path for a given DrugBank file.
+    Get the cache file path for a given ChEMBL file.
     
     Args:
-        drugbank_file: Path to DrugBank XML file
+        chembl_file: Path to ChEMBL SDF file
         
     Returns:
         Path to the cache pickle file
     """
-    cache_dir = Path.home() / ".cache" / "drugbank_metabolomics"
+    cache_dir = Path.home() / ".cache" / "chembl_metabolomics"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    file_hash = hashlib.md5(drugbank_file.encode()).hexdigest()[:16]
-    return cache_dir / f"drugbank_names_{file_hash}.pkl"
+    file_hash = hashlib.md5(chembl_file.encode()).hexdigest()[:16]
+    return cache_dir / f"chembl_names_{file_hash}.pkl"
 
 
-def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) -> set:
+def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set:
     """
-    Load drug names and synonyms from DrugBank XML file.
+    Load compound names and IDs from ChEMBL SDF file.
     
-    Extracts ONLY official drug names, generic names, and synonyms from
-    DrugBank drug entries. Explicitly skips targets, enzymes, metabolites,
-    and other non-drug entities to avoid false positives with endogenous
-    metabolites that may have similar names.
+    Extracts:
+    - Compound names from header lines
+    - ChEMBL IDs (e.g., CHEMBL123456) from property fields
+    - Synonyms if available
     
-    Uses iterparse to handle large files efficiently.
+    Handles both .sdf and .sdf.gz files.
     
     Args:
-        drugbank_file: Path to DrugBank XML file
+        chembl_file: Path to ChEMBL SDF file (can be .sdf or .sdf.gz)
         use_cache: Whether to use cached results if available
         
     Returns:
-        Set of drug and drug synonym names (normalized to uppercase)
+        Set of compound names and IDs (normalized to uppercase)
     """
     try:
-        cache_path = _get_drugbank_cache_path(drugbank_file)
+        cache_path = _get_chembl_cache_path(chembl_file)
         
         # Try to load from cache first
         if use_cache and cache_path.exists():
             with open(cache_path, 'rb') as f:
                 compound_names = pickle.load(f)
-            logger.info(f"Loaded {len(compound_names)} DrugBank compound names from cache: {cache_path}")
+            logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from cache: {cache_path}")
             return compound_names
         
         compound_names = set()
-        context = ET.iterparse(drugbank_file, events=('start', 'end'))
         
-        current_names = set()
-        in_drug = False
-        depth = 0
-        skip_depth = -1  # Track depth at which we should skip
+        # Determine if file is gzipped
+        open_func = gzip.open if chembl_file.endswith('.gz') else open
+        mode = 'rt' if chembl_file.endswith('.gz') else 'r'
+        encoding = 'utf-8' if not chembl_file.endswith('.gz') else None
         
-        for event, elem in context:
-            tag_lower = elem.tag.lower().split('}')[-1]
+        with open_func(chembl_file, mode, encoding=encoding) as f:
+            current_name = None
+            current_chembl_id = None
+            in_molecule = False
             
-            if event == 'start':
-                # Track when we enter a drug element
-                if tag_lower == 'drug':
-                    in_drug = True
-                    depth = 0
-                    current_names = set()
-                    skip_depth = -1
+            for line in f:
+                line = line.strip()
                 
-                if in_drug and skip_depth == -1:
-                    depth += 1
+                # New molecule record starts with a header line (compound name)
+                if line and not line.startswith('>') and not line.startswith('$'):
+                    # This is the molecule header line (compound name)
+                    current_name = line.strip()
+                    current_chembl_id = None
+                    in_molecule = True
                     
-                    # Only collect from specific drug name fields
-                    # Skip targets, enzymes, metabolites, etc.
-                    skip_tags = {'targets', 'target', 'enzymes', 'enzyme', 
-                                'transporters', 'transporter', 'carriers', 'carrier',
-                                'metabolites', 'metabolite', 'calculated_properties',
-                                'polypeptide', 'protein', 'gene', 'pathway',
-                                'reactions', 'reaction', 'external_identifiers',
-                                'external_identifier', 'snp_effects', 'snp_adverse_effects',
-                                'drug_interactions', 'food_interactions', 'sequences',
-                                'salt', 'salts', 'mixture', 'product', 'pack', 'dose'}
+                    # Add the compound name if reasonable length
+                    if current_name and len(current_name) >= 3:
+                        compound_names.add(current_name)
                     
-                    if tag_lower in skip_tags:
-                        # Mark this depth to skip
-                        skip_depth = depth
-                    elif skip_depth != -1:
-                        # We're inside a skipped section, don't process
-                        pass
-                    elif tag_lower == 'name':
-                        if elem.text and elem.text.strip():
-                            name = elem.text.strip()
-                            # Only keep names that are reasonable length
-                            if len(name) >= 3:
-                                current_names.add(name)
-                    elif tag_lower == 'generic_name' or tag_lower == 'generic-name':
-                        if elem.text and elem.text.strip():
-                            name = elem.text.strip()
-                            if len(name) >= 3:
-                                current_names.add(name)
-                    elif tag_lower in ('synonym', 'synonyms'):
-                        if elem.text and elem.text.strip():
-                            name = elem.text.strip()
-                            if len(name) >= 3:
-                                current_names.add(name)
-                    elif tag_lower in ('international_brand_name', 'brand_name', 'brand'):
-                        if elem.text and elem.text.strip():
-                            name = elem.text.strip()
-                            if len(name) >= 3:
-                                current_names.add(name)
-                    elif tag_lower == 'cas_number':
-                        # CAS numbers are specific drug identifiers
-                        if elem.text and elem.text.strip():
-                            name = elem.text.strip()
-                            if len(name) >= 3:
-                                current_names.add(name)
-            
-            elif event == 'end':
-                if in_drug:
-                    tag_lower = elem.tag.lower().split('}')[-1]
+                elif line.startswith('> <CHEMBL_ID>'):
+                    # Next line contains the ChEMBL ID
+                    # Read the next line
+                    chembl_id_line = next(f, '').strip()
+                    if chembl_id_line and len(chembl_id_line) >= 3:
+                        current_chembl_id = chembl_id_line
+                        compound_names.add(chembl_id_line)
+                
+                elif line.startswith('> <CHEMBL_COMPOUND>'):
+                    # Some SDF files have this
+                    pass
                     
-                    # When skipped section ends, reset skip_depth
-                    if skip_depth != -1 and depth == skip_depth:
-                        skip_depth = -1
-                    
-                    # When drug entry ends, add collected names to master set
-                    if tag_lower == 'drug' and current_names:
-                        compound_names.update(current_names)
-                        current_names = set()
-                    
-                    if in_drug:
-                        depth -= 1
-                    
-                    # Clear processed elements to free memory
-                    elem.clear()
+                elif line.startswith('> SYNONYMS'):
+                    # Read synonyms - next line contains them
+                    synonyms_line = next(f, '').strip()
+                    if synonyms_line:
+                        # Synonyms might be comma or semicolon separated
+                        synonyms = re.split(r'[;,]', synonyms_line)
+                        for syn in synonyms:
+                            syn = syn.strip()
+                            if syn and len(syn) >= 3:
+                                compound_names.add(syn)
+                
+                elif line.startswith('$$$$'):
+                    # End of molecule record
+                    in_molecule = False
+                    current_name = None
+                    current_chembl_id = None
         
         # Normalize all names to uppercase for case-insensitive matching
         compound_names = {name.upper() for name in compound_names if name and len(name) >= 3}
         
-        # Save to cache for future runs - NEW CACHE due to selective extraction
+        # Save to cache for future runs
         if use_cache:
-            # Remove old cache if it exists (different extraction method)
+            # Remove old cache if it exists
             if cache_path.exists():
                 cache_path.unlink()
             with open(cache_path, 'wb') as f:
                 pickle.dump(compound_names, f)
-            logger.info(f"Saved DrugBank compound names cache to {cache_path}")
+            logger.info(f"Saved ChEMBL compound names cache to {cache_path}")
         
-        logger.info(f"Loaded {len(compound_names)} DrugBank drug names and synonyms from {drugbank_file}")
+        logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from {chembl_file}")
         if len(compound_names) == 0:
-            logger.warning(f"No DrugBank drug names found in {drugbank_file}. Check XML structure.")
+            logger.warning(f"No ChEMBL compound names found in {chembl_file}. Check SDF structure.")
         
         # Log some sample names for debugging
         if len(compound_names) > 0:
             sample_names = list(compound_names)[:10]
-            logger.info(f"Sample DrugBank names: {sample_names}{'...' if len(compound_names) > 10 else ''}")
+            logger.info(f"Sample ChEMBL names: {sample_names}{'...' if len(compound_names) > 10 else ''}")
         
         return compound_names
         
     except Exception as e:
-        logger.error(f"Failed to load DrugBank file {drugbank_file}: {e}")
+        logger.error(f"Failed to load ChEMBL file {chembl_file}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return set()
 
 
-def _filter_out_drug_features(
+def _filter_out_chembl_features(
     features: pd.DataFrame,
-    drugbank_names: set,
+    chembl_names: set,
 ) -> pd.DataFrame:
     """
-    Filter out feature columns that match DrugBank compound names.
+    Filter out feature columns that match ChEMBL compound names.
     
-    Removes any features whose column names contain DrugBank drug or
-    drug metabolite names (case-insensitive substring matching).
+    Removes any features whose column names EXACTLY match (case-insensitive)
+    ChEMBL compound names or IDs.
     
-    HMDB features are ALWAYS kept, even if they match DrugBank names,
-    to preserve endogenous metabolites that may also appear in DrugBank.
+    HMDB features are ALWAYS kept, even if they match ChEMBL names,
+    to preserve endogenous metabolites that may also appear in ChEMBL.
     
     Args:
         features: DataFrame with feature columns
-        drugbank_names: Set of DrugBank compound names (uppercase)
+        chembl_names: Set of ChEMBL compound names (uppercase)
         
     Returns:
-        Filtered DataFrame with drug features removed
+        Filtered DataFrame with ChEMBL features removed
     """
-    if not drugbank_names:
-        logger.warning("No DrugBank names provided. Returning all features.")
+    if not chembl_names:
+        logger.warning("No ChEMBL names provided. Returning all features.")
         return features
     
     original_cols = set(features.columns)
     
-    # Find columns that DO NOT contain any DrugBank name
+    # Find columns that DO NOT exactly match any ChEMBL name
     # EXCEPT: always keep columns containing 'HMDB' (endogenous metabolites)
-    non_drug_columns = []
+    non_chembl_columns = []
     removed_cols_with_matches = []
     
     for col in features.columns:
         col_upper = str(col).upper()
         
-        # Always keep HMDB features regardless of DrugBank match
+        # Always keep HMDB features regardless of ChEMBL match
         if 'HMDB' in col_upper:
-            non_drug_columns.append(col)
+            non_chembl_columns.append(col)
             continue
         
-        # Check if this column matches any DrugBank name
-        # Use EXACT matching (case-insensitive) - the feature column name
-        # must EXACTLY equal the DrugBank name to be filtered out.
-        # This prevents partial matches like 'PHOSPHATE' matching 'something phosphate'
-        is_drug = False
+        # Check if this column EXACTLY matches any ChEMBL name
+        is_chembl = False
         matching_name = None
         
-        for name in drugbank_names:
+        for name in chembl_names:
             # Skip very short names that cause false positives (3 chars or less)
             if len(name) <= 3:
                 continue
             
             # Exact match only (case-insensitive)
             if col_upper == name:
-                is_drug = True
+                is_chembl = True
                 matching_name = name
                 break
         
-        if is_drug:
+        if is_chembl:
             removed_cols_with_matches.append((col, matching_name))
         else:
-            non_drug_columns.append(col)
+            non_chembl_columns.append(col)
     
-    filtered_features = features[non_drug_columns]
+    filtered_features = features[non_chembl_columns]
     
-    n_removed = len(original_cols) - len(non_drug_columns)
-    logger.info(f"Filtered out drug features: {n_removed} drug features removed, {len(non_drug_columns)} non-drug features retained")
+    n_removed = len(original_cols) - len(non_chembl_columns)
+    logger.info(f"Filtered out ChEMBL features: {n_removed} ChEMBL features removed, {len(non_chembl_columns)} non-ChEMBL features retained")
     
     if n_removed > 0:
-        removed_cols = list(original_cols - set(non_drug_columns))[:10]
-        logger.info(f"Example removed drug features: {removed_cols}{'...' if n_removed > 10 else ''}")
+        removed_cols = list(original_cols - set(non_chembl_columns))[:10]
+        logger.info(f"Example removed ChEMBL features: {removed_cols}{'...' if n_removed > 10 else ''}")
         
         # Log matching details for debugging
         if n_removed <= 50:
             for col, match in removed_cols_with_matches[:10]:
-                logger.info(f"  Removed '{col}' -> matched DrugBank name: '{match}'")
+                logger.info(f"  Removed '{col}' -> matched ChEMBL name: '{match}'")
         else:
             # Sample and show
             import random
             sample = random.sample(removed_cols_with_matches, min(10, len(removed_cols_with_matches)))
             for col, match in sample:
-                logger.info(f"  Removed '{col}' -> matched DrugBank name: '{match}'")
+                logger.info(f"  Removed '{col}' -> matched ChEMBL name: '{match}'")
     
     return filtered_features
 
@@ -268,20 +237,20 @@ def load_data(
     input_file: str,
     non_feature_columns: List[str],
     patient_id_column: Optional[str] = None,
-    drugbank_file: Optional[str] = None,
-    filter_drugs: bool = False,
-    use_drugbank_cache: bool = True,
+    chembl_file: Optional[str] = None,
+    filter_chembl: bool = False,
+    use_chembl_cache: bool = True,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
-    Load data from CSV file and optionally filter out drug features.
+    Load data from CSV file and optionally filter out ChEMBL features.
 
     Args:
         input_file: Path to CSV file
         non_feature_columns: List of column names that are NOT features
         patient_id_column: Column name for patient IDs (if not index)
-        drugbank_file: Path to DrugBank XML file for drug feature filtering
-        filter_drugs: Whether to filter out features matching DrugBank compounds
-        use_drugbank_cache: Whether to use cached DrugBank data if available
+        chembl_file: Path to ChEMBL SDF file for ChEMBL feature filtering
+        filter_chembl: Whether to filter out features matching ChEMBL compounds
+        use_chembl_cache: Whether to use cached ChEMBL data if available
 
     Returns:
         Tuple of:
@@ -333,17 +302,17 @@ def load_data(
     feature_cols = [col for col in df.columns if col not in non_feature_columns]
     features = df[feature_cols]
 
-    # Filter out drug features if requested
-    if filter_drugs and drugbank_file:
-        drugbank_path = Path(drugbank_file)
-        if drugbank_path.exists():
-            drugbank_names = _load_drugbank_compound_names(str(drugbank_path), use_cache=use_drugbank_cache)
-            if drugbank_names:
-                features = _filter_out_drug_features(features, drugbank_names)
+    # Filter out ChEMBL features if requested
+    if filter_chembl and chembl_file:
+        chembl_path = Path(chembl_file)
+        if chembl_path.exists():
+            chembl_names = _load_chembl_compound_names(str(chembl_path), use_cache=use_chembl_cache)
+            if chembl_names:
+                features = _filter_out_chembl_features(features, chembl_names)
             else:
-                logger.warning(f"Could not load DrugBank names from {drugbank_file}. Using all features.")
+                logger.warning(f"Could not load ChEMBL names from {chembl_file}. Using all features.")
         else:
-            logger.warning(f"DrugBank file not found at {drugbank_file}. Using all features.")
+            logger.warning(f"ChEMBL file not found at {chembl_file}. Using all features.")
 
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
