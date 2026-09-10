@@ -4,7 +4,7 @@ Data loading and preprocessing module for outlier detection pipeline.
 Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
-- Filtering out drug/drug metabolite features from ChEMBL (via API or SDF)
+- Filtering out drug/drug metabolite features from ChEMBL API
 - Splitting data into train/validation/test sets based on Classification
 """
 
@@ -13,7 +13,6 @@ import numpy as np
 from typing import Tuple, Dict, List, Optional
 from sklearn.model_selection import train_test_split
 import logging
-import gzip
 from pathlib import Path
 import pickle
 import hashlib
@@ -23,25 +22,16 @@ import time
 logger = logging.getLogger(__name__)
 
 
-def _get_chembl_cache_path(use_api: bool = False, api_version: str = "latest") -> Path:
+def _get_chembl_cache_path() -> Path:
     """
-    Get the cache file path for ChEMBL compound names.
+    Get the cache file path for ChEMBL compound names from API.
     
-    Args:
-        use_api: Whether this is for API data
-        api_version: ChEMBL version
-        
     Returns:
         Path to the cache pickle file
     """
     cache_dir = Path.home() / ".cache" / "chembl_metabolomics"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    
-    if use_api:
-        return cache_dir / f"chembl_api_names_{api_version}.pkl"
-    else:
-        # For SDF files, use file hash
-        return cache_dir / "chembl_sdf_names.pkl"
+    return cache_dir / "chembl_api_names.pkl"
 
 
 def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
@@ -63,7 +53,7 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
         Set of compound names and IDs (normalized to uppercase)
     """
     try:
-        cache_path = _get_chembl_cache_path(use_api=True)
+        cache_path = _get_chembl_cache_path()
         
         # Try to load from cache first
         if use_cache and cache_path.exists():
@@ -81,54 +71,38 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
             
             logger.info("Fetching ChEMBL compound names from API...")
             
-            # Fetch in batches to avoid timeouts
+            # Fetch all molecules with names in batches
             batch_size = 1000
-            offset = 0
             total_fetched = 0
             
-            while True:
-                start_time = time.time()
+            # Get all molecules with pref_name not null
+            all_molecules = molecule_client.filter(pref_name__isnull=False).only(['chembl_id', 'pref_name', 'synonyms'])
+            
+            for mol in all_molecules:
+                if mol.get('chembl_id'):
+                    chembl_id = mol['chembl_id']
+                    compound_names.add(chembl_id.upper())
+                    
+                if mol.get('pref_name'):
+                    pref_name = mol['pref_name']
+                    if pref_name and len(pref_name) >= 3:
+                        compound_names.add(pref_name.upper())
+                    
+                if mol.get('synonyms'):
+                    synonyms = mol['synonyms']
+                    if isinstance(synonyms, str):
+                        # Split by semicolon, comma, or pipe
+                        syn_list = re.split(r'[;,|]', synonyms)
+                        for syn in syn_list:
+                            syn = syn.strip().upper()
+                            if syn and len(syn) >= 3:
+                                compound_names.add(syn)
                 
-                # Fetch a batch of molecules with their names
-                batch = molecule_client.filter(
-                    pref_name__isnull=False
-                ).only(['chembl_id', 'pref_name', 'synonyms'])
+                total_fetched += 1
                 
-                # The client may return all results or paginated
-                # Process what we got
-                for mol in batch:
-                    if mol.get('chembl_id'):
-                        chembl_id = mol['chembl_id']
-                        compound_names.add(chembl_id.upper())
-                        
-                    if mol.get('pref_name'):
-                        pref_name = mol['pref_name']
-                        if pref_name and len(pref_name) >= 3:
-                            compound_names.add(pref_name.upper())
-                        
-                    if mol.get('synonyms'):
-                        synonyms = mol['synonyms']
-                        if isinstance(synonyms, str):
-                            # Split by semicolon, comma, or pipe
-                            syn_list = re.split(r'[;,|]', synonyms)
-                            for syn in syn_list:
-                                syn = syn.strip().upper()
-                                if syn and len(syn) >= 3:
-                                    compound_names.add(syn)
-                
-                total_fetched += len(batch)
-                elapsed = time.time() - start_time
-                logger.info(f"Fetched batch: {len(batch)} molecules, total: {total_fetched}, time: {elapsed:.1f}s")
-                
-                # Check if we got fewer than expected (end of results)
-                if len(batch) < batch_size:
-                    break
-                
-                offset += batch_size
-                
-                # Rate limiting - sleep if we're going too fast
-                if elapsed < 1.0:
-                    time.sleep(1.0 - elapsed)
+                # Log progress every 1000 molecules
+                if total_fetched % 1000 == 0:
+                    logger.info(f"Fetched {total_fetched} molecules from ChEMBL API...")
                 
                 # Safety limit
                 if total_fetched > 2000000:  # 2M compounds max
@@ -197,11 +171,10 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
                     logger.error(f"API request failed: {e}")
                     break
         
-        # Filter out very short names and CHEMBL ID patterns
+        # Filter out very short names
         filtered_names = set()
         for name in compound_names:
             if len(name) >= 3:
-                # Keep all names that are reasonable
                 filtered_names.add(name)
         
         compound_names = filtered_names
@@ -223,202 +196,6 @@ def _load_chembl_compound_names_from_api(use_cache: bool = True) -> set:
         
     except Exception as e:
         logger.error(f"Failed to load ChEMBL names from API: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return set()
-
-
-def _load_chembl_compound_names(chembl_file: str, use_cache: bool = True) -> set:
-    """
-    Load compound names and IDs from ChEMBL SDF file.
-    
-    Extracts:
-    - Compound names from header lines
-    - ChEMBL IDs (e.g., CHEMBL123456) from property fields
-    - Synonyms if available
-    
-    Handles both .sdf and .sdf.gz files.
-    
-    Args:
-        chembl_file: Path to ChEMBL SDF file (can be .sdf or .sdf.gz)
-        use_cache: Whether to use cached results if available
-        
-    Returns:
-        Set of compound names and IDs (normalized to uppercase)
-    """
-    try:
-        cache_path = _get_chembl_cache_path(use_api=False)
-        
-        # Try to load from cache first
-        if use_cache and cache_path.exists():
-            with open(cache_path, 'rb') as f:
-                compound_names = pickle.load(f)
-            logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from cache: {cache_path}")
-            return compound_names
-        
-        compound_names = set()
-        
-        # Determine if file is gzipped
-        open_func = gzip.open if chembl_file.endswith('.gz') else open
-        mode = 'rt' if chembl_file.endswith('.gz') else 'r'
-        encoding = 'utf-8' if not chembl_file.endswith('.gz') else None
-        
-        # First, scan to find all available property tags in this SDF file
-        # This helps us understand the structure
-        all_prop_tags = set()
-        sample_header_lines = []
-        
-        with open_func(chembl_file, mode, encoding=encoding) as f:
-            header_count = 0
-            for line in f:
-                line = line.strip()
-                if line.startswith('>') and line != '>':
-                    tag = line[1:].strip()
-                    all_prop_tags.add(tag.upper())
-                elif line == '$$$$':
-                    break  # Just scan first record for tags
-                else:
-                    # This might be a header line
-                    if header_count < 5:
-                        sample_header_lines.append(line)
-                        header_count += 1
-        
-        logger.info(f"Found property tags in ChEMBL SDF: {sorted(list(all_prop_tags))}")
-        logger.info(f"Sample header/first lines: {sample_header_lines}")
-        
-        # Now parse the file properly
-        with open_func(chembl_file, mode, encoding=encoding) as f:
-            current_name = None
-            current_chembl_id = None
-            
-            for line in f:
-                line = line.strip()
-                
-                # End of molecule record
-                if line == '$$$$':
-                    current_name = None
-                    current_chembl_id = None
-                    continue
-                
-                # New molecule record starts with a header line (compound name)
-                # This is the FIRST line of a record
-                if line and not line.startswith('>') and not line.startswith('$'):
-                    # Check if this looks like an atom line (starts with number or coordinate pattern)
-                    if line and (line[0].isdigit() or re.match(r'^[\d\s.-]+$', line[:20])):
-                        # This is an atom/bond line, skip
-                        continue
-                    
-                    # This is the molecule header line (compound name)
-                    current_name = line.strip()
-                    current_chembl_id = None
-                    
-                    # Add the compound name if reasonable length and looks like a real name
-                    # (not just an ID like CHEMBL123456)
-                    if current_name and len(current_name) >= 3:
-                        # Only add if it contains at least one letter (not just numbers/dashes)
-                        if re.search(r'[a-zA-Z]', current_name):
-                            compound_names.add(current_name)
-                    
-                    continue
-                
-                # Property section starts with >
-                if line.startswith('>'):
-                    prop_name = line[1:].strip()
-                    prop_name_upper = prop_name.upper()
-                    
-                    # Known name fields in ChEMBL
-                    name_fields = {
-                        '<PREF_NAME>', 'PREF_NAME',
-                        '<PREFERRED_NAME>', 'PREFERRED_NAME', 
-                        '<GENERIC_NAME>', 'GENERIC_NAME',
-                        '<MOLECULE_TYPE>', 'MOLECULE_TYPE',
-                        '<COMPOUND_NAME>', 'COMPOUND_NAME',
-                        '<NAME>', 'NAME',
-                        '<TITLE>', 'TITLE',
-                        '<COMMON_NAME>', 'COMMON_NAME',
-                        '<TRADITIONAL_NAME>', 'TRADITIONAL_NAME',
-                        '<INCHI_KEY>', 'INCHI_KEY',
-                        '<SMILES>', 'SMILES',
-                    }
-                    
-                    # Also check for any tag that contains NAME
-                    if any(name_keyword in prop_name_upper for name_keyword in ['NAME', 'TITLE', 'PREF', 'GENERIC', 'COMMON', 'TRADITIONAL']):
-                        # Next line contains the name
-                        try:
-                            name_line = next(f, '').strip()
-                            if name_line and len(name_line) >= 3:
-                                # Skip if it's a CHEMBL ID
-                                if not re.match(r'^CHEMBL\d+$', name_line):
-                                    compound_names.add(name_line)
-                        except StopIteration:
-                            pass
-                    
-                    elif prop_name_upper == '<CHEMBL_ID>' or prop_name_upper == 'CHEMBL_ID':
-                        # Next line contains the ChEMBL ID - we still want this for matching
-                        try:
-                            chembl_id_line = next(f, '').strip()
-                            if chembl_id_line and len(chembl_id_line) >= 3:
-                                current_chembl_id = chembl_id_line
-                                # Add CHEMBL ID to match against features that use CHEMBL IDs
-                                compound_names.add(chembl_id_line)
-                        except StopIteration:
-                            pass
-                    
-                    elif prop_name_upper == 'SYNONYMS':
-                        # Read synonyms - next line contains them
-                        try:
-                            synonyms_line = next(f, '').strip()
-                            if synonyms_line:
-                                # Synonyms might be comma or semicolon separated
-                                synonyms = re.split(r'[;,]', synonyms_line)
-                                for syn in synonyms:
-                                    syn = syn.strip()
-                                    if syn and len(syn) >= 3 and re.search(r'[a-zA-Z]', syn):
-                                        compound_names.add(syn)
-                        except StopIteration:
-                            pass
-                    
-                    elif prop_name_upper == '<CHEMBL_COMPOUND>':
-                        # Some SDF files have this
-                        pass
-                    
-                    # Try ALL property values that look like names
-                    elif prop_name_upper not in ['<CHEMBL_ID>', 'CHEMBL_ID', 'SYNONYMS', '<CHEMBL_COMPOUND>', 'M  END']:
-                        # Read the value line
-                        try:
-                            value_line = next(f, '').strip()
-                            if value_line and len(value_line) >= 3 and len(value_line) < 100:
-                                # Check if it looks like a chemical name (has letters and reasonable length)
-                                if re.search(r'[a-zA-Z]', value_line) and not re.match(r'^CHEMBL\d+$', value_line):
-                                    compound_names.add(value_line)
-                        except StopIteration:
-                            pass
-        
-        # Normalize all names to uppercase for case-insensitive matching
-        compound_names = {name.upper() for name in compound_names if name and len(name) >= 3}
-        
-        # Save to cache for future runs
-        if use_cache:
-            # Remove old cache if it exists
-            if cache_path.exists():
-                cache_path.unlink()
-            with open(cache_path, 'wb') as f:
-                pickle.dump(compound_names, f)
-            logger.info(f"Saved ChEMBL compound names cache to {cache_path}")
-        
-        logger.info(f"Loaded {len(compound_names)} ChEMBL compound names from {chembl_file}")
-        if len(compound_names) == 0:
-            logger.warning(f"No ChEMBL compound names found in {chembl_file}. Check SDF structure.")
-        
-        # Log some sample names for debugging
-        if len(compound_names) > 0:
-            sample_names = list(compound_names)[:10]
-            logger.info(f"Sample ChEMBL names: {sample_names}{'...' if len(compound_names) > 10 else ''}")
-        
-        return compound_names
-        
-    except Exception as e:
-        logger.error(f"Failed to load ChEMBL file {chembl_file}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         return set()
@@ -510,10 +287,9 @@ def load_data(
     input_file: str,
     non_feature_columns: List[str],
     patient_id_column: Optional[str] = None,
-    chembl_file: Optional[str] = None,
     filter_chembl: bool = False,
     use_chembl_cache: bool = True,
-    use_chembl_api: bool = False,
+    use_chembl_api: bool = True,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter out ChEMBL features.
@@ -522,10 +298,9 @@ def load_data(
         input_file: Path to CSV file
         non_feature_columns: List of column names that are NOT features
         patient_id_column: Column name for patient IDs (if not index)
-        chembl_file: Path to ChEMBL SDF file for ChEMBL feature filtering
         filter_chembl: Whether to filter out features matching ChEMBL compounds
         use_chembl_cache: Whether to use cached ChEMBL data if available
-        use_chembl_api: Whether to use ChEMBL API instead of SDF file
+        use_chembl_api: Whether to use ChEMBL API (must be True)
 
     Returns:
         Tuple of:
@@ -578,23 +353,13 @@ def load_data(
     features = df[feature_cols]
 
     # Filter out ChEMBL features if requested
-    if filter_chembl:
-        if use_chembl_api:
-            logger.info("Using ChEMBL API to fetch compound names...")
-            chembl_names = _load_chembl_compound_names_from_api(use_cache=use_chembl_cache)
-        elif chembl_file:
-            chembl_path = Path(chembl_file)
-            if chembl_path.exists():
-                chembl_names = _load_chembl_compound_names(str(chembl_path), use_cache=use_chembl_cache)
-            else:
-                logger.warning(f"ChEMBL file not found at {chembl_file}. Using all features.")
-                chembl_names = set()
-        else:
-            logger.warning("No ChEMBL file or API specified. Using all features.")
-            chembl_names = set()
-        
+    if filter_chembl and use_chembl_api:
+        logger.info("Using ChEMBL API to fetch compound names...")
+        chembl_names = _load_chembl_compound_names_from_api(use_cache=use_chembl_cache)
         if chembl_names:
             features = _filter_out_chembl_features(features, chembl_names)
+    elif filter_chembl:
+        logger.warning("ChEMBL filtering requested but use_chembl_api is False. Set use_chembl_api: true in config.")
 
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")

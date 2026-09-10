@@ -598,14 +598,12 @@ def run_pipeline(
     patient_id_col = config.get('patient_id_column', None)
     filter_chembl = config.get('filter_chembl', False)
     use_chembl_cache = config.get('use_chembl_cache', True)
-    chembl_file = config.get('chembl_file', None)
-    use_chembl_api = config.get('use_chembl_api', False)
+    use_chembl_api = config.get('use_chembl_api', True)
 
     features, classification, oordeel = load_data(
         input_file=input_file,
         non_feature_columns=non_feature_cols,
         patient_id_column=patient_id_col,
-        chembl_file=chembl_file,
         filter_chembl=filter_chembl,
         use_chembl_cache=use_chembl_cache,
         use_chembl_api=use_chembl_api,
