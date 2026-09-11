@@ -23,9 +23,9 @@ feature_filter: null  # Filter features by substring. Options: null (no filter),
 # List metabolite/feature names to drop from the analysis. Matching is exact
 # and case-insensitive (after Unicode normalization), so enter the names
 # exactly as they appear in the input CSV columns. Leave empty/null to disable.
-exclude_metabolites: []
-# exclude_metabolites:
-#   - "Creatinine"
+exclude_metabolites:
+  - "Creatinine"  # Example: exclude this metabolite from the analysis
+# Additional metabolites to exclude:
 #   - "Glucose"
 #   - "HMDB0000122"
 
