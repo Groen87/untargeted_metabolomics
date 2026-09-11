@@ -19,10 +19,10 @@ non_feature_columns:
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
-# DrugBank filtering - remove drug/drug metabolite features
-filter_drugs: false  # Filter out features matching DrugBank compounds
-use_drugbank_cache: true  # Use cached DrugBank data for faster subsequent runs
-drugbank_file: null  # Path to DrugBank XML file (e.g., "data/drugbank.xml")
+# HMDB filtering - remove drug metabolite features
+filter_drug_metabolites: false  # Filter out features matching HMDB drug metabolites
+use_hmdb_cache: true  # Use cached HMDB data for faster subsequent runs
+hmdb_file: null  # Path to HMDB XML file (e.g., "data/hmdb_metabolites.xml")
 
 # Outlier analysis
 use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis
