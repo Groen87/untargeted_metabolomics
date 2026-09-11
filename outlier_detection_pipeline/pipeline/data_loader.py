@@ -25,11 +25,12 @@ def _load_chebi_human_metabolite_names(sdf_path: str) -> set:
     
     Extracts compound names and synonyms for compounds with role 'CHEBI:77746' (human metabolites).
     
-    SDF format:
+    ChEBI SDF format:
     - Compounds separated by $$$$
     - First line of each compound: compound name
     - Property tags: > <TAG>
     - Property values: line immediately following the tag
+    - ChEBI uses tags like: ChEBI ID, Name, Synonyms, ChEBI Ontology Role, etc.
     
     Args:
         sdf_path: Path to ChEBI SDF file
@@ -44,9 +45,10 @@ def _load_chebi_human_metabolite_names(sdf_path: str) -> set:
             return set()
         
         names = set()
-        current_compound = {'names': set(), 'role': None}
+        current_compound = {'names': set(), 'role': None, 'chebi_id': None}
         expect_value = False
         current_tag = None
+        all_tags = set()
         
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
@@ -55,13 +57,19 @@ def _load_chebi_human_metabolite_names(sdf_path: str) -> set:
                 # End of compound record
                 if line == '$$$$':
                     # Process completed compound
-                    if current_compound.get('role') == 'CHEBI:77746':
+                    if current_compound.get('role') and 'CHEBI:77746' in str(current_compound['role']).upper():
+                        # Add ChEBI ID
+                        if current_compound.get('chebi_id'):
+                            chebi_id = current_compound['chebi_id'].strip().upper()
+                            if len(chebi_id) >= 3:
+                                names.add(chebi_id)
+                        # Add all names
                         for name in current_compound['names']:
                             if len(name) >= 3:
                                 names.add(name)
                     
                     # Reset for next compound
-                    current_compound = {'names': set(), 'role': None}
+                    current_compound = {'names': set(), 'role': None, 'chebi_id': None}
                     expect_value = False
                     current_tag = None
                     continue
@@ -70,12 +78,13 @@ def _load_chebi_human_metabolite_names(sdf_path: str) -> set:
                 if not line.strip():
                     continue
                 
-                # Property tag line
+                # Property tag line (e.g., ">  <ChEBI ID>")
                 if line.startswith('>') and '<' in line:
                     # Extract tag name
-                    tag_match = re.search(r'\>(\s*)<([^>]+)>', line)
+                    tag_match = re.search(r'\>\s*<([^>]+)>', line)
                     if tag_match:
-                        current_tag = tag_match.group(2).strip()
+                        current_tag = tag_match.group(1).strip()
+                        all_tags.add(current_tag)
                         expect_value = True
                     continue
                 
@@ -83,17 +92,28 @@ def _load_chebi_human_metabolite_names(sdf_path: str) -> set:
                 if expect_value and current_tag:
                     value = line.strip()
                     
-                    # Store role
-                    if current_tag in ['CHEBML_ROLE', 'Role']:
+                    # Normalize tag name for comparison
+                    tag_upper = current_tag.upper()
+                    
+                    # Store ChEBI ID - check for various tag name formats
+                    if any(t in tag_upper for t in ['CHEBIID', 'CHEBIID', 'CHEBIID', 'ID', 'CHEBICOMPOUNDID', 'CHEBICOMPOUND_ID']):
+                        current_compound['chebi_id'] = value
+                    
+                    # Store role - try multiple possible tag names
+                    elif any(r in tag_upper for r in ['ROLE', 'ONTOLOGY', 'CHEBIONTOLOGYROLE', 'CHEBIONTOLOGY', 'CHEBIONTOLOGYROLE']):
                         current_compound['role'] = value
                     
                     # Store name/synonym
-                    elif current_tag in ['CHEBML_NAME', 'Name', 'IUPAC', 'SYNONYMS', 'ChEBI Name']:
-                        # Handle multi-line values (split by newlines or semicolons)
-                        for v in value.split(';'):
+                    elif any(n in tag_upper for n in ['NAME', 'SYNONYM', 'IUPAC', 'CHEBINAME', 'CHEBIIUPACNAME', 'CHEBIIUPAC']):
+                        # Handle multi-line values (split by semicolons, pipes, commas)
+                        for v in re.split(r'[;|,]', value):
                             v = v.strip().upper()
                             if len(v) >= 3:
                                 current_compound['names'].add(v)
+                    
+                    # Also add the value itself as a name (for generic tags)
+                    if len(value) >= 3:
+                        current_compound['names'].add(value.upper())
                     
                     expect_value = False
                     current_tag = None
@@ -104,17 +124,24 @@ def _load_chebi_human_metabolite_names(sdf_path: str) -> set:
                     current_compound['names'].add(line.strip().upper())
         
         # Process the last compound
-        if current_compound.get('role') == 'CHEBI:77746':
+        if current_compound.get('role') and 'CHEBI:77746' in str(current_compound['role']).upper():
+            if current_compound.get('chebi_id'):
+                chebi_id = current_compound['chebi_id'].strip().upper()
+                if len(chebi_id) >= 3:
+                    names.add(chebi_id)
             for name in current_compound['names']:
                 if len(name) >= 3:
                     names.add(name)
         
         logger.info(f"Loaded {len(names)} ChEBI human metabolite names from SDF: {sdf_path}")
+        logger.info(f"Found SDF tags: {sorted(all_tags)}")
         
         # Log sample names for debugging
         if len(names) > 0:
             sample_names = list(names)[:10]
             logger.info(f"Sample ChEBI human metabolite names: {sample_names}{'...' if len(names) > 10 else ''}")
+        else:
+            logger.warning("No human metabolite names found. Check if role 'CHEBI:77746' exists in SDF.")
         
         return names
         
