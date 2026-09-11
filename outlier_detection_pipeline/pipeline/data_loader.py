@@ -15,12 +15,34 @@ Handles:
 
 import pandas as pd
 import numpy as np
+import unicodedata
 from typing import Tuple, Dict, List, Optional, Set
 from sklearn.model_selection import train_test_split
 import logging
 from pathlib import Path
 import pickle
 import hashlib
+
+
+def _normalize_name(name: str) -> str:
+    """
+    Normalize a metabolite or feature-column name for exact matching.
+
+    - Strips surrounding whitespace
+    - Applies Unicode NFKC normalization (e.g. folds full-width digits, unifies
+      Greek alpha variants such as U+0391 'Α' vs U+0041 'A')
+    - Uppercases
+    - Strips a leading UTF-8 BOM if present
+
+    Returns the normalized name. Exact (not partial) matching is preserved.
+    """
+    if name is None:
+        return ''
+    s = str(name)
+    if s.startswith('\ufeff'):
+        s = s[1:]
+    s = unicodedata.normalize('NFKC', s).strip().upper()
+    return s
 
 logger = logging.getLogger(__name__)
 
@@ -92,19 +114,21 @@ def _load_endogenous_metabolite_names(endogenous_file: str, use_cache: bool = Tr
                 # Pad in case Synonyms is missing
                 while len(fields) < 3:
                     fields.append('')
-                hmdb_id = fields[0].strip()
-                name = fields[1].strip()
-                synonyms_str = fields[2].strip()
+                hmdb_id = fields[0]
+                name = fields[1]
+                synonyms_str = fields[2]
 
+                hmdb_id = _normalize_name(hmdb_id)
+                name = _normalize_name(name)
                 if hmdb_id:
-                    endogenous_names.add(hmdb_id.upper())
+                    endogenous_names.add(hmdb_id)
                 if name:
-                    endogenous_names.add(name.upper())
+                    endogenous_names.add(name)
                 if synonyms_str:
                     for syn in synonyms_str.split(';'):
-                        syn = syn.strip()
+                        syn = _normalize_name(syn)
                         if syn:
-                            endogenous_names.add(syn.upper())
+                            endogenous_names.add(syn)
 
         # Drop very short names that cause false positives
         endogenous_names = {n for n in endogenous_names if len(n) >= 3}
@@ -159,18 +183,22 @@ def _filter_to_endogenous_features(
 
     kept_columns = []
     removed_cols = []
+    n_matched_hmdb = 0
+    n_matched_name = 0
 
     for col in features.columns:
-        col_upper = str(col).upper()
+        col_upper = _normalize_name(col)
 
         # Always keep HMDB features regardless of keep-list match
         if 'HMDB' in col_upper:
             kept_columns.append(col)
+            n_matched_hmdb += 1
             continue
 
-        # Exact match (case-insensitive) against the keep-list
+        # Exact match (case-insensitive, Unicode-normalized) against the keep-list
         if col_upper in endogenous_names:
             kept_columns.append(col)
+            n_matched_name += 1
         else:
             removed_cols.append(col)
 
@@ -179,11 +207,15 @@ def _filter_to_endogenous_features(
 
     logger.info(
         f"Filtered to endogenous metabolite features: {n_removed} features removed, "
-        f"{len(kept_columns)} endogenous features retained"
+        f"{len(kept_columns)} endogenous features retained "
+        f"({n_matched_hmdb} matched by HMDB prefix, {n_matched_name} matched by name)"
     )
 
     if n_removed > 0:
         logger.info(f"Example removed features: {removed_cols[:10]}{'...' if n_removed > 10 else ''}")
+        if len(endogenous_names) > 0:
+            sample_keep = list(endogenous_names)[:5]
+            logger.info(f"Example keep-list names (normalized): {sample_keep}")
 
     return filtered_features
 
