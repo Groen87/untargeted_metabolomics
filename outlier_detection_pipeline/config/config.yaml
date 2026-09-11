@@ -59,7 +59,7 @@ pca_intermediate_components: null  # Intermediate components for two_phase (null
 # ============================================================================
 # Extended Isolation Forest Parameters
 # ============================================================================
-n_estimators: 100         # Number of trees in the forest
+n_estimators: 200         # Number of trees in the forest (used directly when tuning is off; >100 barely changes IF ranking)
 max_samples: "auto"       # Number of samples to draw for each tree
 max_features: 1.0         # Number of features to draw for each tree
 bootstrap: false          # Whether to use bootstrap sampling
@@ -88,7 +88,14 @@ realistic_n_outliers_true: null  # Number of true outliers (optional, overrides 
 # ============================================================================
 # Hyperparameter Tuning
 # ============================================================================
-use_hyperparameter_tuning: true  # Toggle hyperparameter tuning on/off
+# IsolationForest is largely insensitive to its hyperparameters in the
+# low-contamination regime (n_estimators above ~100 barely changes ranking;
+# max_samples='auto' is near-optimal; max_features=1.0 is standard). Tuning
+# the grid typically yields a marginal, high-variance "best" that doesn't
+# generalize. The dominant levers are the threshold calibration and the
+# scoring representation (PCA vs raw), neither of which tuning touches.
+# Default: skip tuning and use the fixed IF defaults below.
+use_hyperparameter_tuning: false  # Toggle hyperparameter tuning on/off
 n_splits_tuning: 3               # Number of CV folds for tuning
 tuning_scoring: pr_auc          # Metric to optimize ('f1', 'precision', 'recall', 'roc_auc', 'pr_auc', 'prauc')
 
