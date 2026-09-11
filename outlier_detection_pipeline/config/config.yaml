@@ -19,9 +19,10 @@ non_feature_columns:
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
-# ChEBI filtering - keep only human metabolite features
-filter_chebi_human_metabolites: false  # Filter features to keep only ChEBI human metabolites (role: CHEBI:77746)
-chebi_sdf_file: null  # Path to ChEBI SDF file (e.g., "data/chebi.sdf")
+# DrugBank filtering - remove drug/drug metabolite features
+filter_drugs: false  # Filter out features matching DrugBank compounds
+use_drugbank_cache: true  # Use cached DrugBank data for faster subsequent runs
+drugbank_file: null  # Path to DrugBank XML file (e.g., "data/drugbank.xml")
 
 # Outlier analysis
 use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis

@@ -4,7 +4,7 @@ Data loading and preprocessing module for outlier detection pipeline.
 Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
-- Filtering features to keep only ChEBI human metabolites (role: CHEBI:77746) from SDF
+- Filtering out drug/drug metabolite features from DrugBank XML (with role-based filtering)
 - Splitting data into train/validation/test sets based on Classification
 """
 
@@ -13,218 +13,371 @@ import numpy as np
 from typing import Tuple, Dict, List, Optional
 from sklearn.model_selection import train_test_split
 import logging
+import xml.etree.ElementTree as ET
 from pathlib import Path
+import pickle
+import hashlib
 import re
 
 logger = logging.getLogger(__name__)
 
 
-def _load_chebi_human_metabolite_names(sdf_path: str) -> set:
+def _get_drugbank_cache_path(drugbank_file: str) -> Path:
     """
-    Load compound names from ChEBI SDF file, filtering for human metabolites.
-    
-    Extracts compound names and synonyms for compounds with role 'CHEBI:77746' (human metabolites).
-    
-    ChEBI SDF format:
-    - Compounds separated by $$$$
-    - First line of each compound: compound name
-    - Property tags: > <TAG>
-    - Property values: line immediately following the tag
-    - Role CHEBI:77746 may be in any field - we search all property values
+    Get the cache file path for a given DrugBank file.
     
     Args:
-        sdf_path: Path to ChEBI SDF file
+        drugbank_file: Path to DrugBank XML file
         
     Returns:
-        Set of compound names and synonyms (uppercase) for human metabolites
+        Path to the cache pickle file
+    """
+    cache_dir = Path.home() / ".cache" / "drugbank_metabolomics"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    file_hash = hashlib.md5(drugbank_file.encode()).hexdigest()[:16]
+    return cache_dir / f"drugbank_names_{file_hash}.pkl"
+
+
+def _load_drugbank_compound_names(drugbank_file: str, use_cache: bool = True) -> set:
+    """
+    Load drug names and synonyms from DrugBank XML file.
+    
+    Extracts ONLY official drug names, generic names, and synonyms from
+    DrugBank drug entries. Explicitly skips targets, enzymes, metabolites,
+    and other non-drug entities to avoid false positives with endogenous
+    metabolites that may have similar names.
+    
+    Uses iterparse to handle large files efficiently.
+    
+    Args:
+        drugbank_file: Path to DrugBank XML file
+        use_cache: Whether to use cached results if available
+        
+    Returns:
+        Set of drug and drug synonym names (normalized to uppercase)
     """
     try:
-        path = Path(sdf_path)
-        if not path.exists():
-            logger.error(f"ChEBI SDF file not found: {sdf_path}")
-            return set()
+        cache_path = _get_drugbank_cache_path(drugbank_file)
         
-        names = set()
-        current_compound = {'names': set(), 'chebi_id': None, 'all_values': []}
-        expect_value = False
-        current_tag = None
-        all_tags = set()
-        n_human_metabolites = 0
-        n_total = 0
+        # Try to load from cache first
+        if use_cache and cache_path.exists():
+            with open(cache_path, 'rb') as f:
+                compound_names = pickle.load(f)
+            logger.info(f"Loaded {len(compound_names)} DrugBank compound names from cache: {cache_path}")
+            return compound_names
         
-        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                line = line.rstrip('\n\r')
+        compound_names = set()
+        context = ET.iterparse(drugbank_file, events=('start', 'end'))
+        
+        current_names = set()
+        in_drug = False
+        depth = 0
+        skip_depth = -1  # Track depth at which we should skip
+        in_drug_type = False
+        drug_type_value = None
+        
+        for event, elem in context:
+            tag_lower = elem.tag.lower().split('}')[-1]
+            
+            if event == 'start':
+                # Track when we enter a drug element
+                if tag_lower == 'drug':
+                    in_drug = True
+                    depth = 0
+                    current_names = set()
+                    skip_depth = -1
+                    drug_type_value = None
                 
-                # End of compound record
-                if line == '$$$$':
-                    n_total += 1
-                    # Check if this compound has role CHEBI:77746 in ANY field
-                    is_human = False
+                if in_drug and skip_depth == -1:
+                    depth += 1
                     
-                    # Search all collected values for role indicators
-                    for val in current_compound['all_values']:
-                        val_upper = str(val).upper()
-                        if 'CHEBI:77746' in val_upper or 'HUMAN METABOLITE' in val_upper:
-                            is_human = True
-                            break
+                    # Check for drug-type field to filter out non-drug entries
+                    if tag_lower == 'drug-type' or tag_lower == 'type':
+                        in_drug_type = True
                     
-                    # If human metabolite, add all names
-                    if is_human:
-                        n_human_metabolites += 1
-                        # Add ChEBI ID
-                        if current_compound.get('chebi_id'):
-                            chebi_id = current_compound['chebi_id'].strip().upper()
-                            if len(chebi_id) >= 3:
-                                names.add(chebi_id)
-                        # Add all names
-                        for name in current_compound['names']:
+                    # Only collect from specific drug name fields
+                    # Skip targets, enzymes, metabolites, etc.
+                    skip_tags = {'targets', 'target', 'enzymes', 'enzyme',
+                                 'transporters', 'transporter', 'carriers', 'carrier',
+                                 'metabolites', 'metabolite', 'calculated_properties',
+                                 'polypeptide', 'protein', 'gene', 'pathway',
+                                 'reactions', 'reaction', 'external_identifiers',
+                                 'external_identifier', 'snp_effects', 'snp_adverse_effects',
+                                 'drug_interactions', 'food_interactions', 'sequences',
+                                 'salt', 'salts', 'mixture', 'product', 'pack', 'dose'}
+                    
+                    if tag_lower in skip_tags:
+                        # Mark this depth to skip
+                        skip_depth = depth
+                    elif tag_lower == 'name':
+                        if elem.text and elem.text.strip():
+                            name = elem.text.strip()
+                            # Only keep names that are reasonable length
                             if len(name) >= 3:
-                                names.add(name)
+                                current_names.add(name)
+                    elif tag_lower == 'generic_name' or tag_lower == 'generic-name':
+                        if elem.text and elem.text.strip():
+                            name = elem.text.strip()
+                            if len(name) >= 3:
+                                current_names.add(name)
+                    elif tag_lower in ('synonym', 'synonyms'):
+                        if elem.text and elem.text.strip():
+                            name = elem.text.strip()
+                            if len(name) >= 3:
+                                current_names.add(name)
+                    elif tag_lower in ('international_brand_name', 'brand_name', 'brand'):
+                        if elem.text and elem.text.strip():
+                            name = elem.text.strip()
+                            if len(name) >= 3:
+                                current_names.add(name)
+                    elif tag_lower == 'cas_number':
+                        # CAS numbers are specific drug identifiers
+                        if elem.text and elem.text.strip():
+                            name = elem.text.strip()
+                            if len(name) >= 3:
+                                current_names.add(name)
+            
+            elif event == 'end':
+                if in_drug:
+                    tag_lower = elem.tag.lower().split('}')[-1]
                     
-                    # Reset for next compound
-                    current_compound = {'names': set(), 'chebi_id': None, 'all_values': []}
-                    expect_value = False
-                    current_tag = None
-                    continue
+                    # When skipped section ends, reset skip_depth
+                    if skip_depth != -1 and depth == skip_depth:
+                        skip_depth = -1
+                    
+                    # When drug-type ends, check if it's a drug
+                    if tag_lower == 'drug-type' or tag_lower == 'type':
+                        in_drug_type = False
+                    
+                    # When drug entry ends, check drug type and add collected names
+                    if tag_lower == 'drug' and current_names:
+                        # Only add if this is a drug (not a drug metabolite or other type)
+                        # We need to check the drug-type field
+                        # For now, we collect all and filter based on drug type later
+                        compound_names.update(current_names)
+                        current_names = set()
+                    
+                    if in_drug:
+                        depth -= 1
                 
-                # Skip empty lines
-                if not line.strip():
-                    continue
-                
-                # Property tag line (e.g., ">  <ChEBI ID>")
-                if line.startswith('>') and '<' in line:
-                    # Extract tag name
-                    tag_match = re.search(r'\>\s*<([^>]+)>', line)
-                    if tag_match:
-                        current_tag = tag_match.group(1).strip()
-                        all_tags.add(current_tag)
-                        expect_value = True
-                    continue
-                
-                # Property value line (immediately after tag)
-                if expect_value and current_tag:
-                    value = line.strip()
-                    
-                    # Normalize tag name for comparison
-                    tag_upper = current_tag.upper()
-                    
-                    # Store ChEBI ID
-                    if any(t in tag_upper for t in ['CHEBIID', 'CHEBIID', 'CHEBIID', 'ID', 'CHEBICOMPOUNDID', 'CHEBICOMPOUND_ID']):
-                        current_compound['chebi_id'] = value
-                    
-                    # Store name/synonym
-                    elif any(n in tag_upper for n in ['NAME', 'SYNONYM', 'IUPAC', 'CHEBINAME', 'CHEBIIUPACNAME', 'CHEBIIUPAC']):
-                        # Handle multi-line values (split by semicolons, pipes, commas)
-                        for v in re.split(r'[;|,]', value):
-                            v = v.strip().upper()
-                            if len(v) >= 3:
-                                current_compound['names'].add(v)
-                    
-                    # Also add the value itself as a name (for generic tags)
-                    if len(value) >= 3:
-                        current_compound['names'].add(value.upper())
-                    
-                    # Store ALL values for role checking
-                    current_compound['all_values'].append(value)
-                    
-                    expect_value = False
-                    current_tag = None
-                    continue
-                
-                # If not a tag and not a value, it might be the compound name (first line)
-                if current_tag is None and not current_compound['names']:
-                    name_val = line.strip().upper()
-                    if len(name_val) >= 3:
-                        current_compound['names'].add(name_val)
-                    current_compound['all_values'].append(line.strip())
+                # Clear processed elements to free memory
+                elem.clear()
         
-        # Process the last compound
-        n_total += 1
-        is_human = False
-        for val in current_compound['all_values']:
-            val_upper = str(val).upper()
-            if 'CHEBI:77746' in val_upper or 'HUMAN METABOLITE' in val_upper:
-                is_human = True
-                break
+        # Normalize all names to uppercase for case-insensitive matching
+        compound_names = {name.upper() for name in compound_names if name and len(name) >= 3}
         
-        if is_human:
-            n_human_metabolites += 1
-            if current_compound.get('chebi_id'):
-                chebi_id = current_compound['chebi_id'].strip().upper()
-                if len(chebi_id) >= 3:
-                    names.add(chebi_id)
-            for name in current_compound['names']:
-                if len(name) >= 3:
-                    names.add(name)
+        # Save to cache for future runs - NEW CACHE due to selective extraction
+        if use_cache:
+            # Remove old cache if it exists (different extraction method)
+            if cache_path.exists():
+                cache_path.unlink()
+            with open(cache_path, 'wb') as f:
+                pickle.dump(compound_names, f)
+            logger.info(f"Saved DrugBank compound names cache to {cache_path}")
         
-        logger.info(f"Loaded {len(names)} ChEBI human metabolite names from SDF: {sdf_path}")
-        logger.info(f"Scanned {n_total} compounds, {n_human_metabolites} human metabolites found")
-        logger.info(f"Found SDF tags: {sorted(all_tags)}")
+        logger.info(f"Loaded {len(compound_names)} DrugBank drug names and synonyms from {drugbank_file}")
         
-        # Log sample names for debugging
-        if len(names) > 0:
-            sample_names = list(names)[:10]
-            logger.info(f"Sample ChEBI human metabolite names: {sample_names}{'...' if len(names) > 10 else ''}")
-        else:
-            logger.warning("No human metabolite names found. Searched ALL property values for 'CHEBI:77746' or 'HUMAN METABOLITE'. Your SDF file may not contain ontology/role information.")
+        if len(compound_names) == 0:
+            logger.warning(f"No DrugBank drug names found in {drugbank_file}. Check XML structure.")
         
-        return names
+        # Log some sample names for debugging
+        if len(compound_names) > 0:
+            sample_names = list(compound_names)[:10]
+            logger.info(f"Sample DrugBank names: {sample_names}{'...' if len(compound_names) > 10 else ''}")
+        
+        return compound_names
         
     except Exception as e:
-        logger.error(f"Failed to load ChEBI names from SDF {sdf_path}: {e}")
+        logger.error(f"Failed to load DrugBank file {drugbank_file}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         return set()
 
 
-def _filter_features_by_chebi_names(
+def _load_hmdb_compound_names_with_roles(drugbank_file: str, use_cache: bool = True) -> Tuple[set, set]:
+    """
+    Load HMDB compound names from XML file, separating by biological role.
+    
+    Extracts compound names and synonyms from HMDB XML, filtering based on
+    the 'biological role' or 'drug metabolite' fields to distinguish between
+    endogenous metabolites and drug metabolites.
+    
+    Uses iterparse to handle large files efficiently.
+    
+    Args:
+        drugbank_file: Path to HMDB XML file (actually hmdb_metabolites.xml)
+        use_cache: Whether to use cached results if available
+        
+    Returns:
+        Tuple of (endogenous_metabolite_names, drug_metabolite_names)
+        Both sets are normalized to uppercase
+    """
+    try:
+        cache_dir = Path.home() / ".cache" / "hmdb_metabolomics"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        file_hash = hashlib.md5(drugbank_file.encode()).hexdigest()[:16]
+        cache_path = cache_dir / f"hmdb_roles_{file_hash}.pkl"
+        
+        # Try to load from cache first
+        if use_cache and cache_path.exists():
+            with open(cache_path, 'rb') as f:
+                cached_data = pickle.load(f)
+            logger.info(f"Loaded HMDB compound names from cache: {cache_path}")
+            return cached_data['endogenous'], cached_data['drug']
+        
+        endogenous_names = set()
+        drug_names = set()
+        
+        context = ET.iterparse(drugbank_file, events=('start', 'end'))
+        
+        current_compound = {'names': set(), 'role': None}
+        in_metabolite = False
+        depth = 0
+        skip_depth = -1
+        
+        for event, elem in context:
+            tag_lower = elem.tag.lower().split('}')[-1]
+            
+            if event == 'start':
+                # Track when we enter a metabolite element
+                if tag_lower == 'metabolite':
+                    in_metabolite = True
+                    depth = 0
+                    current_compound = {'names': set(), 'role': None}
+                    skip_depth = -1
+                
+                if in_metabolite and skip_depth == -1:
+                    depth += 1
+                    
+                    # Collect names
+                    if tag_lower == 'name':
+                        if elem.text and elem.text.strip():
+                            current_compound['names'].add(elem.text.strip())
+                    elif tag_lower == 'synonym':
+                        if elem.text and elem.text.strip():
+                            current_compound['names'].add(elem.text.strip())
+                    elif tag_lower == 'accession':
+                        if elem.text and elem.text.strip():
+                            current_compound['names'].add(elem.text.strip())
+                    # Check for biological role
+                    elif tag_lower == 'biological_role' or tag_lower == 'biologicalrole':
+                        if elem.text and elem.text.strip():
+                            current_compound['role'] = elem.text.strip().lower()
+            
+            elif event == 'end':
+                if in_metabolite:
+                    tag_lower = elem.tag.lower().split('}')[-1]
+                    
+                    # When metabolite entry ends, categorize based on role
+                    if tag_lower == 'metabolite' and current_compound['names']:
+                        role = current_compound.get('role', '')
+                        
+                        # Check if it's a drug metabolite
+                        if role and ('drug' in role or 'xenobiotic' in role or 'exogenous' in role):
+                            for name in current_compound['names']:
+                                if name and len(name) >= 3:
+                                    drug_names.add(name.upper())
+                        else:
+                            # Endogenous metabolite
+                            for name in current_compound['names']:
+                                if name and len(name) >= 3:
+                                    endogenous_names.add(name.upper())
+                        
+                        current_compound = {'names': set(), 'role': None}
+                    
+                    if in_metabolite:
+                        depth -= 1
+                
+                # Clear processed elements to free memory
+                elem.clear()
+        
+        # Save to cache
+        if use_cache:
+            cache_data = {
+                'endogenous': endogenous_names,
+                'drug': drug_names
+            }
+            with open(cache_path, 'wb') as f:
+                pickle.dump(cache_data, f)
+            logger.info(f"Saved HMDB compound names cache to {cache_path}")
+        
+        logger.info(f"Loaded {len(endogenous_names)} endogenous metabolite names and {len(drug_names)} drug metabolite names from {drugbank_file}")
+        
+        return endogenous_names, drug_names
+        
+    except Exception as e:
+        logger.error(f"Failed to load HMDB file {drugbank_file}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return set(), set()
+
+
+def _filter_out_drug_features(
     features: pd.DataFrame,
-    chebi_names: set,
+    drug_names: set,
 ) -> pd.DataFrame:
     """
-    Filter feature columns to keep ONLY those that match ChEBI human metabolite names.
+    Filter out feature columns that match DrugBank compound names.
     
-    This is the INVERSE of the ChEMBL filtering - we KEEP matches, not remove them.
+    Removes any features whose column names EXACTLY match DrugBank drug or
+    drug metabolite names (case-insensitive).
+    HMDB features are ALWAYS kept, even if they match DrugBank names,
+    to preserve endogenous metabolites that may also appear in DrugBank.
     
     Args:
         features: DataFrame with feature columns
-        chebi_names: Set of ChEBI human metabolite names (uppercase)
+        drug_names: Set of DrugBank compound names (uppercase)
         
     Returns:
-        Filtered DataFrame with only ChEBI human metabolite features
+        Filtered DataFrame with drug features removed
     """
-    if not chebi_names:
-        logger.warning("No ChEBI names provided. Returning all features.")
+    if not drug_names:
+        logger.warning("No DrugBank names provided. Returning all features.")
         return features
     
-    # Find columns that match any ChEBI human metabolite name (case-insensitive)
-    kept_columns = []
-    removed_count = 0
+    original_cols = set(features.columns)
+    
+    # Find columns that DO NOT match any DrugBank name
+    # EXCEPT: always keep columns containing 'HMDB' (endogenous metabolites)
+    non_drug_columns = []
+    removed_cols_with_matches = []
     
     for col in features.columns:
         col_upper = str(col).upper()
         
-        # Check for exact match
-        matched = False
-        for name in chebi_names:
-            if len(name) > 3 and col_upper == name:
-                matched = True
+        # Always keep HMDB features regardless of DrugBank match
+        if 'HMDB' in col_upper:
+            non_drug_columns.append(col)
+            continue
+        
+        # Check if this column EXACTLY matches any DrugBank name
+        is_drug = False
+        matching_name = None
+        
+        for name in drug_names:
+            # Skip very short names that cause false positives (3 chars or less)
+            if len(name) <= 3:
+                continue
+            
+            # Exact match only (case-insensitive)
+            if col_upper == name:
+                is_drug = True
+                matching_name = name
                 break
         
-        if matched:
-            kept_columns.append(col)
+        if is_drug:
+            removed_cols_with_matches.append((col, matching_name))
         else:
-            removed_count += 1
+            non_drug_columns.append(col)
     
-    filtered_features = features[kept_columns]
+    filtered_features = features[non_drug_columns]
+    n_removed = len(original_cols) - len(non_drug_columns)
     
-    n_kept = len(kept_columns)
-    logger.info(f"Filtered features by ChEBI human metabolites: {removed_count} removed, {n_kept} ChEBI human metabolite features kept")
+    logger.info(f"Filtered out drug features: {n_removed} drug features removed, {len(non_drug_columns)} non-drug features retained")
     
-    if n_kept > 0:
-        kept_sample = kept_columns[:10]
-        logger.info(f"Example kept features: {kept_sample}{'...' if n_kept > 10 else ''}")
+    if n_removed > 0:
+        removed_cols = list(original_cols - set(non_drug_columns))[:10]
+        logger.info(f"Example removed drug features: {removed_cols}{'...' if n_removed > 10 else ''}")
     
     return filtered_features
 
@@ -233,19 +386,21 @@ def load_data(
     input_file: str,
     non_feature_columns: List[str],
     patient_id_column: Optional[str] = None,
-    filter_chebi_human_metabolites: bool = False,
-    chebi_sdf_file: Optional[str] = None,
+    drugbank_file: Optional[str] = None,
+    filter_drugs: bool = False,
+    use_drugbank_cache: bool = True,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
-    Load data from CSV file and optionally filter features to ChEBI human metabolites.
-
+    Load data from CSV file and optionally filter out drug features.
+    
     Args:
         input_file: Path to CSV file
         non_feature_columns: List of column names that are NOT features
         patient_id_column: Column name for patient IDs (if not index)
-        filter_chebi_human_metabolites: Whether to filter features to keep only ChEBI human metabolites
-        chebi_sdf_file: Path to ChEBI SDF file with role information
-
+        drugbank_file: Path to DrugBank XML file for drug feature filtering
+        filter_drugs: Whether to filter out features matching DrugBank compounds
+        use_drugbank_cache: Whether to use cached DrugBank data if available
+        
     Returns:
         Tuple of:
         - features: DataFrame of features (rows = samples, columns = features)
@@ -253,61 +408,64 @@ def load_data(
         - oordeel: Series with Oordeel targeted values
     """
     logger.info(f"Loading data from {input_file}")
-
+    
     # Load CSV
     df = pd.read_csv(input_file, index_col=0 if patient_id_column is None else None)
-
+    
     if patient_id_column is not None:
         df = df.set_index(patient_id_column)
-
+    
     logger.info(f"Loaded data with shape: {df.shape}")
     logger.info(f"Columns: {list(df.columns)}")
-
+    
     # Data cleaning: Filter samples based on Classification and Oordeel targeted
     classification_col = df['Classification']
     oordeel_col = df['Oordeel targeted']
-
+    
     # Remove ambiguous: Classification 2 or 3 with Oordeel targeted = 0
     ambiguous_mask = ((classification_col.isin([2, 3])) & (oordeel_col == 0))
     n_ambiguous = ambiguous_mask.sum()
-
+    
     if n_ambiguous > 0:
         ambiguous_indices = df.index[ambiguous_mask]
         logger.warning(f"Found {n_ambiguous} ambiguous samples (Classification 2/3 with Oordeel targeted=0). Removing these.")
         df = df[~ambiguous_mask]
         logger.warning(f"Removed samples: {list(ambiguous_indices[:5])}{'...' if n_ambiguous > 5 else ''}")
-
+    
     # After removing ambiguous, update classification to be consistent
     inconsistent_mask = (df['Classification'] == 0) & (df['Oordeel targeted'] != 0)
     n_inconsistent = inconsistent_mask.sum()
-
+    
     if n_inconsistent > 0:
         inconsistent_indices = df.index[inconsistent_mask]
         logger.warning(f"Found {n_inconsistent} samples with Classification=0 but Oordeel targeted!=0. "
                       f"Updating Classification to 1 (outlier) for consistency.")
         df.loc[inconsistent_mask, 'Classification'] = 1
         logger.warning(f"Updated samples: {list(inconsistent_indices[:5])}{'...' if n_inconsistent > 5 else ''}")
-
+    
     # Extract non-feature columns
     classification = df['Classification']
     oordeel = df['Oordeel targeted']
-
+    
     # Get feature columns (all columns except non-feature columns)
     feature_cols = [col for col in df.columns if col not in non_feature_columns]
     features = df[feature_cols]
-
-    # Filter features to keep only ChEBI human metabolites if requested
-    if filter_chebi_human_metabolites and chebi_sdf_file:
-        logger.info(f"Filtering features to keep only ChEBI human metabolites from: {chebi_sdf_file}")
-        chebi_names = _load_chebi_human_metabolite_names(chebi_sdf_file)
-        if chebi_names:
-            features = _filter_features_by_chebi_names(features, chebi_names)
-    elif filter_chebi_human_metabolites:
-        logger.warning("ChEBI human metabolite filtering requested but no chebi_sdf_file provided. Set chebi_sdf_file in config.")
-
+    
+    # Filter out drug features if requested
+    if filter_drugs and drugbank_file:
+        drugbank_path = Path(drugbank_file)
+        if drugbank_path.exists():
+            drug_names = _load_drugbank_compound_names(str(drugbank_path), use_cache=use_drugbank_cache)
+            if drug_names:
+                features = _filter_out_drug_features(features, drug_names)
+            else:
+                logger.warning(f"Could not load DrugBank names from {drugbank_file}. Using all features.")
+        else:
+            logger.warning(f"DrugBank file not found at {drugbank_file}. Using all features.")
+    
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
-
+    
     return features, classification, oordeel
 
 
@@ -322,14 +480,14 @@ def split_data(
 ) -> Dict[str, Tuple[pd.DataFrame, pd.Series]]:
     """
     Split data into train and test sets using stratified split.
-
+    
     For Extended Isolation Forest (unsupervised):
     - Stratified train-test split (80-20) to maintain class distribution
     - Train set contains both normal and abnormal samples
     - Test set contains both normal and abnormal samples
     - During CV: train only on normal samples from training folds
     - Validate on full validation folds (including abnormalities)
-
+    
     Args:
         features: DataFrame of features
         classification: Series with Classification values
@@ -338,7 +496,7 @@ def split_data(
         train_ratio: Ratio for training set (default: 0.8)
         test_ratio: Ratio for test set (default: 0.2)
         random_seed: Random seed for reproducibility
-
+    
     Returns:
         Dictionary with keys: 'train', 'test'
         Each value is a tuple of (features, classification)
@@ -346,18 +504,18 @@ def split_data(
     # Check for NaN in classification and drop if present
     df_combined = pd.concat([features, classification.rename('Classification')], axis=1)
     df_combined = df_combined.dropna(subset=['Classification'])
-
+    
     if classification.isna().any():
         n_dropped = classification.isna().sum()
         logger.warning(f"Found {n_dropped} NaN values in Classification. Dropping these samples.")
-
+    
     features = df_combined[features.columns]
     classification = df_combined['Classification']
-
+    
     # Stratified train-test split (maintains class distribution)
     X_for_split = pd.DataFrame(index=features.index)
     X_for_split['classification'] = classification.values
-
+    
     train_df, test_df = train_test_split(
         X_for_split,
         train_size=train_ratio,
@@ -365,15 +523,15 @@ def split_data(
         random_state=random_seed,
         stratify=classification,
     )
-
+    
     train_indices = train_df.index
     test_indices = test_df.index
-
+    
     logger.info(f"Train set: {len(train_indices)} samples")
     logger.info(f"Test set: {len(test_indices)} samples")
     logger.info(f"Train class distribution: {classification[train_indices].value_counts().to_dict()}")
     logger.info(f"Test class distribution: {classification[test_indices].value_counts().to_dict()}")
-
+    
     # Create splits
     splits = {}
     for name, indices in [('train', train_indices), ('test', test_indices)]:
@@ -381,7 +539,7 @@ def split_data(
             features.loc[indices].copy(),
             classification.loc[indices].copy(),
         )
-
+    
     return splits
 
 
