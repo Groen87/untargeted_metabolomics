@@ -19,6 +19,16 @@ non_feature_columns:
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
+# Manual metabolite exclusion (optional)
+# List metabolite/feature names to drop from the analysis. Matching is exact
+# and case-insensitive (after Unicode normalization), so enter the names
+# exactly as they appear in the input CSV columns. Leave empty/null to disable.
+exclude_metabolites: []
+# exclude_metabolites:
+#   - "Creatinine"
+#   - "Glucose"
+#   - "HMDB0000122"
+
 # HMDB filtering - keep only endogenous (Metabolic/Disease pathway) metabolites
 # Reads endogenous_metabolites.tsv produced by hmdb_drug_filter.py
 # (columns: HMDB_ID, Name, Synonyms). Acts as a positive keep-list:
