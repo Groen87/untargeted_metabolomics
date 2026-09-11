@@ -220,6 +220,58 @@ def _filter_to_endogenous_features(
     return filtered_features
 
 
+def _exclude_metabolites(
+    features: pd.DataFrame,
+    exclude_names: List[str],
+) -> pd.DataFrame:
+    """
+    Drop feature columns whose names match a user-supplied exclude list.
+
+    Matching is exact and case-insensitive after Unicode normalization (the
+    same normalization used for the HMDB keep-list), so a user can enter
+    metabolite names with any casing or surrounding whitespace.
+
+    Args:
+        features: DataFrame with feature columns
+        exclude_names: List of metabolite/feature names to exclude
+
+    Returns:
+        DataFrame with the matched feature columns removed
+    """
+    if not exclude_names:
+        return features
+
+    exclude_set = {
+        _normalize_name(name)
+        for name in exclude_names
+        if name is not None and str(name).strip() != ''
+    }
+    exclude_set = {n for n in exclude_set if n}
+    if not exclude_set:
+        return features
+
+    original_cols = list(features.columns)
+    kept_columns = [
+        col for col in original_cols
+        if _normalize_name(col) not in exclude_set
+    ]
+    removed_cols = [col for col in original_cols if col not in kept_columns]
+
+    filtered_features = features[kept_columns]
+
+    logger.info(
+        f"Excluded {len(removed_cols)} metabolite features, "
+        f"{len(kept_columns)} features remaining"
+    )
+    if removed_cols:
+        logger.info(
+            f"Excluded features: {removed_cols[:10]}"
+            f"{'...' if len(removed_cols) > 10 else ''}"
+        )
+
+    return filtered_features
+
+
 def load_data(
     input_file: str,
     non_feature_columns: List[str],
@@ -227,6 +279,7 @@ def load_data(
     endogenous_metabolites_file: Optional[str] = None,
     filter_to_endogenous: bool = False,
     use_hmdb_cache: bool = True,
+    exclude_metabolites: Optional[List[str]] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
@@ -240,6 +293,8 @@ def load_data(
         filter_to_endogenous: Whether to filter features to the endogenous
             metabolite keep-list
         use_hmdb_cache: Whether to use cached HMDB data if available
+        exclude_metabolites: Optional list of metabolite/feature names to drop
+            from the analysis (exact, case-insensitive match)
 
     Returns:
         Tuple of:
@@ -248,10 +303,10 @@ def load_data(
         - oordeel: Series with Oordeel targeted values
     """
     logger.info(f"Loading data from {input_file}")
-    
+
     # Load CSV
     df = pd.read_csv(input_file, index_col=0 if patient_id_column is None else None)
-    
+
     if patient_id_column is not None:
         df = df.set_index(patient_id_column)
     
@@ -291,6 +346,10 @@ def load_data(
     feature_cols = [col for col in df.columns if col not in non_feature_columns]
     features = df[feature_cols]
     
+    # Exclude user-specified metabolite features (exact, case-insensitive match)
+    if exclude_metabolites:
+        features = _exclude_metabolites(features, exclude_metabolites)
+
     # Filter to endogenous metabolite features if requested
     if filter_to_endogenous and endogenous_metabolites_file:
         endogenous_path = Path(endogenous_metabolites_file)
