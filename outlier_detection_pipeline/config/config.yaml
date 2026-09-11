@@ -19,10 +19,14 @@ non_feature_columns:
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 
-# HMDB filtering - remove drug metabolite features
-filter_drug_metabolites: false  # Filter out features matching HMDB drug metabolites
+# HMDB filtering - keep only endogenous (Metabolic/Disease pathway) metabolites
+# Reads endogenous_metabolites.tsv produced by hmdb_drug_filter.py
+# (columns: HMDB_ID, Name, Synonyms). Acts as a positive keep-list:
+# only features matching a name in the file are kept; HMDB-prefixed
+# feature columns are always kept regardless.
+filter_to_endogenous: false  # Filter features to the endogenous metabolite keep-list
 use_hmdb_cache: true  # Use cached HMDB data for faster subsequent runs
-hmdb_file: null  # Path to HMDB XML file (e.g., "data/hmdb_metabolites.xml")
+endogenous_metabolites_file: null  # Path to endogenous_metabolites.tsv (output of hmdb_drug_filter.py)
 
 # Outlier analysis
 use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis

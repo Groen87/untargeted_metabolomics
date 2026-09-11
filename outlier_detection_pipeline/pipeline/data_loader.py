@@ -4,18 +4,20 @@ Data loading and preprocessing module for outlier detection pipeline.
 Handles:
 - Loading merged_data_with_classification.csv
 - Identifying feature vs non-feature columns
-- Filtering out drug/drug metabolite features from HMDB XML
-  - Removes features matching HMDB compounds with 'Drug action pathway' in Process
-  - Keeps features matching HMDB compounds with 'Metabolic pathway' in Process
+- Filtering features against an HMDB endogenous metabolites keep-list
+  - Reads a precomputed TSV produced by hmdb_drug_filter.py
+    (columns: HMDB_ID, Name, Synonyms) listing metabolites with
+    Metabolic or Disease pathways
+  - Keeps only feature columns that match a name in the keep-list
+  - HMDB-prefixed feature columns are always kept
 - Splitting data into train/validation/test sets based on Classification
 """
 
 import pandas as pd
 import numpy as np
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Set
 from sklearn.model_selection import train_test_split
 import logging
-import xml.etree.ElementTree as ET
 from pathlib import Path
 import pickle
 import hashlib
@@ -23,237 +25,166 @@ import hashlib
 logger = logging.getLogger(__name__)
 
 
-def _get_hmdb_cache_path(hmdb_file: str) -> Path:
+def _get_hmdb_cache_path(endogenous_file: str) -> Path:
     """
-    Get the cache file path for a given HMDB file.
-    
+    Get the cache file path for a given endogenous metabolites file.
+
     Args:
-        hmdb_file: Path to HMDB XML file
-        
+        endogenous_file: Path to endogenous_metabolites.tsv
+
     Returns:
         Path to the cache pickle file
     """
     cache_dir = Path.home() / ".cache" / "hmdb_metabolomics"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    file_hash = hashlib.md5(hmdb_file.encode()).hexdigest()[:16]
-    return cache_dir / f"hmdb_names_{file_hash}.pkl"
+    file_hash = hashlib.md5(endogenous_file.encode()).hexdigest()[:16]
+    return cache_dir / f"endogenous_names_{file_hash}.pkl"
 
 
-def _load_hmdb_compound_names(hmdb_file: str, use_cache: bool = True) -> Tuple[set, set]:
+def _load_endogenous_metabolite_names(endogenous_file: str, use_cache: bool = True) -> Set[str]:
     """
-    Load compound names from HMDB XML file, categorizing by pathway type.
-    
-    Extracts compound names and accession numbers from HMDB XML.
-    Categorizes compounds based on their Process field:
-    - Drug metabolites: compounds with 'Drug action pathway' but NO 'Metabolic pathway'
-    - Endogenous metabolites: compounds with 'Metabolic pathway'
-    
-    Uses iterparse to handle large files efficiently.
-    
+    Load the set of endogenous metabolite names from a precomputed TSV file.
+
+    The TSV is produced by hmdb_drug_filter.py and contains metabolites that
+    have at least one Metabolic or Disease pathway. It has the columns:
+        HMDB_ID <TAB> Name <TAB> Synonyms
+    where Synonyms is a '; '-separated list of alternative names.
+
+    The returned set contains the HMDB ID, the primary Name, and each synonym,
+    all normalized to uppercase. Very short names (shorter than 3 characters)
+    are skipped to avoid false-positive matches.
+
     Args:
-        hmdb_file: Path to HMDB XML file
+        endogenous_file: Path to endogenous_metabolites.tsv
         use_cache: Whether to use cached results if available
-        
+
     Returns:
-        Tuple of (endogenous_metabolite_names, drug_metabolite_names)
-        Both sets are normalized to uppercase
+        Set of endogenous metabolite names (uppercase). Empty on failure.
     """
     try:
-        cache_path = _get_hmdb_cache_path(hmdb_file)
-        
+        cache_path = _get_hmdb_cache_path(endogenous_file)
+
         # Try to load from cache first
         if use_cache and cache_path.exists():
             with open(cache_path, 'rb') as f:
                 cached_data = pickle.load(f)
-            logger.info(f"Loaded HMDB compound names from cache: {cache_path}")
-            return cached_data['endogenous'], cached_data['drug']
-        
-        endogenous_names = set()
-        drug_names = set()
-        
-        context = ET.iterparse(hmdb_file, events=('start', 'end'))
-        
-        current_compound = {
-            'names': set(),
-            'accession': None,
-            'has_drug_pathway': False,
-            'has_metabolic_pathway': False
-        }
-        in_metabolite = False
-        depth = 0
-        skip_depth = -1
-        
-        for event, elem in context:
-            tag_lower = elem.tag.lower().split('}')[-1]
-            
-            if event == 'start':
-                # Track when we enter a metabolite element
-                if tag_lower == 'metabolite':
-                    in_metabolite = True
-                    depth = 0
-                    current_compound = {
-                        'names': set(),
-                        'accession': None,
-                        'has_drug_pathway': False,
-                        'has_metabolic_pathway': False
-                    }
-                    skip_depth = -1
-                
-                if in_metabolite and skip_depth == -1:
-                    depth += 1
-                    
-                    # Collect accession (HMDB ID)
-                    if tag_lower == 'accession':
-                        if elem.text and elem.text.strip():
-                            current_compound['accession'] = elem.text.strip()
-                    
-                    # Collect names
-                    elif tag_lower == 'name':
-                        if elem.text and elem.text.strip():
-                            current_compound['names'].add(elem.text.strip())
-                    elif tag_lower == 'synonym':
-                        if elem.text and elem.text.strip():
-                            current_compound['names'].add(elem.text.strip())
-                    
-                    # Check for pathway information
-                    elif tag_lower == 'process':
-                        if elem.text and elem.text.strip():
-                            process_text = elem.text.strip().lower()
-                            if 'drug action pathway' in process_text:
-                                current_compound['has_drug_pathway'] = True
-                            if 'metabolic pathway' in process_text:
-                                current_compound['has_metabolic_pathway'] = True
-            
-            elif event == 'end':
-                if in_metabolite:
-                    tag_lower = elem.tag.lower().split('}')[-1]
-                    
-                    # When metabolite entry ends, categorize based on pathways
-                    if tag_lower == 'metabolite':
-                        # Add accession to names
-                        if current_compound['accession']:
-                            current_compound['names'].add(current_compound['accession'])
-                        
-                        # Categorize: Drug metabolite if has drug pathway but NO metabolic pathway
-                        if current_compound['has_drug_pathway'] and not current_compound['has_metabolic_pathway']:
-                            for name in current_compound['names']:
-                                if name and len(name) >= 3:
-                                    drug_names.add(name.upper())
-                        else:
-                            # Endogenous or both - keep as endogenous
-                            for name in current_compound['names']:
-                                if name and len(name) >= 3:
-                                    endogenous_names.add(name.upper())
-                        
-                        current_compound = {
-                            'names': set(),
-                            'accession': None,
-                            'has_drug_pathway': False,
-                            'has_metabolic_pathway': False
-                        }
-                    
-                    if in_metabolite:
-                        depth -= 1
-                
-                # Clear processed elements to free memory
-                elem.clear()
-        
+            logger.info(f"Loaded endogenous metabolite names from cache: {cache_path}")
+            return cached_data['endogenous']
+
+        endogenous_names: Set[str] = set()
+
+        endogenous_path = Path(endogenous_file)
+        with open(endogenous_path, 'r', encoding='utf-8') as f:
+            header = f.readline().rstrip('\n')
+            expected_cols = ['HMDB_ID', 'Name', 'Synonyms']
+            cols = [c.strip() for c in header.split('\t')]
+            if cols != expected_cols:
+                logger.warning(
+                    f"Unexpected header in {endogenous_file}: {cols}. "
+                    f"Expected {expected_cols}. Proceeding by column position."
+                )
+
+            for line in f:
+                line = line.rstrip('\n')
+                if not line:
+                    continue
+                fields = line.split('\t')
+                # Pad in case Synonyms is missing
+                while len(fields) < 3:
+                    fields.append('')
+                hmdb_id = fields[0].strip()
+                name = fields[1].strip()
+                synonyms_str = fields[2].strip()
+
+                if hmdb_id:
+                    endogenous_names.add(hmdb_id.upper())
+                if name:
+                    endogenous_names.add(name.upper())
+                if synonyms_str:
+                    for syn in synonyms_str.split(';'):
+                        syn = syn.strip()
+                        if syn:
+                            endogenous_names.add(syn.upper())
+
+        # Drop very short names that cause false positives
+        endogenous_names = {n for n in endogenous_names if len(n) >= 3}
+
         # Save to cache
         if use_cache:
-            cache_data = {
-                'endogenous': endogenous_names,
-                'drug': drug_names
-            }
             with open(cache_path, 'wb') as f:
-                pickle.dump(cache_data, f)
-            logger.info(f"Saved HMDB compound names cache to {cache_path}")
-        
-        logger.info(f"Loaded {len(endogenous_names)} endogenous metabolite names and {len(drug_names)} drug metabolite names from {hmdb_file}")
-        
-        # Log sample names for debugging
-        if len(drug_names) > 0:
-            sample_drug = list(drug_names)[:10]
-            logger.info(f"Sample drug metabolite names: {sample_drug}{'...' if len(drug_names) > 10 else ''}")
+                pickle.dump({'endogenous': endogenous_names}, f)
+            logger.info(f"Saved endogenous metabolite names cache to {cache_path}")
+
+        logger.info(f"Loaded {len(endogenous_names)} endogenous metabolite names from {endogenous_file}")
+
         if len(endogenous_names) > 0:
             sample_endogenous = list(endogenous_names)[:10]
             logger.info(f"Sample endogenous metabolite names: {sample_endogenous}{'...' if len(endogenous_names) > 10 else ''}")
-        
-        return endogenous_names, drug_names
-        
+
+        return endogenous_names
+
     except Exception as e:
-        logger.error(f"Failed to load HMDB file {hmdb_file}: {e}")
+        logger.error(f"Failed to load endogenous metabolites file {endogenous_file}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-        return set(), set()
+        return set()
 
 
-def _filter_out_drug_features(
+def _filter_to_endogenous_features(
     features: pd.DataFrame,
-    drug_names: set,
+    endogenous_names: set,
 ) -> pd.DataFrame:
     """
-    Filter out feature columns that match HMDB drug metabolite names.
-    
-    Removes any features whose column names EXACTLY match HMDB drug metabolite
-    names (case-insensitive).
-    HMDB features are ALWAYS kept, even if they match drug names,
-    to preserve endogenous metabolites that may also appear in the drug list.
-    
+    Keep only feature columns that match the HMDB endogenous metabolite keep-list.
+
+    A feature column is retained if EITHER:
+      - its name contains 'HMDB' (endogenous metabolites are always kept), OR
+      - its name EXACTLY matches (case-insensitive) a name in the keep-list.
+
+    Feature columns that do not match are removed. This is a positive
+    keep-list: features not present in the HMDB keep-list are dropped.
+
     Args:
         features: DataFrame with feature columns
-        drug_names: Set of HMDB drug metabolite names (uppercase)
-        
+        endogenous_names: Set of HMDB endogenous metabolite names (uppercase)
+
     Returns:
-        Filtered DataFrame with drug features removed
+        Filtered DataFrame containing only kept feature columns
     """
-    if not drug_names:
-        logger.warning("No drug metabolite names provided. Returning all features.")
+    if not endogenous_names:
+        logger.warning("No endogenous metabolite names provided. Returning all features.")
         return features
-    
+
     original_cols = set(features.columns)
-    
-    # Find columns that DO NOT match any drug metabolite name
-    # EXCEPT: always keep columns containing 'HMDB' (endogenous metabolites)
-    non_drug_columns = []
-    removed_cols_with_matches = []
-    
+
+    kept_columns = []
+    removed_cols = []
+
     for col in features.columns:
         col_upper = str(col).upper()
-        
-        # Always keep HMDB features regardless of drug match
+
+        # Always keep HMDB features regardless of keep-list match
         if 'HMDB' in col_upper:
-            non_drug_columns.append(col)
+            kept_columns.append(col)
             continue
-        
-        # Check if this column EXACTLY matches any drug metabolite name
-        is_drug = False
-        matching_name = None
-        
-        for name in drug_names:
-            # Skip very short names that cause false positives (3 chars or less)
-            if len(name) <= 3:
-                continue
-            
-            # Exact match only (case-insensitive)
-            if col_upper == name:
-                is_drug = True
-                matching_name = name
-                break
-        
-        if is_drug:
-            removed_cols_with_matches.append((col, matching_name))
+
+        # Exact match (case-insensitive) against the keep-list
+        if col_upper in endogenous_names:
+            kept_columns.append(col)
         else:
-            non_drug_columns.append(col)
-    
-    filtered_features = features[non_drug_columns]
-    n_removed = len(original_cols) - len(non_drug_columns)
-    
-    logger.info(f"Filtered out drug metabolite features: {n_removed} drug features removed, {len(non_drug_columns)} non-drug features retained")
-    
+            removed_cols.append(col)
+
+    filtered_features = features[kept_columns]
+    n_removed = len(original_cols) - len(kept_columns)
+
+    logger.info(
+        f"Filtered to endogenous metabolite features: {n_removed} features removed, "
+        f"{len(kept_columns)} endogenous features retained"
+    )
+
     if n_removed > 0:
-        removed_cols = list(original_cols - set(non_drug_columns))[:10]
-        logger.info(f"Example removed drug features: {removed_cols}{'...' if n_removed > 10 else ''}")
-    
+        logger.info(f"Example removed features: {removed_cols[:10]}{'...' if n_removed > 10 else ''}")
+
     return filtered_features
 
 
@@ -261,21 +192,23 @@ def load_data(
     input_file: str,
     non_feature_columns: List[str],
     patient_id_column: Optional[str] = None,
-    hmdb_file: Optional[str] = None,
-    filter_drug_metabolites: bool = False,
+    endogenous_metabolites_file: Optional[str] = None,
+    filter_to_endogenous: bool = False,
     use_hmdb_cache: bool = True,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
-    Load data from CSV file and optionally filter out drug metabolite features.
-    
+    Load data from CSV file and optionally filter to endogenous metabolite features.
+
     Args:
         input_file: Path to CSV file
         non_feature_columns: List of column names that are NOT features
         patient_id_column: Column name for patient IDs (if not index)
-        hmdb_file: Path to HMDB XML file for drug metabolite filtering
-        filter_drug_metabolites: Whether to filter out features matching HMDB drug metabolites
+        endogenous_metabolites_file: Path to endogenous_metabolites.tsv (the
+            output of hmdb_drug_filter.py) used as a positive keep-list
+        filter_to_endogenous: Whether to filter features to the endogenous
+            metabolite keep-list
         use_hmdb_cache: Whether to use cached HMDB data if available
-        
+
     Returns:
         Tuple of:
         - features: DataFrame of features (rows = samples, columns = features)
@@ -326,17 +259,17 @@ def load_data(
     feature_cols = [col for col in df.columns if col not in non_feature_columns]
     features = df[feature_cols]
     
-    # Filter out drug metabolite features if requested
-    if filter_drug_metabolites and hmdb_file:
-        hmdb_path = Path(hmdb_file)
-        if hmdb_path.exists():
-            endogenous_names, drug_names = _load_hmdb_compound_names(str(hmdb_path), use_cache=use_hmdb_cache)
-            if drug_names:
-                features = _filter_out_drug_features(features, drug_names)
+    # Filter to endogenous metabolite features if requested
+    if filter_to_endogenous and endogenous_metabolites_file:
+        endogenous_path = Path(endogenous_metabolites_file)
+        if endogenous_path.exists():
+            endogenous_names = _load_endogenous_metabolite_names(str(endogenous_path), use_cache=use_hmdb_cache)
+            if endogenous_names:
+                features = _filter_to_endogenous_features(features, endogenous_names)
             else:
-                logger.warning(f"Could not load HMDB drug metabolite names from {hmdb_file}. Using all features.")
+                logger.warning(f"Could not load endogenous metabolite names from {endogenous_metabolites_file}. Using all features.")
         else:
-            logger.warning(f"HMDB file not found at {hmdb_file}. Using all features.")
+            logger.warning(f"Endogenous metabolites file not found at {endogenous_metabolites_file}. Using all features.")
     
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
