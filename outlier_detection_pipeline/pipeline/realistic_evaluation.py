@@ -49,22 +49,28 @@ def run_realistic_evaluation(
     y_normal_train: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
     """
-    Run realistic LOO evaluation with an absolute anomaly threshold.
+    Run realistic evaluation with an absolute anomaly threshold (single pass).
 
     An absolute anomaly threshold is derived from the normal training score
     distribution: the (100 * target_contamination)-th percentile of the
-    model's raw score_samples() on the normal training samples. A test sample
-    is flagged as an outlier ONLY if its score falls below this cutoff, so a
-    clean batch of normals can legitimately flag 0 outliers. This decouples
-    the low realistic prevalence (e.g. 2%) from the higher contamination used
-    during training/tuning (which only affects hyperparameter selection).
+    model's raw score_samples() on the normal training samples. Every test
+    sample is then scored ONCE and flagged if its score falls below this
+    cutoff, so a clean batch of normals can legitimately flag 0 outliers.
 
-    For each iteration:
-    1. Select 1 abnormal sample (randomly from abnormal pool)
-    2. Combine with ALL test normal samples
-    3. Score the test set with raw score_samples()
-    4. Flag samples whose score <= the calibrated anomaly threshold
-    5. Check whether the abnormal sample was flagged
+    IsolationForest scores each sample independently of the other samples in
+    the batch, so a single deterministic scoring pass over all test samples
+    is fully representative of per-sample deployment behaviour; no
+    Monte-Carlo batch resampling is needed to estimate detection or
+    false-positive rate. Those per-sample metrics are prevalence-independent
+    and directly deployment-representative.
+
+    Aggregate metrics that mix the two classes (precision/F1/accuracy) depend
+    on the batch abnormal-to-normal ratio, which differs between the
+    high-prevalence labelled test set and the low-prevalence deployment
+    scenario. They are therefore computed ANALYTICALLY at the assumed
+    deployment prevalence (target_contamination) from the
+    prevalence-independent recall and FPR, rather than from the raw test-set
+    prevalence.
 
     Args:
         model: Trained ExtendedIsolationForestModel (trained on normals only)
@@ -72,39 +78,35 @@ def run_realistic_evaluation(
         X_abnormal_test: Abnormal test samples features
         y_normal_test: Normal test samples labels
         y_abnormal_test: Abnormal test samples labels
-        target_contamination: Target contamination rate (e.g. 0.02 for 2%),
-            used as the percentile of the normal-training score distribution
-            below which a test sample is flagged
-        n_iterations: Number of LOO iterations
-        random_seed: Random seed for reproducibility
+        target_contamination: Deployment contamination rate (e.g. 0.02 for
+            2%). Used (a) as the percentile of the normal-training score
+            distribution defining the absolute flag threshold, and (b) as
+            the assumed prevalence for analytic precision/F1/accuracy.
+        n_iterations: Deprecated/ignored (kept for call-site compatibility).
+            Scoring is a single deterministic pass.
+        random_seed: Kept for call-site compatibility (no longer used).
         outlier_classes: List of classification values that are outliers
         X_normal_train: Normal training samples, used to calibrate the
             absolute anomaly threshold (score reference distribution).
-            Strongly recommended: should be the normals the model trained on,
-            NOT the test normals, to avoid threshold leakage.
+            Strongly recommended: should be the normals the model trained
+            on, NOT the test normals, to avoid threshold leakage.
         y_normal_train: Normal training labels (optional)
 
     Returns:
         Dictionary with:
-        - detection_rate: % of iterations where abnormal was flagged
-        - false_positive_rate: % of normal samples flagged as outliers
-        - anomaly_threshold: The calibrated absolute score cutoff
-        - per_iteration_results: List of dicts with detailed results
-        - confusion_matrix_aggregated: Aggregated confusion matrix
-        - metrics: Aggregated metrics across all iterations
+        - detection_rate (recall): fraction of abnormals flagged (prevalence-independent)
+        - false_positive_rate: fraction of normals flagged (prevalence-independent)
+        - precision/f1/accuracy: computed analytically at deployment prevalence
+        - roc_auc: ranking quality over the scored test set
+        - anomaly_threshold: the calibrated absolute score cutoff
+        - per_iteration_results: per-sample results (one entry per test sample)
     """
     if outlier_classes is None:
         outlier_classes = [1, 2, 3]
 
-    np.random.seed(random_seed)
-
-    # For realistic evaluation: use ONLY test normals (unseen during training)
-    X_normal_combined = X_normal_test
-    y_normal_combined = y_normal_test
-
-    n_normal = len(X_normal_combined)
+    n_normal = len(X_normal_test)
     n_abnormal = len(X_abnormal_test)
-    n_test_total = n_normal + 1
+    n_test_total = n_normal + n_abnormal
 
     # Derive an absolute anomaly threshold from the normal training score
     # distribution. The threshold is the (100 * target_contamination)-th
@@ -115,9 +117,7 @@ def run_realistic_evaluation(
     # realistic (low, e.g. 2%) prevalence from the higher contamination used
     # during training/tuning.
     if X_normal_train is None or len(X_normal_train) == 0:
-        # Fall back to test normals as reference if no training normals given.
-        # (Less ideal: same distribution used for threshold and scoring.)
-        reference_normals = X_normal_combined
+        reference_normals = X_normal_test
         logger.warning(
             "No normal training samples provided for threshold calibration; "
             "falling back to test normals as the score reference."
@@ -131,152 +131,130 @@ def run_realistic_evaluation(
     # Percentile: e.g. 2nd percentile => ~2% of normals fall below this score.
     anomaly_threshold = float(np.percentile(reference_scores, 100.0 * target_contamination))
 
-    logger.info(f"\n{'='*70}")
-    logger.info("REALISTIC EVALUATION (LOO Abnormal)")
-    logger.info(f"{'='*70}")
-    logger.info(f"Normal samples (test): {n_normal}")
-    logger.info(f"Abnormal test samples: {n_abnormal}")
-    logger.info(f"Target contamination: {target_contamination:.2%}")
-    logger.info(f"Anomaly threshold (from {len(reference_normals)} normal scores): {anomaly_threshold:.6f}")
-    logger.info(f"Iterations: {n_iterations}")
+    # IsolationForest scores each sample independently of the other samples
+    # in the batch (the score is a function of the single row vs. the fitted
+    # forest, not of the batch composition). Therefore a single deterministic
+    # scoring pass over every test sample is fully representative of the
+    # per-sample deployment behaviour, and no Monte-Carlo batch resampling is
+    # needed to estimate detection or false-positive rates. Aggregate metrics
+    # that mix the two classes (precision/F1/accuracy) depend on the batch's
+    # abnormal-to-normal ratio, which differs between the (high-prevalence)
+    # labelled test set and the (low-prevalence, ~target_contamination)
+    # deployment scenario; those are computed analytically at the assumed
+    # deployment prevalence below.
 
-    # Store results for each iteration
-    per_iteration_results = []
-    all_true_labels = []
-    all_pred_labels = []
-    all_scores = []
+    # Score every test sample once.
+    normal_scores = model.score_samples(X_normal_test)
+    abnormal_scores = model.score_samples(X_abnormal_test) if n_abnormal > 0 else np.array([])
 
-    # For tracking
-    detected_count = 0
-    fp_count = 0
-    total_normal_samples = 0
+    # Per-sample flag decisions at the calibrated absolute threshold.
+    normal_pred = (normal_scores <= anomaly_threshold).astype(int)
+    abnormal_pred = (abnormal_scores <= anomaly_threshold).astype(int) if n_abnormal > 0 else np.array([], dtype=int)
 
-    for iteration in range(n_iterations):
-        # Select one random abnormal sample
-        abnormal_idx = np.random.randint(0, n_abnormal)
-        X_abnormal_selected = X_abnormal_test.iloc[[abnormal_idx]]
-        y_abnormal_selected = y_abnormal_test.iloc[[abnormal_idx]]
+    # Per-sample metrics (prevalence-independent, deployment-representative).
+    n_detected = int(abnormal_pred.sum()) if n_abnormal > 0 else 0
+    detection_rate = (n_detected / n_abnormal) if n_abnormal > 0 else float('nan')
+    n_fp = int(normal_pred.sum())
+    false_positive_rate = (n_fp / n_normal) if n_normal > 0 else float('nan')
 
-        # Create test set: all normals + 1 abnormal
-        X_test_iter = pd.concat([X_normal_combined, X_abnormal_selected])
-        y_test_iter = pd.concat([y_normal_combined, y_abnormal_selected])
-
-        # Get raw (unshifted) scores, consistent with the threshold basis.
-        scores = model.score_samples(X_test_iter)
-
-        # Get predictions using model's trained threshold (for comparison only)
-        raw_preds = model.predict(X_test_iter)
-        model_preds_binary = np.where(raw_preds == -1, 1, 0)
-
-        # Flag a sample ONLY if its score falls below the absolute anomaly
-        # threshold derived from the normal training score distribution. A
-        # clean batch can legitimately flag 0 outliers this way.
-        y_pred_iter = (scores <= anomaly_threshold).astype(int)
-
-        # Convert ground truth to binary
-        y_true_binary = (y_test_iter.isin(outlier_classes)).astype(int)
-
-        # Check if abnormal sample was detected
-        abnormal_position = n_normal
-        abnormal_detected = y_pred_iter[abnormal_position] == 1
-        abnormal_detected_by_model = model_preds_binary[abnormal_position] == 1
-
-        if abnormal_detected:
-            detected_count += 1
-
-        # Count false positives
-        fp_iter = np.sum(y_pred_iter[:n_normal] == 1)
-        fp_count += fp_iter
-        total_normal_samples += n_normal
-
-        # Track model's raw predictions for comparison
-        model_fp_iter = np.sum(model_preds_binary[:n_normal] == 1)
-
-        iter_results = {
-            'iteration': iteration,
-            'abnormal_sample_id': X_abnormal_test.index[abnormal_idx],
-            'abnormal_class': y_abnormal_selected.iloc[0],
-            'abnormal_detected': bool(abnormal_detected),
-            'abnormal_detected_by_model': bool(abnormal_detected_by_model),
-            'abnormal_score': float(scores[abnormal_position]),
-            'model_threshold': float(model.threshold_) if hasattr(model, 'threshold_') and model.threshold_ is not None else float('nan'),
-            'anomaly_threshold': anomaly_threshold,
-            'false_positives': int(fp_iter),
-            'n_flagged': int(np.sum(y_pred_iter)),
-        }
-
-        per_iteration_results.append(iter_results)
-
-        # Store for aggregated metrics
-        all_true_labels.extend(y_true_binary.tolist())
-        all_pred_labels.extend(y_pred_iter.tolist())
-        all_scores.extend(scores.tolist())
-
-    # Compute aggregated metrics
-    detection_rate = detected_count / n_iterations
-    false_positive_rate = fp_count / total_normal_samples if total_normal_samples > 0 else 0
-
-    # Aggregated confusion matrix
-    cm = confusion_matrix(all_true_labels, all_pred_labels)
-
-    # Compute various metrics
+    # ROC-AUC over the scored test set (ranking quality, prevalence-independent).
     try:
-        accuracy = accuracy_score(all_true_labels, all_pred_labels)
-    except Exception:
-        accuracy = float('nan')
-
-    try:
-        precision = precision_score(all_true_labels, all_pred_labels)
-    except Exception:
-        precision = float('nan')
-
-    try:
-        recall = recall_score(all_true_labels, all_pred_labels)
-    except Exception:
-        recall = float('nan')
-
-    try:
-        f1 = f1_score(all_true_labels, all_pred_labels)
-    except Exception:
-        f1 = float('nan')
-
-    try:
-        roc_auc = roc_auc_score(all_true_labels, -np.array(all_scores))
+        if n_abnormal > 0:
+            all_scores = np.concatenate([normal_scores, abnormal_scores])
+            all_true = np.concatenate([np.zeros(n_normal, dtype=int), np.ones(n_abnormal, dtype=int)])
+            roc_auc = float(roc_auc_score(all_true, -all_scores))
+        else:
+            roc_auc = float('nan')
     except Exception:
         roc_auc = float('nan')
 
+    # Aggregate metrics at the assumed deployment prevalence
+    # (target_contamination). Given prevalence-independent recall (detection)
+    # and FPR, the deployment precision/F1/accuracy follow analytically:
+    #   precision = (p * recall) / (p * recall + (1-p) * fpr)
+    # This avoids resampling a 2%-contaminated batch and is exact.
+    p = target_contamination
+    if n_abnormal > 0 and n_normal > 0:
+        denom = (p * detection_rate) + ((1.0 - p) * false_positive_rate)
+        precision_deploy = float((p * detection_rate) / denom) if denom > 0 else float('nan')
+        recall_deploy = float(detection_rate)
+        if (precision_deploy + recall_deploy) > 0:
+            f1_deploy = float(2.0 * precision_deploy * recall_deploy / (precision_deploy + recall_deploy))
+        else:
+            f1_deploy = 0.0
+        # Accuracy at deployment prevalence:
+        #   P(correct) = (1-p)*(1-fpr) + p*recall
+        accuracy_deploy = float((1.0 - p) * (1.0 - false_positive_rate) + p * detection_rate)
+        # Expected confusion counts for a notional batch of n_test_total at p.
+        n_outliers_batch = max(1, int(round(p * n_test_total)))
+        n_normals_batch = n_test_total - n_outliers_batch
+        cm = np.array([
+            [int(round(n_normals_batch * (1.0 - false_positive_rate))), int(round(n_normals_batch * false_positive_rate))],
+            [int(round(n_outliers_batch * (1.0 - detection_rate))), int(round(n_outliers_batch * detection_rate))],
+        ])
+    else:
+        precision_deploy = float('nan')
+        recall_deploy = float('nan')
+        f1_deploy = float('nan')
+        accuracy_deploy = float('nan')
+        cm = np.array([[n_normal, 0], [0, n_abnormal]])
+
+    # Per-sample results (one row per test sample) for downstream CSV/plots.
+    per_sample_results = []
+    for i in range(n_normal):
+        per_sample_results.append({
+            'sample_id': X_normal_test.index[i],
+            'true_label': 0,
+            'score': float(normal_scores[i]),
+            'flagged': int(normal_pred[i]),
+        })
+    for i in range(n_abnormal):
+        per_sample_results.append({
+            'sample_id': X_abnormal_test.index[i],
+            'true_label': 1,
+            'score': float(abnormal_scores[i]),
+            'flagged': int(abnormal_pred[i]),
+        })
+
+    logger.info(f"\n{'='*70}")
+    logger.info("REALISTIC EVALUATION (absolute threshold, single scoring pass)")
+    logger.info(f"{'='*70}")
+    logger.info(f"Normal test samples: {n_normal}")
+    logger.info(f"Abnormal test samples: {n_abnormal}")
+    logger.info(f"Target (deployment) contamination: {target_contamination:.2%}")
+    logger.info(f"Reference normals for threshold: {len(reference_normals)}")
+    logger.info(f"Anomaly threshold ({100.0*target_contamination:.4g}-th pct of normal scores): {anomaly_threshold:.6f}")
+    logger.info(f"Detection rate (recall): {detection_rate:.2%}  ({n_detected}/{n_abnormal})")
+    logger.info(f"False positive rate: {false_positive_rate:.2%}  ({n_fp}/{n_normal})")
+    logger.info(f"ROC AUC (test ranking): {roc_auc:.4f}")
+    logger.info(f"Precision @ {target_contamination:.2%} prevalence: {precision_deploy:.4f}")
+    logger.info(f"F1 @ {target_contamination:.2%} prevalence: {f1_deploy:.4f}")
+    logger.info(f"Accuracy @ {target_contamination:.2%} prevalence: {accuracy_deploy:.4f}")
+    logger.info(f"Confusion matrix (notional batch of {n_test_total} at {target_contamination:.2%}):\n{cm}")
+    logger.info(f"{'='*70}")
+
     results = {
         'evaluation_strategy': 'realistic',
-        'n_iterations': n_iterations,
+        'scoring_mode': 'single_pass_absolute_threshold',
         'n_normal_test': n_normal,
         'n_abnormal_test': n_abnormal,
+        'n_reference_normals': int(len(reference_normals)),
         'target_contamination': target_contamination,
         'anomaly_threshold': anomaly_threshold,
-        'n_reference_normals': int(len(reference_normals)),
+        'threshold_percentile': float(100.0 * target_contamination),
         'detection_rate': float(detection_rate),
         'false_positive_rate': float(false_positive_rate),
-        'accuracy': float(accuracy),
-        'precision': float(precision),
-        'recall': float(recall),
-        'f1': float(f1),
+        'n_detected': n_detected,
+        'n_false_positives': n_fp,
+        'recall': float(recall_deploy),
+        'precision': float(precision_deploy),
+        'f1': float(f1_deploy),
+        'accuracy': float(accuracy_deploy),
         'roc_auc': float(roc_auc),
         'confusion_matrix': cm.tolist(),
         'confusion_matrix_labels': ['Normal', 'Outlier'],
-        'per_iteration_results': per_iteration_results,
+        'per_iteration_results': per_sample_results,
     }
-
-    logger.info(f"\n{'='*70}")
-    logger.info("REALISTIC EVALUATION RESULTS")
-    logger.info(f"{'='*70}")
-    logger.info(f"Detection rate: {detection_rate:.2%}")
-    logger.info(f"False positive rate: {false_positive_rate:.2%}")
-    logger.info(f"Accuracy: {accuracy:.4f}")
-    logger.info(f"Precision: {precision:.4f}")
-    logger.info(f"Recall: {recall:.4f}")
-    logger.info(f"F1: {f1:.4f}")
-    logger.info(f"ROC AUC: {roc_auc:.4f}")
-    logger.info(f"Confusion Matrix:\n{cm}")
-    logger.info(f"{'='*70}")
 
     return results
 
@@ -316,20 +294,24 @@ def save_realistic_results(
         json.dump(serializable_results, f, indent=2)
     logger.info(f"Realistic metrics saved to {metrics_path}")
 
-    # Save per-iteration results as CSV
+    # Save per-sample results as CSV
     if 'per_iteration_results' in results:
         iter_df = pd.DataFrame(results['per_iteration_results'])
-        iter_path = output_dir / "realistic_iteration_results.csv"
+        iter_path = output_dir / "realistic_per_sample_results.csv"
         iter_df.to_csv(iter_path, index=False)
-        logger.info(f"Per-iteration results saved to {iter_path}")
+        logger.info(f"Per-sample results saved to {iter_path}")
 
     # Save summary
     summary = {
         'detection_rate': results['detection_rate'],
         'false_positive_rate': results['false_positive_rate'],
-        'n_iterations': results['n_iterations'],
+        'precision': results.get('precision'),
+        'f1': results.get('f1'),
+        'roc_auc': results.get('roc_auc'),
+        'anomaly_threshold': results.get('anomaly_threshold'),
         'n_normal_test': results['n_normal_test'],
         'n_abnormal_test': results['n_abnormal_test'],
+        'n_reference_normals': results.get('n_reference_normals'),
         'target_contamination': results['target_contamination'],
     }
     summary_path = output_dir / "realistic_summary.json"
@@ -350,34 +332,38 @@ def plot_realistic_results(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Plot 1: Detection by iteration and False positives
+    # Plot 1: Score distribution (normals vs abnormals) with the calibrated threshold
     plt.figure(figsize=(12, 6))
 
-    # Extract iteration data
-    iterations = [r['iteration'] for r in results['per_iteration_results']]
-    detected = [1 if r['abnormal_detected'] else 0 for r in results['per_iteration_results']]
-    fps = [r['false_positives'] for r in results['per_iteration_results']]
+    rows = results.get('per_iteration_results', [])
+    normal_scores = np.array([r['score'] for r in rows if r['true_label'] == 0])
+    abnormal_scores = np.array([r['score'] for r in rows if r['true_label'] == 1])
+    threshold = results.get('anomaly_threshold', None)
 
-    # Detection rate over iterations
     plt.subplot(1, 2, 1)
-    plt.plot(iterations, detected, 'o-', color='blue', alpha=0.5)
-    plt.axhline(y=results['detection_rate'], color='red', linestyle='--',
-                label=f'Detection Rate: {results["detection_rate"]:.2%}')
-    plt.xlabel('Iteration')
-    plt.ylabel('Detected (1=Yes, 0=No)')
-    plt.title('Abnormal Sample Detection by Iteration')
+    if len(normal_scores) > 0:
+        plt.hist(normal_scores, bins=30, alpha=0.6, color='blue', label=f'Normal (n={len(normal_scores)})')
+    if len(abnormal_scores) > 0:
+        plt.hist(abnormal_scores, bins=30, alpha=0.6, color='red', label=f'Abnormal (n={len(abnormal_scores)})')
+    if threshold is not None:
+        plt.axvline(x=threshold, color='black', linestyle='--', linewidth=2,
+                    label=f"Threshold: {threshold:.4f}")
+    plt.xlabel('score_samples (lower = more anomalous)')
+    plt.ylabel('Count')
+    plt.title('Test score distribution & anomaly threshold')
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    # False positives over iterations
+    # Plot 2: Flagged fractions
     plt.subplot(1, 2, 2)
-    plt.plot(iterations, fps, 'o-', color='green', alpha=0.5)
-    plt.axhline(y=np.mean(fps), color='red', linestyle='--',
-                label=f'Avg FP: {np.mean(fps):.2f}')
-    plt.xlabel('Iteration')
-    plt.ylabel('False Positives')
-    plt.title('False Positives by Iteration')
-    plt.legend()
+    labels = ['Detection rate\n(abnormal)', 'False pos. rate\n(normal)']
+    vals = [results.get('detection_rate', float('nan')), results.get('false_positive_rate', float('nan'))]
+    plt.bar(labels, vals, color=['red', 'blue'], alpha=0.6)
+    plt.ylim(0, 1)
+    plt.ylabel('Rate')
+    plt.title(f"Per-sample rates at {results.get('target_contamination', 0):.2%} threshold")
+    for i, v in enumerate(vals):
+        plt.text(i, v + 0.02, f'{v:.2%}', ha='center')
     plt.grid(True, alpha=0.3)
 
     plt.tight_layout()

@@ -81,8 +81,8 @@ evaluation_strategy: realistic  # 'standard' or 'realistic' - Use realistic for 
 # ============================================================================
 # Realistic Evaluation
 # ============================================================================
-realistic_test_contamination: 0.02  # Realistic prevalence used as an ABSOLUTE threshold: the (100 * this)-th percentile of the normal-training score_samples() distribution. A test sample is flagged only if its score falls below this cutoff, so a clean batch can flag 0. Decoupled from the higher contamination used during training/tuning (which only affects hyperparameter selection).
-realistic_n_iterations: 36  # Number of LOO iterations
+realistic_test_contamination: 0.02  # Deployment prevalence & absolute threshold. (1) Flag threshold = the (100 * this)-th percentile of the normal-TRAINING score_samples() distribution; a test sample is flagged only if its score falls below it (clean batch can flag 0). (2) Assumed prevalence used to compute precision/F1/accuracy analytically (the test set itself has a higher prevalence). Decoupled from the higher contamination used during training/tuning.
+realistic_n_iterations: 36  # Deprecated. Scoring is now a single deterministic pass (IsolationForest scores rows independently of batch composition), so no Monte-Carlo iteration is needed. Kept for config compatibility; ignored at runtime.
 realistic_n_outliers_true: null  # Number of true outliers (optional, overrides contamination)
 
 # ============================================================================
