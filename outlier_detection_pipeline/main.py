@@ -599,6 +599,7 @@ def run_pipeline(
     filter_to_endogenous = config.get('filter_to_endogenous', False)
     use_hmdb_cache = config.get('use_hmdb_cache', True)
     endogenous_metabolites_file = config.get('endogenous_metabolites_file', None)
+    exclude_metabolites = config.get_list('exclude_metabolites', [])
 
     features, classification, oordeel = load_data(
         input_file=input_file,
@@ -607,6 +608,7 @@ def run_pipeline(
         filter_to_endogenous=filter_to_endogenous,
         use_hmdb_cache=use_hmdb_cache,
         endogenous_metabolites_file=endogenous_metabolites_file,
+        exclude_metabolites=exclude_metabolites,
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)
