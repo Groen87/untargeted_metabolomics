@@ -145,6 +145,27 @@ class ExtendedIsolationForestModel:
         X_scaled = self.scaler.transform(X)
         return self.model.decision_function(X_scaled)
 
+    def score_samples(self, X: pd.DataFrame) -> np.ndarray:
+        """
+        Get raw anomaly scores (unshifted by contamination offset).
+
+        Unlike decision_function(), these are not shifted by the model's
+        contamination-derived offset_, so they are suitable for deriving an
+        independent absolute threshold from a reference (e.g. normal
+        training) score distribution.
+
+        Args:
+            X: Features to score
+
+        Returns:
+            Raw anomaly scores (lower = more anomalous)
+        """
+        if not self.is_fitted_:
+            raise RuntimeError("Model not fitted. Call fit() first.")
+
+        X_scaled = self.scaler.transform(X)
+        return self.model.score_samples(X_scaled)
+
     def cross_val_predict(
         self,
         X: pd.DataFrame,

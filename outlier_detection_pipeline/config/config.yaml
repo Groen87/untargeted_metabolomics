@@ -81,7 +81,7 @@ evaluation_strategy: realistic  # 'standard' or 'realistic' - Use realistic for 
 # ============================================================================
 # Realistic Evaluation
 # ============================================================================
-realistic_test_contamination: 0.02  # Target contamination rate for realistic testing
+realistic_test_contamination: 0.02  # Realistic prevalence used as an ABSOLUTE threshold: the (100 * this)-th percentile of the normal-training score_samples() distribution. A test sample is flagged only if its score falls below this cutoff, so a clean batch can flag 0. Decoupled from the higher contamination used during training/tuning (which only affects hyperparameter selection).
 realistic_n_iterations: 36  # Number of LOO iterations
 realistic_n_outliers_true: null  # Number of true outliers (optional, overrides contamination)
 

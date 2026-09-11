@@ -358,6 +358,8 @@ def _train_without_tuning(
 
 def _evaluate_realistic(
     model: ExtendedIsolationForestModel,
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
     X_test: pd.DataFrame,
     y_test: pd.Series,
     config: Config,
@@ -394,8 +396,8 @@ def _evaluate_realistic(
         n_iterations=realistic_n_iterations,
         random_seed=random_state,
         outlier_classes=outlier_classes,
-        X_normal_train=X_test[y_test == normal_class],
-        y_normal_train=y_test[y_test == normal_class],
+        X_normal_train=X_train[y_train == normal_class],
+        y_normal_train=y_train[y_train == normal_class],
     )
 
     # Save realistic results
@@ -677,7 +679,7 @@ def run_pipeline(
 
     if evaluation_strategy == 'realistic':
         test_preds, test_scores, realistic_results = _evaluate_realistic(
-            model, X_test, y_test, config, output_dir, normal_class, outlier_classes
+            model, X_train, y_train, X_test, y_test, config, output_dir, normal_class, outlier_classes
         )
     else:
         test_preds, test_scores, test_metrics = _evaluate_standard(

@@ -49,14 +49,22 @@ def run_realistic_evaluation(
     y_normal_train: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
     """
-    Run realistic LOO evaluation with target contamination rate.
+    Run realistic LOO evaluation with an absolute anomaly threshold.
+
+    An absolute anomaly threshold is derived from the normal training score
+    distribution: the (100 * target_contamination)-th percentile of the
+    model's raw score_samples() on the normal training samples. A test sample
+    is flagged as an outlier ONLY if its score falls below this cutoff, so a
+    clean batch of normals can legitimately flag 0 outliers. This decouples
+    the low realistic prevalence (e.g. 2%) from the higher contamination used
+    during training/tuning (which only affects hyperparameter selection).
 
     For each iteration:
     1. Select 1 abnormal sample (randomly from abnormal pool)
-    2. Combine with ALL normal samples (train + test) for better distribution
-    3. This creates a test set with ~2% contamination (1 abnormal / ~all normals)
-    4. Get outlier scores from model
-    5. Check if abnormal sample is in top N% (where N = target_contamination * 100)
+    2. Combine with ALL test normal samples
+    3. Score the test set with raw score_samples()
+    4. Flag samples whose score <= the calibrated anomaly threshold
+    5. Check whether the abnormal sample was flagged
 
     Args:
         model: Trained ExtendedIsolationForestModel (trained on normals only)
@@ -64,17 +72,23 @@ def run_realistic_evaluation(
         X_abnormal_test: Abnormal test samples features
         y_normal_test: Normal test samples labels
         y_abnormal_test: Abnormal test samples labels
-        target_contamination: Target contamination rate (e.g., 0.02 for 2%)
+        target_contamination: Target contamination rate (e.g. 0.02 for 2%),
+            used as the percentile of the normal-training score distribution
+            below which a test sample is flagged
         n_iterations: Number of LOO iterations
         random_seed: Random seed for reproducibility
         outlier_classes: List of classification values that are outliers
-        X_normal_train: Normal training samples (optional, for larger normal pool)
+        X_normal_train: Normal training samples, used to calibrate the
+            absolute anomaly threshold (score reference distribution).
+            Strongly recommended: should be the normals the model trained on,
+            NOT the test normals, to avoid threshold leakage.
         y_normal_train: Normal training labels (optional)
 
     Returns:
         Dictionary with:
-        - detection_rate: % of iterations where abnormal was detected
+        - detection_rate: % of iterations where abnormal was flagged
         - false_positive_rate: % of normal samples flagged as outliers
+        - anomaly_threshold: The calibrated absolute score cutoff
         - per_iteration_results: List of dicts with detailed results
         - confusion_matrix_aggregated: Aggregated confusion matrix
         - metrics: Aggregated metrics across all iterations
@@ -90,17 +104,32 @@ def run_realistic_evaluation(
 
     n_normal = len(X_normal_combined)
     n_abnormal = len(X_abnormal_test)
-
-    # For realistic evaluation: we use a threshold corresponding to target contamination
     n_test_total = n_normal + 1
-    expected_outliers = target_contamination * n_test_total
 
-    # Use ceil to ensure we flag enough, but at minimum 1
-    n_top = max(1, int(np.ceil(expected_outliers)))
-    n_top = min(n_top, n_test_total)
+    # Derive an absolute anomaly threshold from the normal training score
+    # distribution. The threshold is the (100 * target_contamination)-th
+    # percentile of the raw score_samples() on normal training data, i.e.
+    # the score below which only ~target_contamination of clean normals fall.
+    # Test samples are flagged ONLY if their score drops below this cutoff,
+    # so a clean batch can legitimately flag 0 outliers. This decouples the
+    # realistic (low, e.g. 2%) prevalence from the higher contamination used
+    # during training/tuning.
+    if X_normal_train is None or len(X_normal_train) == 0:
+        # Fall back to test normals as reference if no training normals given.
+        # (Less ideal: same distribution used for threshold and scoring.)
+        reference_normals = X_normal_combined
+        logger.warning(
+            "No normal training samples provided for threshold calibration; "
+            "falling back to test normals as the score reference."
+        )
+    else:
+        reference_normals = X_normal_train
 
-    if n_top < 1:
-        n_top = 1  # Always flag at least 1
+    # score_samples: lower = more anomalous. Use raw (unshifted) scores so the
+    # threshold is independent of any contamination set during model.fit().
+    reference_scores = model.score_samples(reference_normals)
+    # Percentile: e.g. 2nd percentile => ~2% of normals fall below this score.
+    anomaly_threshold = float(np.percentile(reference_scores, 100.0 * target_contamination))
 
     logger.info(f"\n{'='*70}")
     logger.info("REALISTIC EVALUATION (LOO Abnormal)")
@@ -108,7 +137,7 @@ def run_realistic_evaluation(
     logger.info(f"Normal samples (test): {n_normal}")
     logger.info(f"Abnormal test samples: {n_abnormal}")
     logger.info(f"Target contamination: {target_contamination:.2%}")
-    logger.info(f"Top N outliers to flag: {n_top}")
+    logger.info(f"Anomaly threshold (from {len(reference_normals)} normal scores): {anomaly_threshold:.6f}")
     logger.info(f"Iterations: {n_iterations}")
 
     # Store results for each iteration
@@ -132,22 +161,17 @@ def run_realistic_evaluation(
         X_test_iter = pd.concat([X_normal_combined, X_abnormal_selected])
         y_test_iter = pd.concat([y_normal_combined, y_abnormal_selected])
 
-        # Get scores
-        scores = model.decision_function(X_test_iter)
+        # Get raw (unshifted) scores, consistent with the threshold basis.
+        scores = model.score_samples(X_test_iter)
 
-        # Get predictions using model's trained threshold
+        # Get predictions using model's trained threshold (for comparison only)
         raw_preds = model.predict(X_test_iter)
         model_preds_binary = np.where(raw_preds == -1, 1, 0)
 
-        # For realistic evaluation: use a threshold that corresponds to the target contamination
-        sorted_scores = np.sort(scores)
-        if n_top >= len(sorted_scores):
-            threshold_score = sorted_scores[0]
-        else:
-            threshold_score = sorted_scores[n_top - 1]
-
-        # Flag samples with score <= threshold
-        y_pred_iter = (scores <= threshold_score).astype(int)
+        # Flag a sample ONLY if its score falls below the absolute anomaly
+        # threshold derived from the normal training score distribution. A
+        # clean batch can legitimately flag 0 outliers this way.
+        y_pred_iter = (scores <= anomaly_threshold).astype(int)
 
         # Convert ground truth to binary
         y_true_binary = (y_test_iter.isin(outlier_classes)).astype(int)
@@ -176,8 +200,9 @@ def run_realistic_evaluation(
             'abnormal_detected_by_model': bool(abnormal_detected_by_model),
             'abnormal_score': float(scores[abnormal_position]),
             'model_threshold': float(model.threshold_) if hasattr(model, 'threshold_') and model.threshold_ is not None else float('nan'),
+            'anomaly_threshold': anomaly_threshold,
             'false_positives': int(fp_iter),
-            'n_top': n_top,
+            'n_flagged': int(np.sum(y_pred_iter)),
         }
 
         per_iteration_results.append(iter_results)
@@ -226,7 +251,8 @@ def run_realistic_evaluation(
         'n_normal_test': n_normal,
         'n_abnormal_test': n_abnormal,
         'target_contamination': target_contamination,
-        'n_top': n_top,
+        'anomaly_threshold': anomaly_threshold,
+        'n_reference_normals': int(len(reference_normals)),
         'detection_rate': float(detection_rate),
         'false_positive_rate': float(false_positive_rate),
         'accuracy': float(accuracy),
