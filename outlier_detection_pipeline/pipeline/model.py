@@ -181,8 +181,15 @@ class ExtendedIsolationForestModel:
 
         logger.info(f"Train set: {len(X)} samples ({len(normal_indices)} normal, {len(abnormal_indices)} abnormal)")
 
-        # Scale all data first
-        X_scaled = self.scaler.fit_transform(X)
+        # Scale all data first. Reuse an already-fitted scaler (e.g. one fit
+        # during hyperparameter tuning) so the final model scores test data
+        # with the same scaling it was trained on. Only fit a new scaler when
+        # none is fitted yet, to avoid clobbering the tuned scaler with one
+        # fit on normals + abnormals.
+        if getattr(self.scaler, "n_features_in_", None) is not None:
+            X_scaled = self.scaler.transform(X)
+        else:
+            X_scaled = self.scaler.fit_transform(X)
 
         # For unsupervised CV: we need custom logic
         # Split ALL samples (normals + abnormalities) into K folds
