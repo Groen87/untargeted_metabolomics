@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import StratifiedKFold
 
 from outlier_detection_pipeline.config.config import Config
 from outlier_detection_pipeline.pipeline.data_loader import load_data, split_data, get_class_distribution
@@ -562,6 +563,139 @@ def _save_outputs(
     }
 
 
+def _run_outer_cv(
+    features: pd.DataFrame,
+    classification: pd.Series,
+    normal_class: int,
+    outlier_classes: List[int],
+    config: Config,
+    output_dir: Path,
+    n_folds: int,
+    random_seed: int,
+    original_features: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
+    """
+    Run k-fold outer cross-validation of the full pipeline.
+
+    Each fold is used once as the held-out test set; the remaining folds form
+    the train set. The full train -> (optional PCA) -> train model ->
+    realistic-evaluate process runs per fold. Per-fold results are aggregated
+    (mean/std) to average out an unlucky single split on small datasets and
+    give honest, out-of-sample estimates of detection rate / FPR / ROC AUC.
+
+    Splits are stratified by the binary normal/abnormal label so each test
+    fold has a representative class ratio. Abnormal samples are only ever
+    scored in the test fold of their own fold (never trained on).
+    """
+    _log_section_header(f"OUTER CROSS-VALIDATION ({n_folds} folds)")
+
+    y_binary = (classification != normal_class).astype(int).values
+    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_seed)
+
+    fold_results = []
+    all_per_sample = []
+
+    metrics_keys = ['detection_rate', 'false_positive_rate', 'roc_auc',
+                   'precision', 'f1', 'accuracy', 'anomaly_threshold']
+
+    for fold_num, (train_idx, test_idx) in enumerate(skf.split(features, y_binary)):
+        _log_section_header(f"OUTER FOLD {fold_num + 1}/{n_folds}")
+
+        X_train = features.iloc[train_idx].copy()
+        y_train = classification.iloc[train_idx].copy()
+        X_test = features.iloc[test_idx].copy()
+        y_test = classification.iloc[test_idx].copy()
+
+        logger.info(f"Fold {fold_num + 1}: train={len(X_train)} (normal={int((y_train==normal_class).sum())}, "
+                    f"abnormal={int((y_train!=normal_class).sum())}), test={len(X_test)} "
+                    f"(normal={int((y_test==normal_class).sum())}, abnormal={int((y_test!=normal_class).sum())})")
+
+        fold_out_dir = output_dir / f"fold_{fold_num + 1}"
+        fold_out_dir.mkdir(parents=True, exist_ok=True)
+
+        # PCA on this fold (fit on this fold's train normals only)
+        X_train_p, X_test_p, y_train_p, y_test_p, pca = _apply_pca(
+            X_train, X_test, y_train, y_test, config, fold_out_dir, normal_class
+        )
+
+        # Train model on this fold
+        use_hp_tuning = config.get('use_hyperparameter_tuning', False)
+        if use_hp_tuning:
+            model, _ = _train_with_hyperparameter_tuning(
+                X_train_p, y_train_p, config, fold_out_dir, normal_class
+            )
+            model.cross_val_predict(
+                X=X_train_p, y=y_train_p, normal_classification=normal_class,
+                n_splits=config.get('n_splits_tuning', 5),
+            )
+        else:
+            model = _train_without_tuning(X_train_p, y_train_p, config, normal_class)
+
+        # Evaluate on this fold's held-out test set
+        if config.get('evaluation_strategy', 'standard') == 'realistic':
+            test_preds, test_scores, realistic_results = _evaluate_realistic(
+                model, X_train_p, y_train_p, X_test_p, y_test_p, config,
+                fold_out_dir, normal_class, outlier_classes,
+            )
+            fold_metrics = {k: realistic_results.get(k) for k in metrics_keys}
+            fold_metrics['n_normal_test'] = realistic_results.get('n_normal_test')
+            fold_metrics['n_abnormal_test'] = realistic_results.get('n_abnormal_test')
+            # Pool per-sample scores for an aggregated score-distribution view
+            for r in realistic_results.get('per_iteration_results', []):
+                r = dict(r)
+                r['fold'] = fold_num + 1
+                all_per_sample.append(r)
+        else:
+            test_preds, test_scores, test_metrics = _evaluate_standard(
+                model, X_test_p, y_test_p, config, normal_class, outlier_classes
+            )
+            fold_metrics = {k: test_metrics.get(k) for k in metrics_keys if k in test_metrics}
+            fold_metrics['anomaly_threshold'] = float('nan')
+            realistic_results = None
+
+        fold_metrics['fold'] = fold_num + 1
+        fold_results.append(fold_metrics)
+
+        logger.info(f"Fold {fold_num + 1} results: "
+                    f"detection_rate={fold_metrics.get('detection_rate')}, "
+                    f"FPR={fold_metrics.get('false_positive_rate')}, "
+                    f"roc_auc={fold_metrics.get('roc_auc')}")
+
+    # Aggregate across folds (mean +/- std), skipping NaNs.
+    agg = {}
+    for k in metrics_keys:
+        vals = [fr.get(k) for fr in fold_results if fr.get(k) is not None and not (isinstance(fr.get(k), float) and np.isnan(fr.get(k)))]
+        if vals:
+            agg[f'{k}_mean'] = float(np.mean(vals))
+            agg[f'{k}_std'] = float(np.std(vals))
+            agg[f'{k}_folds'] = [float(v) for v in vals]
+
+    _log_section_header("OUTER CV AGGREGATED RESULTS")
+    logger.info(f"Folds: {n_folds}")
+    for k in ['detection_rate', 'false_positive_rate', 'roc_auc', 'precision', 'f1', 'accuracy']:
+        if f'{k}_mean' in agg:
+            logger.info(f"  {k}: {agg[f'{k}_mean']:.4f} +/- {agg[f'{k}_std']:.4f}  "
+                        f"per-fold: {[round(v,4) for v in agg[f'{k}_folds']]}")
+    if 'anomaly_threshold_mean' in agg:
+        logger.info(f"  anomaly_threshold: {agg['anomaly_threshold_mean']:.6f} +/- {agg['anomaly_threshold_std']:.6f}")
+
+    # Save per-fold and aggregated results
+    import json
+    pd.DataFrame(fold_results).to_csv(output_dir / "outer_cv_per_fold.csv", index=False)
+    with open(output_dir / "outer_cv_aggregated.json", 'w') as f:
+        json.dump({k: v for k, v in agg.items() if not k.endswith('_folds')} | {'per_fold': fold_results}, f, indent=2, default=str)
+    if all_per_sample:
+        pd.DataFrame(all_per_sample).to_csv(output_dir / "outer_cv_per_sample.csv", index=False)
+
+    return {
+        'evaluation_strategy': 'outer_cv',
+        'n_folds': n_folds,
+        'per_fold_results': fold_results,
+        'aggregated': agg,
+        'per_sample_results': all_per_sample,
+    }
+
+
 def run_pipeline(
     input_file: str,
     output_dir: str = "outputs/outlier_detection",
@@ -631,6 +765,29 @@ def run_pipeline(
     train_ratio = config.get('train_ratio', 0.8)
     test_ratio = config.get('test_ratio', 0.2)
     random_seed = config.get('random_seed', 42)
+
+    cv_outer_folds = int(config.get('cv_outer_folds', 1))
+    evaluation_strategy = config.get('evaluation_strategy', 'standard')
+
+    if cv_outer_folds > 1:
+        # K-fold outer CV: each fold is a held-out test set, the rest is the
+        # train set. Runs the full train->PCA->evaluate process per fold and
+        # aggregates the per-fold results. This averages out an unlucky
+        # single train/test split on small datasets and gives honest,
+        # out-of-sample estimates of detection rate / FPR / ROC AUC across k
+        # folds. Abnormal samples only ever appear in the test fold of their
+        # own fold (never trained on), and are pooled across folds for metrics.
+        return _run_outer_cv(
+            features=features,
+            classification=classification,
+            normal_class=normal_class,
+            outlier_classes=outlier_classes,
+            config=config,
+            output_dir=output_dir,
+            n_folds=cv_outer_folds,
+            random_seed=random_seed,
+            original_features=original_features,
+        )
 
     splits = split_data(
         features=features,

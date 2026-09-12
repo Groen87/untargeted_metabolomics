@@ -85,6 +85,14 @@ realistic_test_contamination: 0.02  # Deployment prevalence & absolute threshold
 realistic_n_iterations: 36  # Deprecated. Scoring is now a single deterministic pass (IsolationForest scores rows independently of batch composition), so no Monte-Carlo iteration is needed. Kept for config compatibility; ignored at runtime.
 realistic_n_outliers_true: null  # Number of true outliers (optional, overrides contamination)
 
+# Outer cross-validation over the whole pipeline. When >1, the full
+# train->PCA->evaluate process runs k times, each fold as a held-out test
+# set, and per-fold results are aggregated (mean/std). This averages out an
+# unlucky single train/test split on small datasets and gives honest,
+# out-of-sample detection-rate / FPR / ROC-AUC estimates across folds. 1 =
+# the standard single stratified split above.
+cv_outer_folds: 1
+
 # ============================================================================
 # Hyperparameter Tuning
 # ============================================================================
