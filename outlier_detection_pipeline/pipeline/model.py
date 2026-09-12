@@ -233,11 +233,12 @@ class ExtendedIsolationForestModel:
         if getattr(self.scaler, "n_features_in_", None) is not None:
             X_scaled = self.scaler.transform(X)
         else:
-            X_values = X.values if isinstance(X, pd.DataFrame) else np.asarray(X)
-            X_scaled = np.empty_like(X_values, dtype=float)
-            X_scaled[normal_mask] = self.scaler.fit_transform(X_values[normal_mask])
-            if (~normal_mask).any():
-                X_scaled[~normal_mask] = self.scaler.transform(X_values[~normal_mask])
+            # Fit the scaler on the normal rows as a DataFrame so feature
+            # names are retained (avoids sklearn feature-name warnings on
+            # later transform() calls with DataFrames), then transform all
+            # rows. X_scaled is a plain array for positional downstream use.
+            self.scaler.fit(X[normal_mask])
+            X_scaled = self.scaler.transform(X)
 
         # For unsupervised CV: we need custom logic
         # Split ALL samples (normals + abnormalities) into K folds
