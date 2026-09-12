@@ -888,6 +888,8 @@ def _run_components_sweep(
 
     # Detection-vs-FPR tradeoff plot over n_components.
     try:
+        import matplotlib
+        matplotlib.use("Agg")  # non-interactive backend; avoids Tk 'main thread is not in main loop' errors on Windows
         import matplotlib.pyplot as plt
         fig, ax1 = plt.subplots(figsize=(10, 6))
         x = sweep_df['n_components'].values

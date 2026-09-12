@@ -21,6 +21,8 @@ import pandas as pd
 import logging
 
 try:
+    import matplotlib
+    matplotlib.use("Agg")  # non-interactive backend; avoids Tk 'main thread is not in main loop' errors on Windows
     import matplotlib.pyplot as plt
     HAS_MATPLOTLIB = True
 except ImportError:

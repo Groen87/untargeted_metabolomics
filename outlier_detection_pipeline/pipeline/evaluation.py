@@ -24,6 +24,8 @@ from sklearn.metrics import (
 import logging
 
 try:
+    import matplotlib
+    matplotlib.use("Agg")  # non-interactive backend; avoids Tk 'main thread is not in main loop' errors on Windows
     import matplotlib.pyplot as plt
     import seaborn as sns
     HAS_MATPLOTLIB = True
