@@ -84,6 +84,26 @@ class Config:
             return []
         return value if isinstance(value, list) else [value]
 
+    def set(self, key: str, value: Any) -> None:
+        """
+        Set a configuration value in memory.
+
+        Supports nested keys using dot notation (e.g., 'model.n_estimators').
+        Used by the n_components sweep to override one parameter per iteration
+        without reloading the YAML.
+
+        Args:
+            key: Configuration key (supports dot notation for nested values)
+            value: Value to set
+        """
+        keys = key.split('.')
+        d = self._config
+        for k in keys[:-1]:
+            if k not in d or not isinstance(d[k], dict):
+                d[k] = {}
+            d = d[k]
+        d[keys[-1]] = value
+
     def to_dict(self) -> Dict[str, Any]:
         """Return the full configuration as a dictionary."""
         return self._config

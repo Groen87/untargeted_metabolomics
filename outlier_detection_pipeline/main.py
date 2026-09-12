@@ -782,6 +782,150 @@ def _run_outer_cv(
     }
 
 
+def _run_components_sweep(
+    features: pd.DataFrame,
+    classification: pd.Series,
+    normal_class: int,
+    outlier_classes: List[int],
+    config: Config,
+    output_dir: Path,
+    random_seed: int,
+    original_features: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
+    """
+    Sweep n_components to map the bias-variance tradeoff between detection
+    rate and FPR for IsolationForest anomaly detection.
+
+    Runs the full pipeline once per n_components value in
+    `components_sweep_values`, using outer k-fold CV
+    (`cv_outer_folds`) per value so each point is an honest out-of-sample
+    estimate that averages out split noise. A detection-rate-vs-FPR curve
+    over n_components is logged and saved as CSV + a plot, so you can pick
+    the n_components that keeps FPR acceptable while maximizing detection.
+
+    The sweep overrides the `n_components` and `use_sparse_pca` keys in
+    memory for each iteration (PCA is forced on for the sweep) and restores
+    them afterwards; no YAML edit is needed.
+    """
+    sweep_values = config.get_list('components_sweep_values', [])
+    if not sweep_values:
+        sweep_values = [10, 20, 30, 40, 50, 60, 80, 100]
+    sweep_values = [int(v) for v in sweep_values]
+    # Each sweep point uses outer k-fold CV for an honest out-of-sample
+    # estimate; default to 5 folds when the config leaves cv_outer_folds at 1.
+    n_folds = int(config.get('cv_outer_folds', 1))
+    if n_folds < 2:
+        n_folds = 5
+
+    # Save the original config values so we can restore them after the sweep.
+    orig_n_components = config.get('n_components', 100)
+    orig_use_pca = config.get('use_sparse_pca', False)
+    orig_cv_folds = config.get('cv_outer_folds', 1)
+
+    _log_section_header(f"COMPONENTS SWEEP (n_components in {sweep_values})")
+    logger.info(f"Each value uses outer CV with {n_folds} folds. "
+                f"Outputs per value under sweep_components_<N>/.")
+
+    sweep_rows = []
+    for nc in sweep_values:
+        _log_section_header(f"SWEEP POINT: n_components = {nc}")
+        config.set('n_components', nc)
+        config.set('use_sparse_pca', True)
+        config.set('cv_outer_folds', n_folds)
+
+        sweep_dir = output_dir / f"sweep_components_{nc}"
+        sweep_dir.mkdir(parents=True, exist_ok=True)
+
+        result = _run_outer_cv(
+            features=features,
+            classification=classification,
+            normal_class=normal_class,
+            outlier_classes=outlier_classes,
+            config=config,
+            output_dir=sweep_dir,
+            n_folds=n_folds,
+            random_seed=random_seed,
+            original_features=original_features,
+        )
+
+        agg = result.get('aggregated', {})
+        row = {
+            'n_components': nc,
+            'detection_rate': agg.get('detection_rate_mean', float('nan')),
+            'detection_rate_std': agg.get('detection_rate_std', float('nan')),
+            'false_positive_rate': agg.get('false_positive_rate_mean', float('nan')),
+            'false_positive_rate_std': agg.get('false_positive_rate_std', float('nan')),
+            'roc_auc': agg.get('roc_auc_mean', float('nan')),
+            'precision': agg.get('precision_mean', float('nan')),
+            'f1': agg.get('f1_mean', float('nan')),
+            'accuracy': agg.get('accuracy_mean', float('nan')),
+            'anomaly_threshold': agg.get('anomaly_threshold_mean', float('nan')),
+        }
+        sweep_rows.append(row)
+        logger.info(f"SWEEP POINT n_components={nc}: "
+                    f"detection={row['detection_rate']:.3f}, "
+                    f"FPR={row['false_positive_rate']:.3f}, "
+                    f"roc_auc={row['roc_auc']:.3f}")
+
+    # Restore the original config values.
+    config.set('n_components', orig_n_components)
+    config.set('use_sparse_pca', orig_use_pca)
+    config.set('cv_outer_folds', orig_cv_folds)
+
+    sweep_df = pd.DataFrame(sweep_rows)
+    sweep_df.to_csv(output_dir / "components_sweep.csv", index=False)
+    logger.info(f"Components sweep table saved to {output_dir / 'components_sweep.csv'}")
+
+    _log_section_header("COMPONENTS SWEEP SUMMARY (detection vs FPR vs n_components)")
+    logger.info(f"{'n_comp':>7} {'detect':>8} {'FPR':>8} {'roc_auc':>8} {'prec':>8} {'f1':>8}")
+    for _, r in sweep_df.iterrows():
+        logger.info(f"{int(r['n_components']):>7d} "
+                    f"{r['detection_rate']:>8.3f} "
+                    f"{r['false_positive_rate']:>8.3f} "
+                    f"{r['roc_auc']:>8.3f} "
+                    f"{r['precision']:>8.3f} "
+                    f"{r['f1']:>8.3f}")
+
+    # Detection-vs-FPR tradeoff plot over n_components.
+    try:
+        import matplotlib.pyplot as plt
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        x = sweep_df['n_components'].values
+        ax1.plot(x, sweep_df['detection_rate'].values, 'o-', color='tab:red',
+                 label='Detection rate (recall)')
+        ax1.plot(x, sweep_df['false_positive_rate'].values, 's--', color='tab:blue',
+                 label='False positive rate')
+        ax1.set_xlabel('n_components')
+        ax1.set_ylabel('Rate')
+        ax1.set_ylim(0, 1)
+        ax1.axhline(config.get('realistic_test_contamination', 0.02), color='tab:blue',
+                    linestyle=':', alpha=0.5, label='Nominal contamination (2%)')
+        ax1.set_title('n_components sweep: detection rate vs FPR')
+        ax1.legend(loc='center right')
+        ax1.grid(True, alpha=0.3)
+
+        ax2 = ax1.twinx()
+        ax2.plot(x, sweep_df['roc_auc'].values, '^-.', color='tab:green',
+                 label='ROC AUC')
+        ax2.set_ylabel('ROC AUC')
+        ax2.set_ylim(0, 1)
+        ax2.legend(loc='lower right')
+
+        fig.tight_layout()
+        fig.savefig(output_dir / "components_sweep.png", dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        logger.info(f"Components sweep plot saved to {output_dir / 'components_sweep.png'}")
+    except Exception as e:
+        logger.warning(f"Could not render components sweep plot: {e}")
+
+    return {
+        'evaluation_strategy': 'components_sweep',
+        'sweep_values': sweep_values,
+        'sweep_results': sweep_rows,
+        'sweep_df': sweep_df,
+    }
+
+
 def run_pipeline(
     input_file: str,
     output_dir: str = "outputs/outlier_detection",
@@ -854,6 +998,24 @@ def run_pipeline(
 
     cv_outer_folds = int(config.get('cv_outer_folds', 1))
     evaluation_strategy = config.get('evaluation_strategy', 'standard')
+
+    if evaluation_strategy == 'components_sweep':
+        # Sweep n_components to map the detection-rate vs FPR tradeoff. Runs
+        # the full outer-CV pipeline once per value in
+        # components_sweep_values and saves a detection-vs-FPR curve, so you
+        # can pick the n_components that keeps FPR acceptable while
+        # maximizing detection. Set `evaluation_strategy: components_sweep`
+        # in the YAML to enable.
+        return _run_components_sweep(
+            features=features,
+            classification=classification,
+            normal_class=normal_class,
+            outlier_classes=outlier_classes,
+            config=config,
+            output_dir=output_dir,
+            random_seed=random_seed,
+            original_features=original_features,
+        )
 
     if cv_outer_folds > 1:
         # K-fold outer CV: each fold is a held-out test set, the rest is the
