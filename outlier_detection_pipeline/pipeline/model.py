@@ -62,6 +62,11 @@ class ExtendedIsolationForestModel:
         self.scaler = StandardScaler()
         self.threshold_: Optional[float] = None
         self.is_fitted_ = False
+        # Out-of-fold raw score_samples() for NORMAL training samples, collected
+        # during cross_val_predict(). Each normal is scored by a fold model that
+        # did NOT see it, so this is an honest (unoptimistic) reference score
+        # distribution for calibrating an absolute anomaly threshold.
+        self.oof_normal_scores_: Optional[np.ndarray] = None
 
     def fit(
         self,
@@ -222,6 +227,7 @@ class ExtendedIsolationForestModel:
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
 
         fold_scores = []
+        oof_normal_scores = []  # raw score_samples of normal val samples (honest)
 
         for fold_num, (train_fold_idx, val_fold_idx) in enumerate(skf.split(X_scaled, y_binary)):
             logger.info(f"Fold {fold_num + 1}/{n_splits}")
@@ -229,6 +235,10 @@ class ExtendedIsolationForestModel:
             # Get indices for this fold
             X_train_fold_full = X_scaled[train_fold_idx]
             X_val_fold = X_scaled[val_fold_idx]
+
+            # Which validation positions are normal? (for honest OOF capture)
+            val_y_binary = y_binary[val_fold_idx]
+            val_normal_positions = val_y_binary == 0
 
             # From training fold, extract only normal samples for training
             train_y_binary = y_binary[train_fold_idx]
@@ -247,9 +257,16 @@ class ExtendedIsolationForestModel:
             )
             fold_model.fit(X_train_fold)
 
-            # Get scores for validation fold
+            # Get scores for validation fold (shifted, for legacy fold_scores)
             val_scores = fold_model.decision_function(X_val_fold)
             fold_scores.append(val_scores)
+
+            # Capture raw (unshifted) score_samples of NORMAL validation samples.
+            # These normals were held out from this fold's training, so their
+            # scores are out-of-sample (no in-sample optimism) and form an
+            # honest reference distribution for threshold calibration.
+            if val_normal_positions.any():
+                oof_normal_scores.append(fold_model.score_samples(X_val_fold[val_normal_positions]))
 
             logger.debug(f"  Fold {fold_num + 1}: {len(X_train_fold)} train, {len(X_val_fold)} val samples")
 
@@ -268,12 +285,21 @@ class ExtendedIsolationForestModel:
         self.model.fit(X_normal_all)
         self.is_fitted_ = True
 
+        # Store the out-of-fold raw scores of normal training samples as the
+        # honest (unoptimistic) reference distribution for the absolute anomaly
+        # threshold. Empty when no normals landed in validation folds.
+        self.oof_normal_scores_ = (
+            np.concatenate(oof_normal_scores) if oof_normal_scores else None
+        )
+
         # Get final scores and predictions on full X (training set)
         scores = self.model.decision_function(X_scaled)
         predictions = self.model.predict(X_scaled)
 
         logger.info("Cross-validation complete.")
         logger.info(f"Final model trained on {len(X_normal_all)} normal samples from training set")
+        if self.oof_normal_scores_ is not None:
+            logger.info(f"Collected {len(self.oof_normal_scores_)} out-of-fold normal scores for threshold calibration")
 
         return predictions, scores, np.concatenate(fold_scores)
 

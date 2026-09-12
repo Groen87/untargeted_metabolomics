@@ -116,19 +116,37 @@ def run_realistic_evaluation(
     # so a clean batch can legitimately flag 0 outliers. This decouples the
     # realistic (low, e.g. 2%) prevalence from the higher contamination used
     # during training/tuning.
-    if X_normal_train is None or len(X_normal_train) == 0:
-        reference_normals = X_normal_test
+    # Calibrate the absolute anomaly threshold from an OUT-OF-SAMPLE (not
+    # in-sample) normal score distribution. IsolationForest scores its own
+    # training points optimistically (shorter path lengths), so a percentile
+    # of in-sample training-normal scores lands at a too-lenient cutoff and
+    # inflates the false-positive rate on unseen normals. The model stores
+    # out-of-fold raw score_samples() of normal training samples
+    # (model.oof_normal_scores_): each normal was scored by a fold model that
+    # did NOT see it, so this is an honest reference distribution.
+    oof_scores = getattr(model, 'oof_normal_scores_', None)
+    if oof_scores is not None and len(oof_scores) > 0:
+        reference_scores = np.asarray(oof_scores)
+        reference_source = f'{len(reference_scores)} out-of-fold normal scores (honest calibration)'
+    elif X_normal_train is not None and len(X_normal_train) > 0:
+        reference_scores = np.asarray(model.score_samples(X_normal_train))
+        reference_source = f'{len(X_normal_train)} in-sample training-normal scores (optimistic; no OOF available)'
         logger.warning(
-            "No normal training samples provided for threshold calibration; "
-            "falling back to test normals as the score reference."
+            "No out-of-fold normal scores available for threshold calibration; "
+            "falling back to in-sample training-normal scores, which are "
+            "optimistic and tend to inflate the false-positive rate."
         )
     else:
-        reference_normals = X_normal_train
+        reference_scores = np.asarray(model.score_samples(X_normal_test))
+        reference_source = f'{len(X_normal_test)} test-normal scores (leaky fallback)'
+        logger.warning(
+            "No normal training samples or OOF scores for threshold calibration; "
+            "falling back to test normals as the score reference (leaky)."
+        )
 
     # score_samples: lower = more anomalous. Use raw (unshifted) scores so the
     # threshold is independent of any contamination set during model.fit().
-    reference_scores = model.score_samples(reference_normals)
-    # Percentile: e.g. 2nd percentile => ~2% of normals fall below this score.
+    # Percentile: e.g. 2nd percentile => ~2% of reference normals fall below.
     anomaly_threshold = float(np.percentile(reference_scores, 100.0 * target_contamination))
 
     # IsolationForest scores each sample independently of the other samples
@@ -222,7 +240,7 @@ def run_realistic_evaluation(
     logger.info(f"Normal test samples: {n_normal}")
     logger.info(f"Abnormal test samples: {n_abnormal}")
     logger.info(f"Target (deployment) contamination: {target_contamination:.2%}")
-    logger.info(f"Reference normals for threshold: {len(reference_normals)}")
+    logger.info(f"Threshold calibration source: {reference_source}")
     logger.info(f"Anomaly threshold ({100.0*target_contamination:.4g}-th pct of normal scores): {anomaly_threshold:.6f}")
     logger.info(f"Detection rate (recall): {detection_rate:.2%}  ({n_detected}/{n_abnormal})")
     logger.info(f"False positive rate: {false_positive_rate:.2%}  ({n_fp}/{n_normal})")
@@ -238,7 +256,7 @@ def run_realistic_evaluation(
         'scoring_mode': 'single_pass_absolute_threshold',
         'n_normal_test': n_normal,
         'n_abnormal_test': n_abnormal,
-        'n_reference_normals': int(len(reference_normals)),
+        'n_reference_normals': int(len(reference_scores)),
         'target_contamination': target_contamination,
         'anomaly_threshold': anomaly_threshold,
         'threshold_percentile': float(100.0 * target_contamination),
