@@ -803,9 +803,10 @@ def _run_components_sweep(
     over n_components is logged and saved as CSV + a plot, so you can pick
     the n_components that keeps FPR acceptable while maximizing detection.
 
-    The sweep overrides the `n_components` and `use_sparse_pca` keys in
-    memory for each iteration (PCA is forced on for the sweep) and restores
-    them afterwards; no YAML edit is needed.
+    The sweep overrides the `n_components`, `use_sparse_pca`, and
+    `evaluation_strategy` keys in memory for each iteration (PCA is forced
+    on, and realistic evaluation is forced so detection rate / FPR are
+    computed) and restores them afterwards; no YAML edit is needed.
     """
     sweep_values = config.get_list('components_sweep_values', [])
     if not sweep_values:
@@ -821,6 +822,11 @@ def _run_components_sweep(
     orig_n_components = config.get('n_components', 100)
     orig_use_pca = config.get('use_sparse_pca', False)
     orig_cv_folds = config.get('cv_outer_folds', 1)
+    # The sweep measures detection rate / FPR, which are only produced by the
+    # realistic evaluation path. Force evaluation_strategy to 'realistic' for
+    # the sweep iterations regardless of the user's setting, then restore it.
+    orig_eval_strategy = config.get('evaluation_strategy', 'realistic')
+    config.set('evaluation_strategy', 'realistic')
 
     _log_section_header(f"COMPONENTS SWEEP (n_components in {sweep_values})")
     logger.info(f"Each value uses outer CV with {n_folds} folds. "
@@ -871,6 +877,7 @@ def _run_components_sweep(
     config.set('n_components', orig_n_components)
     config.set('use_sparse_pca', orig_use_pca)
     config.set('cv_outer_folds', orig_cv_folds)
+    config.set('evaluation_strategy', orig_eval_strategy)
 
     sweep_df = pd.DataFrame(sweep_rows)
     sweep_df.to_csv(output_dir / "components_sweep.csv", index=False)
