@@ -72,21 +72,38 @@ class ExtendedIsolationForestModel:
         self,
         X: pd.DataFrame,
         y: Optional[pd.Series] = None,
+        normal_classification: int = 0,
     ) -> "ExtendedIsolationForestModel":
         """
         Fit the model on training data.
 
+        When y is provided, the scaler is fit on NORMAL samples only
+        (y == normal_classification), so abnormal training samples never
+        influence the scaling. When y is None, the scaler is fit on all X
+        (unsupervised use with no labels available).
+
         Args:
             X: Training features
-            y: Training labels (optional, not used for IsolationForest)
+            y: Training labels (optional). If given, only normal samples
+               (y == normal_classification) are used to fit the scaler.
+            normal_classification: Label value indicating normal samples
 
         Returns:
             self
         """
         logger.info("Fitting Extended Isolation Forest...")
 
-        # Scale features
-        X_scaled = self.scaler.fit_transform(X)
+        # Scale features. Fit the scaler on normal samples only when labels
+        # are available, so abnormals never affect scaling.
+        if y is not None and len(y) == len(X):
+            normal_mask = (y == normal_classification).values
+            if normal_mask.any():
+                self.scaler.fit(X[normal_mask])
+                X_scaled = self.scaler.transform(X)
+            else:
+                X_scaled = self.scaler.fit_transform(X)
+        else:
+            X_scaled = self.scaler.fit_transform(X)
 
         # Initialize and fit model
         self.model = IsolationForest(
@@ -210,12 +227,17 @@ class ExtendedIsolationForestModel:
         # Scale all data first. Reuse an already-fitted scaler (e.g. one fit
         # during hyperparameter tuning) so the final model scores test data
         # with the same scaling it was trained on. Only fit a new scaler when
-        # none is fitted yet, to avoid clobbering the tuned scaler with one
-        # fit on normals + abnormals.
+        # none is fitted yet. Fit on NORMAL samples only so abnormal training
+        # samples never influence the scaling (pure one-class design: the
+        # scaler, the forest, and the threshold all see only normals).
         if getattr(self.scaler, "n_features_in_", None) is not None:
             X_scaled = self.scaler.transform(X)
         else:
-            X_scaled = self.scaler.fit_transform(X)
+            X_values = X.values if isinstance(X, pd.DataFrame) else np.asarray(X)
+            X_scaled = np.empty_like(X_values, dtype=float)
+            X_scaled[normal_mask] = self.scaler.fit_transform(X_values[normal_mask])
+            if (~normal_mask).any():
+                X_scaled[~normal_mask] = self.scaler.transform(X_values[~normal_mask])
 
         # For unsupervised CV: we need custom logic
         # Split ALL samples (normals + abnormalities) into K folds

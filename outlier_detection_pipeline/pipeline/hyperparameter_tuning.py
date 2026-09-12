@@ -239,9 +239,11 @@ def _tune_with_optuna(
     normal_mask = (y == normal_classification).values
     X_normal = X[normal_mask]
 
-    # Scale all data
+    # Scale all data, fitting the scaler on NORMAL samples only so abnormal
+    # training samples never influence scaling (pure one-class design).
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    scaler.fit(X[normal_mask])
+    X_scaled = scaler.transform(X)
     X_normal_scaled = X_scaled[normal_mask]
 
     # Create labels for stratified splitting
@@ -434,9 +436,11 @@ def tune_hyperparameters(
     logger.info(f"Training on {len(normal_indices)} normal samples")
     logger.info(f"Validating on {len(X)} samples ({len(normal_indices)} normal, {len(abnormal_indices)} abnormal)")
 
-    # Scale all data
+    # Scale all data, fitting the scaler on NORMAL samples only so abnormal
+    # training samples never influence scaling (pure one-class design).
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    scaler.fit(X[normal_mask])
+    X_scaled = scaler.transform(X)
     X_normal_scaled = X_scaled[normal_mask]
 
     # Create labels for stratified splitting
@@ -565,9 +569,12 @@ def tune_and_train(
     """
     logger.info("Starting hyperparameter tuning...")
 
-    # Scale data
+    # Scale data, fitting the scaler on NORMAL training samples only so
+    # abnormal training samples never influence scaling.
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_train)
+    normal_mask_tr = (y_train == normal_classification).values
+    scaler.fit(X_train[normal_mask_tr])
+    X_scaled = scaler.transform(X_train)
 
     # Tune
     best_model, best_params, results_df = tune_hyperparameters(
