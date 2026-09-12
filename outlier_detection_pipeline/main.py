@@ -60,6 +60,7 @@ from outlier_detection_pipeline.pipeline.realistic_evaluation import (
     save_realistic_results,
     plot_realistic_results,
 )
+from outlier_detection_pipeline.pipeline.drift_diagnostic import run_drift_diagnostic
 from outlier_detection_pipeline.pipeline.hyperparameter_tuning import (
     tune_and_train,
     tune_hyperparameters,
@@ -413,6 +414,24 @@ def _evaluate_realistic(
     test_preds = model_final.predict(X_test)
     test_scores = model_final.decision_function(X_test)
 
+    # Drift diagnostic: compare train-normal vs test-normal vs test-abnormal
+    # score distributions and flag FPR divergence from the nominal
+    # contamination. Uses the SAME threshold the realistic eval flagged with
+    # so the reported FPR is directly comparable. Defaults to on; a batch
+    # where train and test normals are drawn from the same distribution shows
+    # no drift.
+    if config.get('run_drift_diagnostic', True):
+        run_drift_diagnostic(
+            model=model_final,
+            X_train_normals=X_train[y_train == normal_class],
+            X_test_normals=X_test_normal,
+            X_test_abnormals=X_test_abnormal if len(X_test_abnormal) > 0 else None,
+            target_contamination=realistic_contamination,
+            anomaly_threshold=realistic_results.get('anomaly_threshold', float('nan')),
+            output_dir=output_dir,
+            fold_num=None,
+        )
+
     return test_preds, test_scores, realistic_results
 
 
@@ -563,6 +582,53 @@ def _save_outputs(
     }
 
 
+def _run_fold_drift_diagnostic(
+    model: ExtendedIsolationForestModel,
+    X_train_p: pd.DataFrame,
+    y_train_p: pd.Series,
+    X_test_p: pd.DataFrame,
+    y_test_p: pd.Series,
+    normal_class: int,
+    realistic_results: Optional[Dict[str, Any]],
+    config: Config,
+    output_dir: Path,
+    fold_num: int,
+) -> None:
+    """Run the drift diagnostic for one outer-CV fold.
+
+    Splits the fold's held-out test set into normal/abnormal and compares the
+    score distributions against the fold's training normals. The threshold is
+    taken from the realistic evaluation when available (so the reported FPR is
+    exactly the one the realistic eval used); otherwise it falls back to the
+    configured deployment contamination percentile of the OOF normal scores.
+    """
+    outlier_classes = config.get_list('outlier_classifications', [1, 2, 3])
+    X_test_normal = X_test_p[y_test_p == normal_class]
+    X_test_abnormal = X_test_p[y_test_p.isin(outlier_classes)]
+    X_train_normal = X_train_p[y_train_p == normal_class]
+
+    target_contamination = config.get('realistic_test_contamination', 0.02)
+    if realistic_results is not None and realistic_results.get('anomaly_threshold') is not None:
+        threshold = float(realistic_results['anomaly_threshold'])
+    else:
+        oof = getattr(model, 'oof_normal_scores_', None)
+        if oof is not None and len(oof) > 0:
+            threshold = float(np.percentile(oof, 100.0 * target_contamination))
+        else:
+            threshold = float('nan')
+
+    run_drift_diagnostic(
+        model=model,
+        X_train_normals=X_train_normal,
+        X_test_normals=X_test_normal,
+        X_test_abnormals=X_test_abnormal if len(X_test_abnormal) > 0 else None,
+        target_contamination=target_contamination,
+        anomaly_threshold=threshold,
+        output_dir=output_dir,
+        fold_num=fold_num,
+    )
+
+
 def _run_outer_cv(
     features: pd.DataFrame,
     classification: pd.Series,
@@ -654,6 +720,26 @@ def _run_outer_cv(
             realistic_results = None
 
         fold_metrics['fold'] = fold_num + 1
+
+        # Drift diagnostic for this fold. Compares this fold's train-normal
+        # vs test-normal vs test-abnormal score distributions and flags FPR
+        # divergence from the nominal deployment contamination, plus a 2-PC
+        # scatter coloured by train/test split. Uses the same threshold the
+        # realistic eval flagged with when available.
+        if config.get('run_drift_diagnostic', True):
+            _run_fold_drift_diagnostic(
+                model=model,
+                X_train_p=X_train_p,
+                y_train_p=y_train_p,
+                X_test_p=X_test_p,
+                y_test_p=y_test_p,
+                normal_class=normal_class,
+                realistic_results=realistic_results,
+                config=config,
+                output_dir=fold_out_dir,
+                fold_num=fold_num + 1,
+            )
+
         fold_results.append(fold_metrics)
 
         logger.info(f"Fold {fold_num + 1} results: "

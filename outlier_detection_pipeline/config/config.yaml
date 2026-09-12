@@ -93,6 +93,14 @@ realistic_n_outliers_true: null  # Number of true outliers (optional, overrides 
 # the standard single stratified split above.
 cv_outer_folds: 1
 
+# Drift diagnostic. When true, the pipeline logs the train-normal vs
+# test-normal vs test-abnormal score_samples() distributions (mean, 2nd/50th/
+# 98th percentiles), flags when the test-normal FPR at the calibrated
+# threshold diverges from the nominal deployment contamination, and saves a
+# 2-PC scatter coloured by train/test split (drift_diagnostic.csv / .json /
+# _pca.png). Use to tell split noise from real batch/cohort drift.
+run_drift_diagnostic: true
+
 # ============================================================================
 # Hyperparameter Tuning
 # ============================================================================
