@@ -11,6 +11,7 @@ from typing import Optional, Tuple, Dict, Any
 
 import joblib
 import logging
+import yaml
 from sklearn.ensemble import IsolationForest
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
@@ -18,6 +19,62 @@ from sklearn.preprocessing import StandardScaler
 from outlier_detection_pipeline.pipeline.scorers import make_scorer
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_scorer_kwargs(scorer_kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Normalize the `scorer_kwargs` config value into a dict.
+
+    YAML may hand back a string (e.g. `scorer_kwargs: nu=0.1` or the quoted
+    `scorer_kwargs: "nu: 0.1"`) when the user means a single-key mapping. A
+    raw string would make `dict.update(<string>)` raise the cryptic
+    `dictionary update sequence element #0 has length 1; 2 is required`, so we
+    parse common spellings (YAML mapping, `key: value`, `key=value`, possibly
+    comma-separated) into a dict and emit a clear error otherwise.
+    """
+    if scorer_kwargs is None:
+        return None
+    if isinstance(scorer_kwargs, dict):
+        return dict(scorer_kwargs)
+    if isinstance(scorer_kwargs, str):
+        text = scorer_kwargs.strip()
+        if not text:
+            return None
+        # Try YAML first (handles '{nu: 0.1}' and bare 'nu: 0.1').
+        try:
+            parsed = yaml.safe_load(text)
+            if isinstance(parsed, dict):
+                return dict(parsed)
+        except yaml.YAMLError:
+            pass
+        # Fall back to a tolerant 'key=value' / 'key: value' split.
+        out: Dict[str, Any] = {}
+        for part in text.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            sep = ":" if ":" in part else ("=" if "=" in part else None)
+            if sep is None:
+                raise ValueError(
+                    f"scorer_kwargs entry {part!r} is not a 'key: value' or "
+                    f"'key=value' pair. Use a YAML mapping, e.g. "
+                    f"scorer_kwargs: {{nu: 0.05}} or, on its own lines,\n"
+                    f"  scorer_kwargs:\n    nu: 0.05"
+                )
+            k, _, v = part.partition(sep)
+            k = k.strip()
+            v = v.strip()
+            if not k:
+                raise ValueError(f"scorer_kwargs entry {part!r} has an empty key.")
+            try:
+                v = yaml.safe_load(v)
+            except yaml.YAMLError:
+                pass
+            out[k] = v
+        return out or None
+    raise ValueError(
+        f"scorer_kwargs must be a mapping (dict) or a 'key: value' string, "
+        f"got {type(scorer_kwargs).__name__}: {scorer_kwargs!r}"
+    )
 
 
 class ExtendedIsolationForestModel:
@@ -81,6 +138,7 @@ class ExtendedIsolationForestModel:
             'random_state': random_state,
             'contamination': contamination,
         }
+        scorer_kwargs = _coerce_scorer_kwargs(scorer_kwargs)
         if scorer_kwargs:
             self._scorer_kwargs.update(scorer_kwargs)
 

@@ -993,7 +993,9 @@ def _run_scorer_sweep(
 
     # Build a base scorer_kwargs dict to override per iteration. Start from
     # the user's declared scorer_kwargs (if any) so unrelated params survive.
-    base_kwargs = dict(orig_scorer_kwargs) if orig_scorer_kwargs else {}
+    # Coerce to dict in case the YAML handed back a string (e.g. `nu=0.1`).
+    from outlier_detection_pipeline.pipeline.model import _coerce_scorer_kwargs
+    base_kwargs = _coerce_scorer_kwargs(orig_scorer_kwargs) or {}
 
     _log_section_header(
         f"SCORER SWEEP ({scorer_name}: {param_name} in {sweep_values})"
