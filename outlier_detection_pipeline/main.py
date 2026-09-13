@@ -333,6 +333,9 @@ def _train_without_tuning(
     random_state = config.get('random_state', 42)
     contamination = config.get('contamination', 'auto')
     n_splits = config.get('n_splits', 5)
+    scorer_name = config.get('scorer', 'iforest')
+    # Extra per-scorer kwargs (e.g. ocsvm nu/gamma, pca_recon n_components).
+    scorer_kwargs = config.get('scorer_kwargs', None)
 
     model = ExtendedIsolationForestModel(
         n_estimators=n_estimators,
@@ -342,6 +345,8 @@ def _train_without_tuning(
         n_jobs=n_jobs,
         random_state=random_state,
         contamination=contamination,
+        scorer_name=scorer_name,
+        scorer_kwargs=scorer_kwargs,
     )
 
     # Train with cross-validation
@@ -684,9 +689,10 @@ def _run_outer_cv(
             X_train, X_test, y_train, y_test, config, fold_out_dir, normal_class
         )
 
-        # Train model on this fold
+        # Train model on this fold. Hyperparameter tuning is IF-specific;
+        # non-IF scorers ignore it and use the no-tuning path.
         use_hp_tuning = config.get('use_hyperparameter_tuning', False)
-        if use_hp_tuning:
+        if use_hp_tuning and config.get('scorer', 'iforest') == 'iforest':
             model, _ = _train_with_hyperparameter_tuning(
                 X_train_p, y_train_p, config, fold_out_dir, normal_class
             )
@@ -1073,8 +1079,10 @@ def run_pipeline(
     _log_section_header("STEP 3: Training Extended Isolation Forest with CV")
 
     use_hyperparameter_tuning = config.get('use_hyperparameter_tuning', False)
-
-    if use_hyperparameter_tuning:
+    scorer_name = config.get('scorer', 'iforest')
+    # Hyperparameter tuning is IF-specific; non-IF scorers ignore it and use
+    # the no-tuning path (fixed defaults / scorer_kwargs from config).
+    if use_hyperparameter_tuning and scorer_name == 'iforest':
         model, best_params = _train_with_hyperparameter_tuning(
             X_train, y_train, config, output_dir, normal_class
         )

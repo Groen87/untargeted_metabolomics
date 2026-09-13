@@ -67,6 +67,22 @@ n_jobs: -1                # Number of jobs for parallel processing (-1 = all)
 random_state: 42          # Random seed
 contamination: "auto"     # Expected proportion of outliers (auto or float)
 
+# Anomaly scorer. Selects the one-class detector that scores samples after
+# (optional) PCA. All scorers share the same lower-more-anomalous score
+# convention, so the OOF threshold calibration, drift diagnostic, and realistic
+# evaluation work unchanged. Options:
+#   iforest     : IsolationForest (the original default; nonparametric)
+#   mahalanobis : Mahalanobis distance (robust covariance); parametric,
+#                 sample-efficient, stable threshold at small n
+#   pca_recon   : PCA reconstruction error (fits a 2nd PCA on the reduced
+#                 features; scores by reconstruction error)
+#   ocsvm       : One-Class SVM (RBF); nonparametric boundary
+# Hyperparameter tuning (use_hyperparameter_tuning) only applies to iforest.
+scorer: iforest
+# Optional per-scorer kwargs (e.g. for ocsvm: {nu: 0.05, gamma: scale};
+# for pca_recon: {n_components: 20}). Leave null for defaults.
+scorer_kwargs: null
+
 # ============================================================================
 # Cross-Validation
 # ============================================================================

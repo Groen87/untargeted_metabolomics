@@ -15,6 +15,8 @@ from sklearn.ensemble import IsolationForest
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
+from outlier_detection_pipeline.pipeline.scorers import make_scorer
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,18 +39,29 @@ class ExtendedIsolationForestModel:
         n_jobs: int = -1,
         random_state: int = 42,
         contamination: str = "auto",
-    ):
+        scorer_name: str = "iforest",
+        scorer_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
         Initialize the model.
 
+        The underlying anomaly detector is pluggable via `scorer_name`
+        (iforest / mahalanobis / pca_recon / ocsvm). All scorers share the
+        same fit / score_samples / decision_function interface and the
+        "lower = more anomalous" convention, so the threshold calibration,
+        drift diagnostic, and realistic evaluation work unchanged.
+
         Args:
-            n_estimators: Number of trees in the forest
-            max_samples: Number of samples to draw for each tree
-            max_features: Number of features to draw for each tree
-            bootstrap: Whether to use bootstrap sampling
-            n_jobs: Number of jobs for parallel processing
+            n_estimators: Number of trees (iforest only)
+            max_samples: Samples per tree (iforest only)
+            max_features: Features per tree (iforest only)
+            bootstrap: Bootstrap sampling (iforest only)
+            n_jobs: Number of jobs (iforest only)
             random_state: Random seed
             contamination: Expected proportion of outliers
+            scorer_name: Which scorer to use ('iforest', 'mahalanobis',
+                'pca_recon', 'ocsvm').
+            scorer_kwargs: Extra kwargs forwarded to the scorer constructor.
         """
         self.n_estimators = n_estimators
         self.max_samples = max_samples
@@ -57,8 +70,21 @@ class ExtendedIsolationForestModel:
         self.n_jobs = n_jobs
         self.random_state = random_state
         self.contamination = contamination
+        self.scorer_name = scorer_name
+        # Base kwargs common to all scorers; merged with scorer_kwargs.
+        self._scorer_kwargs = {
+            'n_estimators': n_estimators,
+            'max_samples': max_samples,
+            'max_features': max_features,
+            'bootstrap': bootstrap,
+            'n_jobs': n_jobs,
+            'random_state': random_state,
+            'contamination': contamination,
+        }
+        if scorer_kwargs:
+            self._scorer_kwargs.update(scorer_kwargs)
 
-        self.model: Optional[IsolationForest] = None
+        self.model = None  # the fitted scorer (any type)
         self.scaler = StandardScaler()
         self.threshold_: Optional[float] = None
         self.is_fitted_ = False
@@ -67,6 +93,16 @@ class ExtendedIsolationForestModel:
         # did NOT see it, so this is an honest (unoptimistic) reference score
         # distribution for calibrating an absolute anomaly threshold.
         self.oof_normal_scores_: Optional[np.ndarray] = None
+
+    def _new_scorer(self, random_state_offset: int = 0) -> Any:
+        """Build a fresh scorer instance for a fold / final fit.
+
+        random_state_offset lets each CV fold get a distinct seed (used by
+        iforest for per-fold randomness).
+        """
+        kwargs = dict(self._scorer_kwargs)
+        kwargs['random_state'] = self.random_state + random_state_offset
+        return make_scorer(self.scorer_name, **kwargs)
 
     def fit(
         self,
@@ -105,17 +141,8 @@ class ExtendedIsolationForestModel:
         else:
             X_scaled = self.scaler.fit_transform(X)
 
-        # Initialize and fit model
-        self.model = IsolationForest(
-            n_estimators=self.n_estimators,
-            max_samples=self.max_samples,
-            max_features=self.max_features,
-            bootstrap=self.bootstrap,
-            n_jobs=self.n_jobs,
-            random_state=self.random_state,
-            contamination=self.contamination,
-        )
-
+        # Initialize and fit model (pluggable scorer, trained on normals only)
+        self.model = self._new_scorer()
         self.model.fit(X_scaled)
         self.is_fitted_ = True
 
@@ -268,16 +295,8 @@ class ExtendedIsolationForestModel:
             train_normal_positions = train_fold_idx[train_y_binary == 0]
             X_train_fold = X_scaled[train_normal_positions]
 
-            # Train model on this fold
-            fold_model = IsolationForest(
-                n_estimators=self.n_estimators,
-                max_samples=self.max_samples,
-                max_features=self.max_features,
-                bootstrap=self.bootstrap,
-                n_jobs=self.n_jobs,
-                random_state=self.random_state + fold_num,  # Different seed per fold
-                contamination=self.contamination,
-            )
+            # Train model on this fold (pluggable scorer, normals only)
+            fold_model = self._new_scorer(random_state_offset=fold_num)
             fold_model.fit(X_train_fold)
 
             # Get scores for validation fold (shifted, for legacy fold_scores)
@@ -296,15 +315,7 @@ class ExtendedIsolationForestModel:
         # After all folds, train final model on ALL normal samples from training set
         X_normal_all = X_scaled[normal_mask]
 
-        self.model = IsolationForest(
-            n_estimators=self.n_estimators,
-            max_samples=self.max_samples,
-            max_features=self.max_features,
-            bootstrap=self.bootstrap,
-            n_jobs=self.n_jobs,
-            random_state=self.random_state,
-            contamination=self.contamination,
-        )
+        self.model = self._new_scorer()
         self.model.fit(X_normal_all)
         self.is_fitted_ = True
 
@@ -341,6 +352,7 @@ class ExtendedIsolationForestModel:
             'n_jobs': self.n_jobs,
             'random_state': self.random_state,
             'contamination': self.contamination,
+            'scorer_name': self.scorer_name,
             'is_fitted_': self.is_fitted_,
         }
 
@@ -360,6 +372,7 @@ class ExtendedIsolationForestModel:
             n_jobs=data['n_jobs'],
             random_state=data['random_state'],
             contamination=data['contamination'],
+            scorer_name=data.get('scorer_name', 'iforest'),
         )
 
         model.model = data['model']
