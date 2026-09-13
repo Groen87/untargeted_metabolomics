@@ -134,6 +134,17 @@ run_drift_diagnostic: true
 # outputs/outlier_detection/sweep_components_<N>/, plus components_sweep.csv
 # and components_sweep.png with the tradeoff curve.
 components_sweep_values: [10, 20, 30, 40, 50, 60, 80, 100]
+# Scorer sweep. Set `evaluation_strategy: scorer_sweep` to run the full
+# pipeline once per value of a single scorer kwarg (e.g. `nu` for OCSVM) at
+# a fixed `n_components`, and produce a detection-rate-vs-FPR curve over that
+# kwarg. Each value uses outer k-fold CV (cv_outer_folds, or 5 if 1) for an
+# honest out-of-sample estimate that averages out split noise. The kwarg name
+# to sweep and the values to try are set below; the base scorer is the one
+# selected by `scorer` above, and the kwarg is overridden per iteration in
+# `scorer_kwargs`. Outputs per value under outputs/outlier_detection/
+# sweep_scorer_<value>/, plus scorer_sweep.csv and scorer_sweep.png.
+scorer_sweep_param: nu            # The scorer kwarg to sweep (e.g. nu, gamma, n_neighbors, n_estimators)
+scorer_sweep_values: [0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5]
 
 # ============================================================================
 # Hyperparameter Tuning
