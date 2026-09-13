@@ -30,6 +30,18 @@ Available scorers (selected via the `scorer` config key):
                   deep one-class model that maps normals into a minimal-radius
                   hypersphere; scores by squared distance to the hypersphere
                   center (lower = more anomalous).
+  - lof         : Local Outlier Factor. Local-density scorer: a point is anomalous
+                  if its local density is low relative to its neighbors'. Catches
+                  locally-sparse abnormals that global density/boundary methods
+                  miss. Lower = more anomalous.
+  - knn         : k-th nearest neighbor distance to the training normals. The
+                  nonparametric global-distance alternative to Mahalanobis: no
+                  Gaussian assumption, no covariance inversion, just raw distance
+                  in feature space. Lower = more anomalous.
+  - ensemble    : Averages z-normalized scores from a set of sub-scorers (default
+                  iforest + ocsvm). Combines methods with different failure
+                  modes; often beats either alone. Sub-scorers configured via
+                  scorer_kwargs['sub_scorers'] (list of names).
 
 A factory `make_scorer(name, **kwargs)` returns a configured scorer instance.
 """
@@ -70,9 +82,15 @@ def make_scorer(name: str, **kwargs: Any) -> Any:
         return AutoencoderScorer(**kwargs)
     if name == 'deep_svdd':
         return DeepSVDDScorer(**kwargs)
+    if name == 'lof':
+        return LOFScorer(**kwargs)
+    if name == 'knn':
+        return KNNHostScorer(**kwargs)
+    if name == 'ensemble':
+        return EnsembleScorer(**kwargs)
     raise ValueError(
         f"Unknown scorer '{name}'. Use one of: iforest, mahalanobis, pca_recon, "
-        f"ocsvm, ae, deep_svdd."
+        f"ocsvm, ae, deep_svdd, lof, knn, ensemble."
     )
 
 
@@ -530,6 +548,192 @@ class DeepSVDDScorer:
 
     def decision_function(self, X: np.ndarray) -> np.ndarray:
         return self.score_samples(X) + self._offset_
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.where(self.decision_function(X) < 0, -1, 1)
+
+
+class LOFScorer:
+    """Local Outlier Factor scorer.
+
+    Scores each point by how locally sparse it is relative to its neighbors:
+    a point whose neighborhood is sparser than its neighbors' neighborhoods is
+    anomalous. This is the canonical *local-density* mechanism, which global
+    density/boundary methods (IF, Mahalanobis, OCSVM) do not capture: it can
+    flag an abnormal that sits in a sparse region even when it is not globally
+    far from the normal centroid. Catches heterogeneous abnormals (different
+    IMDs shifting different metabolite subsets).
+
+    Trained on normals only. Uses novelty=True so unseen samples can be scored
+    (sklearn's LOF otherwise only scores training points). The negative
+    LOF score is returned so LOWER = more anomalous (high LOF = anomalous).
+
+    k (n_neighbors) is the key lever: small k = sensitive to local noise,
+    large k = smoother, more global. Defaults to max(20, 2*sqrt(n)).
+    """
+
+    def __init__(
+        self,
+        n_neighbors: int = 20,
+        contamination: Any = "auto",
+        **_ignored: Any,
+    ) -> None:
+        self.n_neighbors = n_neighbors
+        self.contamination = contamination
+        self.model = None
+        self._offset_: float = 0.0
+
+    def fit(self, X: np.ndarray) -> "LOFScorer":
+        from sklearn.neighbors import LocalOutlierFactor
+        n = X.shape[0]
+        k = max(2, min(self.n_neighbors, n - 1))
+        self.model = LocalOutlierFactor(
+            n_neighbors=k,
+            novelty=True,
+            contamination="auto",
+        )
+        self.model.fit(X)
+        # Offset: high percentile of training-normal negative-LOF scores.
+        train_scores = self.model.score_samples(X)
+        try:
+            contam = float(self.contamination)
+        except (TypeError, ValueError):
+            contam = 0.02
+        self._offset_ = float(np.quantile(train_scores, contam))
+        return self
+
+    def score_samples(self, X: np.ndarray) -> np.ndarray:
+        # sklearn score_samples returns negative LOF: lower = more anomalous.
+        return self.model.score_samples(X)
+
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        return self.score_samples(X) - self._offset_
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.where(self.decision_function(X) < 0, -1, 1)
+
+
+class KNNHostScorer:
+    """k-th nearest neighbor distance scorer.
+
+    Scores each point by its distance to the k-th nearest training normal -- the
+    nonparametric global-distance alternative to Mahalanobis. No Gaussian
+    assumption, no covariance inversion (so no shrinkage-instability), just raw
+    distance in feature space. More stable than Mahalanobis at small n (nothing
+    to estimate beyond the reference set itself) while still measuring global
+    isolation from the normal cloud.
+
+    The score is negated so LOWER = more anomalous. The distance is computed to
+    the training normals only (the reference set); abnormals are never in the
+    reference, so this is a clean one-class distance.
+    """
+
+    def __init__(
+        self,
+        n_neighbors: int = 5,
+        contamination: Any = "auto",
+        **_ignored: Any,
+    ) -> None:
+        self.n_neighbors = n_neighbors
+        self.contamination = contamination
+        self._ref = None
+        self._offset_: float = 0.0
+
+    def fit(self, X: np.ndarray) -> "KNNHostScorer":
+        from sklearn.neighbors import NearestNeighbors
+        n = X.shape[0]
+        k = max(1, min(self.n_neighbors, n - 1))
+        self._nn = NearestNeighbors(n_neighbors=k, metric="euclidean")
+        self._nn.fit(X)
+        self._ref = X
+        # Offset: high percentile of training-normal k-th NN distances.
+        train_dists, _ = self._nn.kneighbors(X)
+        kth = train_dists[:, -1]
+        try:
+            contam = float(self.contamination)
+        except (TypeError, ValueError):
+            contam = 0.02
+        self._offset_ = float(np.quantile(kth, 1.0 - contam))
+        return self
+
+    def score_samples(self, X: np.ndarray) -> np.ndarray:
+        dists, _ = self._nn.kneighbors(X)
+        kth = dists[:, -1]
+        return -kth
+
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        return self.score_samples(X) + self._offset_
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.where(self.decision_function(X) < 0, -1, 1)
+
+
+class EnsembleScorer:
+    """Ensemble of one-class scorers via averaged z-normalized scores.
+
+    Combines scorers with different failure modes (e.g. IF global density +
+    OCSVM boundary) by averaging their z-normalized score_samples. Each
+    sub-scorer's raw scores are standardized to zero mean / unit std on the
+    training normals, so the ensemble is not dominated by whichever sub-scorer
+    has the largest score scale. The averaged z-score is returned so
+    LOWER = more anomalous, matching the convention.
+
+    This often beats any single member when the members err in different
+    directions (e.g. one over-flags normals, another misses abnormals): the
+    average cancels uncorrelated errors.
+    """
+
+    def __init__(
+        self,
+        sub_scorers: Optional[list] = None,
+        contamination: Any = "auto",
+        random_state: int = 42,
+        **scorer_kwargs: Any,
+    ) -> None:
+        self.sub_scorer_names = sub_scorers or ["iforest", "ocsvm"]
+        self.contamination = contamination
+        self.random_state = random_state
+        self._scorers = []
+        self._means = []
+        self._stds = []
+        self._offset_: float = 0.0
+        # Stash extra kwargs to forward to each sub-scorer.
+        self._scorer_kwargs = scorer_kwargs
+
+    def fit(self, X: np.ndarray) -> "EnsembleScorer":
+        self._scorers = []
+        self._means = []
+        self._stds = []
+        for i, name in enumerate(self.sub_scorer_names):
+            sub = make_scorer(
+                name,
+                random_state=self.random_state + i,
+                contamination=self.contamination,
+                **self._scorer_kwargs,
+            )
+            sub.fit(X)
+            self._scorers.append(sub)
+            raw = sub.score_samples(X)
+            self._means.append(float(np.mean(raw)))
+            self._stds.append(float(np.std(raw)) + 1e-12)
+        # Offset: low percentile of training-normal ensemble scores.
+        ens = self.score_samples(X)
+        try:
+            contam = float(self.contamination)
+        except (TypeError, ValueError):
+            contam = 0.02
+        self._offset_ = float(np.quantile(ens, contam))
+        return self
+
+    def score_samples(self, X: np.ndarray) -> np.ndarray:
+        z = np.zeros(X.shape[0], dtype=float)
+        for sub, m, s in zip(self._scorers, self._means, self._stds):
+            raw = sub.score_samples(X)
+            z += (raw - m) / s
+        return z / len(self._scorers)
+
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        return self.score_samples(X) - self._offset_
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return np.where(self.decision_function(X) < 0, -1, 1)
