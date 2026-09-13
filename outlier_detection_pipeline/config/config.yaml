@@ -72,15 +72,17 @@ contamination: "auto"     # Expected proportion of outliers (auto or float)
 # convention, so the OOF threshold calibration, drift diagnostic, and realistic
 # evaluation work unchanged. Options:
 #   iforest     : IsolationForest (the original default; nonparametric)
-#   mahalanobis : Mahalanobis distance (robust covariance); parametric,
-#                 sample-efficient, stable threshold at small n
+#   mahalanobis : Mahalanobis distance (robust/shrinkage covariance); parametric
 #   pca_recon   : PCA reconstruction error (fits a 2nd PCA on the reduced
 #                 features; scores by reconstruction error)
 #   ocsvm       : One-Class SVM (RBF); nonparametric boundary
+#   ae          : MLP autoencoder reconstruction error (requires torch)
+#   deep_svdd   : Deep Support Vector Data Description (requires torch)
 # Hyperparameter tuning (use_hyperparameter_tuning) only applies to iforest.
 scorer: iforest
 # Optional per-scorer kwargs (e.g. for ocsvm: {nu: 0.05, gamma: scale};
-# for pca_recon: {n_components: 20}). Leave null for defaults.
+# for pca_recon: {n_components: 20}; for ae/deep_svdd: {hidden_dim: 16,
+# latent_dim: 8, epochs: 200}). Leave null for defaults.
 scorer_kwargs: null
 
 # ============================================================================

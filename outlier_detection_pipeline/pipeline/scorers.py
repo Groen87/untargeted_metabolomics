@@ -23,6 +23,13 @@ Available scorers (selected via the `scorer` config key):
                   error. Lower = more anomalous.
   - ocsvm       : One-Class SVM (RBF). Nonparametric boundary; decision_function
                   is the signed distance to the boundary (lower = more anomalous).
+  - ae          : Autoencoder reconstruction error (requires torch). Trains an
+                  MLP autoencoder on normals; scores by per-sample squared
+                  reconstruction error (lower = more anomalous).
+  - deep_svdd   : Deep Support Vector Data Description (requires torch). Trains a
+                  deep one-class model that maps normals into a minimal-radius
+                  hypersphere; scores by squared distance to the hypersphere
+                  center (lower = more anomalous).
 
 A factory `make_scorer(name, **kwargs)` returns a configured scorer instance.
 """
@@ -59,8 +66,13 @@ def make_scorer(name: str, **kwargs: Any) -> Any:
         return PCAReconScorer(**kwargs)
     if name == 'ocsvm':
         return OCSVMScorer(**kwargs)
+    if name == 'ae':
+        return AutoencoderScorer(**kwargs)
+    if name == 'deep_svdd':
+        return DeepSVDDScorer(**kwargs)
     raise ValueError(
-        f"Unknown scorer '{name}'. Use one of: iforest, mahalanobis, pca_recon, ocsvm."
+        f"Unknown scorer '{name}'. Use one of: iforest, mahalanobis, pca_recon, "
+        f"ocsvm, ae, deep_svdd."
     )
 
 
@@ -287,3 +299,237 @@ class OCSVMScorer:
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return self.model.predict(X)
+
+
+# ---------------------------------------------------------------------------
+# Deep one-class scorers (optional; require torch).
+# torch is imported lazily inside each class so the pipeline stays importable
+# without it; selecting one of these scorers without torch installed raises a
+# clear ImportError telling the user to `pip install torch`.
+# ---------------------------------------------------------------------------
+
+
+class AutoencoderScorer:
+    """MLP autoencoder reconstruction-error scorer (requires torch).
+
+    Trains a symmetric MLP autoencoder on the normal samples; scores each
+    sample by its squared reconstruction error (negated so LOWER = more
+    anomalous, matching the other scorers). The network is intentionally small
+    (one hidden layer with ReLU) because the dataset is small (~180 normals)
+    and a larger net would overfit the training normals and inflate the FPR on
+    unseen normals -- the same failure mode as high n_components for IF.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 16,
+        latent_dim: int = 8,
+        epochs: int = 200,
+        lr: float = 1e-3,
+        batch_size: int = 32,
+        contamination: Any = "auto",
+        random_state: int = 42,
+        **_ignored: Any,
+    ) -> None:
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        self.epochs = epochs
+        self.lr = lr
+        self.batch_size = batch_size
+        self.contamination = contamination
+        self.random_state = random_state
+        self._net = None
+        self._offset_: float = 0.0
+
+    @staticmethod
+    def _require_torch():
+        try:
+            import torch  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "AutoencoderScorer requires PyTorch. Install it with "
+                "`pip install torch`."
+            ) from e
+
+    def fit(self, X: np.ndarray) -> "AutoencoderScorer":
+        self._require_torch()
+        import torch
+        from torch import nn, optim
+
+        torch.manual_seed(self.random_state)
+        Xf = np.asarray(X, dtype=np.float32)
+        n, d = Xf.shape
+        hd = max(1, min(self.hidden_dim, d))
+        ld = max(1, min(self.latent_dim, hd))
+
+        class _AE(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.enc = nn.Sequential(nn.Linear(d, hd), nn.ReLU(), nn.Linear(hd, ld))
+                self.dec = nn.Sequential(nn.Linear(ld, hd), nn.ReLU(), nn.Linear(hd, d))
+
+            def forward(self, x):
+                return self.dec(self.enc(x))
+
+        self._net = _AE()
+        opt = optim.Adam(self._net.parameters(), lr=self.lr)
+        loss_fn = nn.MSELoss()
+        Xt = torch.from_numpy(Xf)
+        bs = max(1, min(self.batch_size, n))
+        self._net.train()
+        for _ in range(self.epochs):
+            perm = torch.randperm(n)
+            for i in range(0, n, bs):
+                idx = perm[i:i + bs]
+                xb = Xt[idx]
+                opt.zero_grad()
+                recon = self._net(xb)
+                loss = loss_fn(recon, xb)
+                loss.backward()
+                opt.step()
+        self._net.eval()
+        # Offset for decision_function: high percentile of training recon error.
+        train_err = self._recon_error(Xf)
+        try:
+            contam = float(self.contamination)
+        except (TypeError, ValueError):
+            contam = 0.02
+        self._offset_ = float(np.quantile(train_err, 1.0 - contam))
+        return self
+
+    def _recon_error(self, X: np.ndarray) -> np.ndarray:
+        import torch
+        with torch.no_grad():
+            Xt = torch.from_numpy(np.asarray(X, dtype=np.float32))
+            recon = self._net(Xt)
+            err = torch.sum((Xt - recon) ** 2, dim=1).numpy()
+        return err
+
+    def score_samples(self, X: np.ndarray) -> np.ndarray:
+        return -self._recon_error(X)
+
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        return self.score_samples(X) + self._offset_
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.where(self.decision_function(X) < 0, -1, 1)
+
+
+class DeepSVDDScorer:
+    """Deep Support Vector Data Description (requires torch).
+
+    Trains a deep one-class model that maps normal samples into a
+    minimal-radius hypersphere (Ruff et al., Deep SVDD, ICML 2018). The model
+    is a small MLP; the objective minimizes the squared distance of the
+    training normals to a single center c, whose radius defines the normal
+    region. Scores are the squared distance to c (negated so LOWER = more
+    anomalous).
+
+    No explicit hypersphere radius is stored; the pipeline's OOF percentile
+    threshold calibration supplies the operating point, exactly as for the
+    other scorers.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 16,
+        latent_dim: int = 8,
+        epochs: int = 200,
+        lr: float = 1e-3,
+        batch_size: int = 32,
+        contamination: Any = "auto",
+        random_state: int = 42,
+        **_ignored: Any,
+    ) -> None:
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        self.epochs = epochs
+        self.lr = lr
+        self.batch_size = batch_size
+        self.contamination = contamination
+        self.random_state = random_state
+        self._net = None
+        self._c = None
+        self._offset_: float = 0.0
+
+    @staticmethod
+    def _require_torch():
+        try:
+            import torch  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "DeepSVDDScorer requires PyTorch. Install it with "
+                "`pip install torch`."
+            ) from e
+
+    def fit(self, X: np.ndarray) -> "DeepSVDDScorer":
+        self._require_torch()
+        import torch
+        from torch import nn, optim
+
+        torch.manual_seed(self.random_state)
+        Xf = np.asarray(X, dtype=np.float32)
+        n, d = Xf.shape
+        hd = max(1, min(self.hidden_dim, d))
+        ld = max(1, min(self.latent_dim, hd))
+
+        class _SVDD(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Linear(d, hd), nn.ReLU(), nn.Linear(hd, ld), nn.ReLU(),
+                )
+                # Zero-bias output: avoids the trivial collapse to a constant
+                # map (standard Deep SVDD practice).
+                for m in self.net:
+                    if isinstance(m, nn.Linear):
+                        nn.init.zeros_(m.bias)
+
+            def forward(self, x):
+                return self.net(x)
+
+        self._net = _SVDD()
+        # Initialize c as the mean latent of the normals, then freeze it.
+        self._net.eval()
+        with torch.no_grad():
+            self._c = self._net(torch.from_numpy(Xf)).mean(dim=0)
+        opt = optim.Adam(self._net.parameters(), lr=self.lr, weight_decay=1e-4)
+        Xt = torch.from_numpy(Xf)
+        bs = max(1, min(self.batch_size, n))
+        self._net.train()
+        for _ in range(self.epochs):
+            perm = torch.randperm(n)
+            for i in range(0, n, bs):
+                idx = perm[i:i + bs]
+                xb = Xt[idx]
+                opt.zero_grad()
+                z = self._net(xb)
+                loss = torch.mean(torch.sum((z - self._c) ** 2, dim=1))
+                loss.backward()
+                opt.step()
+        self._net.eval()
+        # Offset for decision_function.
+        train_dist = self._squared_dist(Xf)
+        try:
+            contam = float(self.contamination)
+        except (TypeError, ValueError):
+            contam = 0.02
+        self._offset_ = float(np.quantile(train_dist, 1.0 - contam))
+        return self
+
+    def _squared_dist(self, X: np.ndarray) -> np.ndarray:
+        import torch
+        with torch.no_grad():
+            Xt = torch.from_numpy(np.asarray(X, dtype=np.float32))
+            z = self._net(Xt)
+            dist = torch.sum((z - self._c) ** 2, dim=1).numpy()
+        return dist
+
+    def score_samples(self, X: np.ndarray) -> np.ndarray:
+        return -self._squared_dist(X)
+
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        return self.score_samples(X) + self._offset_
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.where(self.decision_function(X) < 0, -1, 1)
