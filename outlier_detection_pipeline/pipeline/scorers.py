@@ -141,23 +141,34 @@ class MahalanobisScorer:
         self._offset_: float = 0.0
 
     def fit(self, X: np.ndarray) -> "MahalanobisScorer":
-        # MinCovDet needs more samples than features for a stable estimate.
+        # Choose a covariance estimator appropriate to the n/d regime.
+        #   - MinCovDet (robust MCD) is best when the data is comfortably
+        #     overdetermined (n comfortably > d), because it fits on a robust
+        #     subset (~half the samples by default) which must itself exceed d
+        #     to stay full-rank.
+        #   - OAS shrinkage is the principled choice in the n~d regime: it adds
+        #     a structured ridge that keeps the covariance well-conditioned and
+        #     invertible when samples barely exceed dimensions. This is what
+        #     lets Mahalanobis run reliably at, e.g., 181 normals / 100 comps.
+        #   - Below n <= d the sample covariance is singular; OAS shrinkage still
+        #     works there (it is defined for n < d), so we use it in that case
+        #     too rather than falling back to plain empirical covariance.
         n, d = X.shape
-        if n <= d:
-            # Fall back to a shrunk empirical covariance when too few samples.
-            from sklearn.covariance import EmpiricalCovariance
-            logger.warning(
-                f"MahalanobisScorer: n_samples ({n}) <= n_features ({d}); "
-                f"falling back to empirical covariance (less robust)."
-            )
-            self.mcd = EmpiricalCovariance()
-            self.mcd.fit(X)
-        else:
+        from sklearn.covariance import OAS
+        robust_threshold = max(2 * d + 10, int(3 * d))
+        if n > robust_threshold:
+            # Comfortably overdetermined: robust MCD resists borderline normals.
             self.mcd = MinCovDet(
                 support_fraction=self.support_fraction,
                 random_state=self.random_state,
             )
-            self.mcd.fit(X)
+            est_name = "MinCovDet (robust)"
+        else:
+            # n~d or n<d: OAS shrinkage keeps the estimate full-rank and stable.
+            self.mcd = OAS()
+            est_name = f"OAS shrinkage (n={n}, d={d})"
+        logger.info(f"MahalanobisScorer: covariance estimator = {est_name}")
+        self.mcd.fit(X)
         # Offset for decision_function: chi-square percentile matching the
         # configured contamination (only meaningful when contamination is a float).
         from scipy.stats import chi2
