@@ -24,17 +24,40 @@ from pathlib import Path
 
 import pandas as pd
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Candidate base directories whose `data/` folder is searched for the default
+# input/output files. Ordered by preference: current working directory, the
+# script's parent directory (combined_batch_pipeline/, sibling of the data
+# folder), and the repository root.
+_CANDIDATE_BASES = [
+    Path.cwd(),
+    Path(__file__).resolve().parent.parent,
+    Path(__file__).resolve().parents[2],
+]
 
 
 def _resolve(path: str) -> str:
-    """Resolve a path relative to the repo root if it is not absolute and exists there."""
+    """Resolve a relative path against candidate base directories.
+
+    Searches each candidate base for the path; returns the first existing
+    match. Absolute paths are returned unchanged. If no candidate contains
+    the path, the path relative to the first existing `data/` folder (or the
+    first candidate) is returned so the eventual error message stays helpful.
+    """
     p = Path(path)
-    if not p.is_absolute():
-        rooted = REPO_ROOT / p
-        if rooted.parent.exists():
-            return str(rooted)
-    return path
+    if p.is_absolute():
+        return str(p)
+
+    candidates = [base / p for base in _CANDIDATE_BASES]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+
+    # Nothing matched yet: prefer a base that has a `data/` folder so the
+    # output (and a clear FileNotFoundError) points where the user keeps data.
+    for base in _CANDIDATE_BASES:
+        if (base / "data").is_dir():
+            return str(base / p)
+    return str(_CANDIDATE_BASES[0] / p)
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
