@@ -24,6 +24,18 @@ from pathlib import Path
 
 import pandas as pd
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve(path: str) -> str:
+    """Resolve a path relative to the repo root if it is not absolute and exists there."""
+    p = Path(path)
+    if not p.is_absolute():
+        rooted = REPO_ROOT / p
+        if rooted.parent.exists():
+            return str(rooted)
+    return path
+
 
 def _read_csv(path: Path) -> pd.DataFrame:
     """Read a CSV, retrying with latin1 if utf-8 decoding fails."""
@@ -38,8 +50,8 @@ def add_classification(
     merged_file: str = "data/merged_data.csv",
     output_file: str = "data/merged_data_with_classification.csv",
 ) -> pd.DataFrame:
-    outlier_df = _read_csv(Path(outlier_file))
-    merged_df = _read_csv(Path(merged_file))
+    outlier_df = _read_csv(Path(_resolve(outlier_file)))
+    merged_df = _read_csv(Path(_resolve(merged_file)))
 
     result = merged_df.merge(
         outlier_df[["Monster", "Oordeel targeted", "Classification"]],
@@ -61,7 +73,7 @@ def add_classification(
 
     result = result[new_cols]
 
-    output_path = Path(output_file)
+    output_path = Path(_resolve(output_file))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.to_csv(output_path, index=False, encoding="utf-8")
 
