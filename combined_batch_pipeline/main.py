@@ -17,8 +17,10 @@ Workflow:
 3. Extract batch information from column names
 4. For each batch:
    a. Average duplicate samples (_1 + _2)
-   b. Apply PQN normalization
-   c. Apply LOESS drift correction (using injection order from metadata)
+   b. Apply LOESS drift correction (using injection order from metadata)
+   c. Apply median normalization (pqn_normalize_batch scales each sample's
+      per-sample median to the QC reference median; this is median scaling,
+      not true per-feature Probabilistic Quotient Normalization)
 5. Merge all batches
 6. Run ComBat batch correction
 7. Run RALPS batch correction (alternative method)
