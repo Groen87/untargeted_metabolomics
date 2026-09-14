@@ -10,6 +10,7 @@ from .injection_order import (
     get_injection_order_mapping,
     get_sample_info_from_metadata,
 )
+from .add_classification import add_classification
 
 __all__ = [
     "load_combined_data",
@@ -22,4 +23,5 @@ __all__ = [
     "get_injection_order_from_metadata",
     "get_injection_order_mapping",
     "get_sample_info_from_metadata",
+    "add_classification",
 ]
