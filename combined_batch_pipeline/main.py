@@ -335,9 +335,14 @@ def run_full_pipeline(
     logger.info(f"STEP 3: Merging batches")
     logger.info(f"{'='*70}")
     
+    bridge_enabled = config.get('bridge_qc_scaling', False)
     merged_data, merged_metadata = merge_batch_results(
         batch_results=batch_results,
         output_dir=output_dir / "merged",
+        apply_bridge_qc_scaling=bridge_enabled,
+        bridge_patterns=config.get('bridge_qc_patterns', ['QC3', 'QC4', 'blauw']),
+        bridge_min_batches=int(config.get('bridge_qc_min_batches', 8)),
+        bridge_max_factor=float(config.get('bridge_qc_max_factor', 2.0)),
     )
     
     logger.info(f"Merged data shape: {merged_data.shape}")

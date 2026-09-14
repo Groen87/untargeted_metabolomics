@@ -146,3 +146,18 @@ ralps_config:
   device: "cpu"
   min_relevant_intensity: 1000
   allowed_vc_increase: 0.05
+
+# ============================================================================
+# Bridge-QC Batch Alignment Configuration
+# ============================================================================
+# Aligns batches using cross-batch control (QC) samples that are the SAME
+# material run in every batch (QC3, QC4, blauw). Applied after PQN + LOESS,
+# before the merged data is saved. Removes the per-feature, per-batch offset
+# that within-batch corrections (PQN, LOESS on expQC) do not address.
+# Unlike expQC (a pool of each batch's own biological samples), these fixed
+# materials carry no batch-specific biology, so their between-batch differences
+# are pure instrument/batch effect.
+bridge_qc_scaling: false  # Set true to enable bridge-QC batch alignment
+bridge_qc_patterns: ["QC3", "QC4", "blauw"]  # Substrings identifying bridge QCs
+bridge_qc_min_batches: 8  # Feature must be present in bridge QCs in >= this many batches to be corrected
+bridge_qc_max_factor: 2.0  # Correction factors clipped to [1/this, this] (2.0 => [0.5, 2.0])
