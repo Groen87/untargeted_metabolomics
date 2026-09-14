@@ -226,18 +226,21 @@ def process_batch(
         fallback_qc_pattern=fallback_qc_pattern,
     )
     
-    # Remove experiment QC samples (expQC, QC3) after PQN normalization
-    # These are used for within-batch LOESS correction and PQN normalization
-    # They should NOT be used for inter-batch correction (ComBat/RALPS)
-    # Identify which samples are experiment QC
+    # Remove only the batch-specific experiment QC pool (expQC) after PQN.
+    # expQC is a pool of that batch's own biological samples, so it carries
+    # batch biology and must NOT be used for inter-batch correction.
+    # The cross-batch control QCs (QC3, QC4, blauw) are RETAINED here so they
+    # reach merge_batch_results, where bridge-QC scaling aligns batches using
+    # these fixed references (same material run in every batch).
     exp_qc_samples = []
     for col in batch_samples:
         if col in batch_df.columns:
-            if qc_pattern in col or (fallback_qc_pattern and fallback_qc_pattern in col):
+            if qc_pattern in col:
                 exp_qc_samples.append(col)
     
     if exp_qc_samples:
-        logger.info(f"  Removing {len(exp_qc_samples)} experiment QC samples (used for LOESS+PQN)")
+        logger.info(f"  Removing {len(exp_qc_samples)} batch-specific expQC samples (used for LOESS+PQN); "
+                    f"retaining QC3/QC4/blauw as cross-batch bridge references")
         logger.debug(f"  Removed: {exp_qc_samples[:5]}...")
         batch_df = batch_df.drop(columns=exp_qc_samples)
         # Also remove from batch_samples for subsequent processing
@@ -263,6 +266,10 @@ def process_batch(
 def merge_batch_results(
     batch_results: Dict[str, Tuple[pd.DataFrame, pd.DataFrame]],
     output_dir: Optional[Path] = None,
+    apply_bridge_qc_scaling: bool = False,
+    bridge_patterns: Optional[List[str]] = None,
+    bridge_min_batches: int = 8,
+    bridge_max_factor: float = 2.0,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Merge processed batch results into a single DataFrame.
@@ -291,6 +298,22 @@ def merge_batch_results(
     
     logger.info(f"  Merged data shape: {merged_data.shape}")
     logger.info(f"  Merged metadata shape: {merged_metadata.shape}")
+    
+    # Bridge-QC batch alignment (after PQN/LOESS, before saving). Uses the
+    # cross-batch control samples (QC3/QC4/blauw) retained through merge to
+    # remove the per-feature, per-batch offset that inflates downstream FPR.
+    if apply_bridge_qc_scaling:
+        from .bridge_qc_scaling import bridge_qc_scaling
+        logger.info("\nApplying bridge-QC batch alignment...")
+        bridge_out_dir = output_dir / "bridge_qc" if output_dir else None
+        merged_data, bridge_diag = bridge_qc_scaling(
+            merged_data=merged_data,
+            merged_metadata=merged_metadata,
+            bridge_patterns=bridge_patterns,
+            min_bridge_batches=bridge_min_batches,
+            max_factor=bridge_max_factor,
+            output_dir=bridge_out_dir,
+        )
     
     # Save if output_dir provided
     if output_dir:
