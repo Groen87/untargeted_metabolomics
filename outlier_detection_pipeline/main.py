@@ -63,6 +63,7 @@ from outlier_detection_pipeline.pipeline.realistic_evaluation import (
 from outlier_detection_pipeline.pipeline.drift_diagnostic import run_drift_diagnostic
 from outlier_detection_pipeline.pipeline.hyperparameter_tuning import (
     tune_and_train,
+    tune_ae,
     tune_hyperparameters,
 )
 
@@ -316,6 +317,63 @@ def _train_with_hyperparameter_tuning(
     return model, best_params
 
 
+def _train_ae_with_tuning(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    config: Config,
+    output_dir: Path,
+    normal_class: int,
+) -> ExtendedIsolationForestModel:
+    """Tune the AE scorer's hyperparameters and wrap the best model.
+
+    Mirrors _train_with_hyperparameter_tuning but uses the AE-specific grid
+    search (tune_ae), which sweeps latent_dim / hidden_dim / epochs / lr via
+    make_scorer('ae', ...). The fitted AE scorer is dropped into the
+    ExtendedIsolationForestModel wrapper so the rest of the pipeline
+    (threshold calibration, realistic eval) runs unchanged.
+    """
+    _log_section_header("AE Hyperparameter Tuning with CV")
+
+    param_grid = config.get('ae_param_grid', None)
+    random_state = config.get('random_state', 42)
+    n_splits_tuning = config.get('n_splits_tuning', 5)
+    tuning_scoring = config.get('tuning_scoring', 'pr_auc')
+    n_jobs = config.get('n_jobs', -1)
+    contamination = config.get('contamination', 'auto')
+
+    best_model, scaler, best_params, tuning_results = tune_ae(
+        X=X_train,
+        y=y_train,
+        normal_classification=normal_class,
+        param_grid=param_grid,
+        n_splits=n_splits_tuning,
+        random_state=random_state,
+        scoring=tuning_scoring,
+        refit=True,
+    )
+
+    scorer_kwargs = dict(best_params)
+    model = ExtendedIsolationForestModel(
+        n_jobs=n_jobs,
+        random_state=random_state,
+        contamination=contamination,
+        scorer_name='ae',
+        scorer_kwargs=scorer_kwargs,
+    )
+    model.model = best_model
+    model.scaler = scaler
+    model.is_fitted_ = True
+
+    logger.info("\nBest AE hyperparameters found:")
+    for key, value in best_params.items():
+        logger.info(f"  {key}: {value}")
+
+    tuning_results.to_csv(output_dir / "tuning_results.csv", index=False)
+    logger.info(f"Tuning results saved to {output_dir / 'tuning_results.csv'}")
+
+    return model
+
+
 def _train_without_tuning(
     X_train: pd.DataFrame,
     y_train: pd.Series,
@@ -484,6 +542,47 @@ def _evaluate_standard(
     return test_preds, test_scores, test_metrics
 
 
+def _save_false_negatives_csv(
+    realistic_results: Optional[Dict[str, Any]],
+    output_dir: Path,
+    fold: Optional[int] = None,
+) -> None:
+    """Save a CSV of IMD samples flagged FALSE NEGATIVE (true_label=1, not flagged).
+
+    Uses the per-sample rows produced by the realistic evaluation. Each row
+    records the sample_id, score, and anomaly_threshold so you can inspect
+    which IMDs slipped below the cutoff. The file is written next to the
+    other fold outputs; pooled across outer-CV folds by the caller.
+    """
+    if realistic_results is None:
+        return
+    per_sample = realistic_results.get('per_iteration_results', [])
+    if not per_sample:
+        return
+
+    rows = [
+        {
+            'sample_id': r.get('sample_id'),
+            'true_label': r.get('true_label'),
+            'flagged': r.get('flagged'),
+            'score': r.get('score'),
+            'anomaly_threshold': realistic_results.get('anomaly_threshold'),
+        }
+        for r in per_sample
+        if r.get('true_label') == 1 and int(r.get('flagged', 0)) == 0
+    ]
+    if not rows:
+        logger.info("No false-negative IMD samples (all abnormals flagged).")
+        return
+
+    fn_df = pd.DataFrame(rows)
+    if not fn_df.empty and 'sample_id' in fn_df.columns:
+        fn_df = fn_df.sort_values('sample_id')
+    name = "false_negative_imds.csv" if fold is None else f"false_negative_imds_fold{fold}.csv"
+    fn_df.to_csv(output_dir / name, index=False)
+    logger.info(f"Saved {len(fn_df)} false-negative IMD sample(s) to {output_dir / name}")
+
+
 def _save_outputs(
     model: ExtendedIsolationForestModel,
     X_test: pd.DataFrame,
@@ -575,6 +674,10 @@ def _save_outputs(
         # For realistic evaluation, also save the realistic confusion matrix
         if realistic_results is not None:
             plot_realistic_results(realistic_results, output_dir)
+
+    # Save the sample ids of IMD samples flagged false negative (true_label=1, not flagged)
+    # so they can be inspected manually.
+    _save_false_negatives_csv(realistic_results, output_dir, fold=None)
 
     return {
         'test_metrics': test_metrics,
@@ -692,8 +795,17 @@ def _run_outer_cv(
         # Train model on this fold. Hyperparameter tuning is IF-specific;
         # non-IF scorers ignore it and use the no-tuning path.
         use_hp_tuning = config.get('use_hyperparameter_tuning', False)
-        if use_hp_tuning and config.get('scorer', 'iforest') == 'iforest':
+        fold_scorer = config.get('scorer', 'iforest')
+        if use_hp_tuning and fold_scorer == 'iforest':
             model, _ = _train_with_hyperparameter_tuning(
+                X_train_p, y_train_p, config, fold_out_dir, normal_class
+            )
+            model.cross_val_predict(
+                X=X_train_p, y=y_train_p, normal_classification=normal_class,
+                n_splits=config.get('n_splits_tuning', 5),
+            )
+        elif use_hp_tuning and fold_scorer == 'ae':
+            model = _train_ae_with_tuning(
                 X_train_p, y_train_p, config, fold_out_dir, normal_class
             )
             model.cross_val_predict(
@@ -712,6 +824,8 @@ def _run_outer_cv(
             fold_metrics = {k: realistic_results.get(k) for k in metrics_keys}
             fold_metrics['n_normal_test'] = realistic_results.get('n_normal_test')
             fold_metrics['n_abnormal_test'] = realistic_results.get('n_abnormal_test')
+            # Per-fold list of IMD samples flagged false negative
+            _save_false_negatives_csv(realistic_results, fold_out_dir, fold=fold_num + 1)
             # Pool per-sample scores for an aggregated score-distribution view
             for r in realistic_results.get('per_iteration_results', []):
                 r = dict(r)
@@ -778,6 +892,20 @@ def _run_outer_cv(
         json.dump({k: v for k, v in agg.items() if not k.endswith('_folds')} | {'per_fold': fold_results}, f, indent=2, default=str)
     if all_per_sample:
         pd.DataFrame(all_per_sample).to_csv(output_dir / "outer_cv_per_sample.csv", index=False)
+
+    # Pooled false-negative IMD sample ids across all outer-CV folds
+    # (true_label=1, flagged=0) so they can be inspected manually.
+    fn_rows = [
+        {'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
+         'score': r.get('score'), 'flagged': r.get('flagged')}
+        for r in all_per_sample
+        if r.get('true_label') == 1 and int(r.get('flagged', 0)) == 0
+    ]
+    if fn_rows:
+        fn_df = pd.DataFrame(fn_rows).sort_values(['sample_id', 'fold'])
+        fn_df.to_csv(output_dir / "false_negative_imds.csv", index=False)
+        logger.info(f"Saved {len(fn_df)} pooled false-negative IMD sample(s) "
+                    f"to {output_dir / 'false_negative_imds.csv'}")
 
     return {
         'evaluation_strategy': 'outer_cv',
@@ -1080,13 +1208,24 @@ def run_pipeline(
 
     use_hyperparameter_tuning = config.get('use_hyperparameter_tuning', False)
     scorer_name = config.get('scorer', 'iforest')
-    # Hyperparameter tuning is IF-specific; non-IF scorers ignore it and use
-    # the no-tuning path (fixed defaults / scorer_kwargs from config).
+    # Hyperparameter tuning is scorer-specific: iforest and ae have tuners;
+    # other scorers ignore it and use the no-tuning path (fixed defaults /
+    # scorer_kwargs from config).
     if use_hyperparameter_tuning and scorer_name == 'iforest':
         model, best_params = _train_with_hyperparameter_tuning(
             X_train, y_train, config, output_dir, normal_class
         )
         # Run CV with best model for evaluation
+        cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
+            X=X_train,
+            y=y_train,
+            normal_classification=normal_class,
+            n_splits=config.get('n_splits_tuning', 5),
+        )
+    elif use_hyperparameter_tuning and scorer_name == 'ae':
+        model = _train_ae_with_tuning(
+            X_train, y_train, config, output_dir, normal_class
+        )
         cv_preds_train, train_scores, fold_scores = model.cross_val_predict(
             X=X_train,
             y=y_train,

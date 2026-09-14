@@ -608,3 +608,134 @@ def tune_and_train(
         logger.info(f"Best parameters saved to {output_dir / 'best_params.json'}")
 
     return best_model, scaler, best_params, results_df
+
+
+def tune_ae(
+    X: pd.DataFrame,
+    y: pd.Series,
+    normal_classification: int = 0,
+    param_grid: Optional[Dict[str, List[Any]]] = None,
+    n_splits: int = 5,
+    random_state: int = 42,
+    scoring: str = 'pr_auc',
+    refit: bool = True,
+) -> Tuple[Any, StandardScaler, Dict[str, Any], pd.DataFrame]:
+    """Grid-search autoencoder (AE) scorer hyperparameters.
+
+    The AE scorer has no sklearn analog, so the IF-specific tune_and_train
+    cannot build it. This function mirrors the IF grid-search contract (train
+    on normal-fold samples, validate on full folds, rank by `scoring`) but
+    constructs AE scorers via make_scorer('ae', ...) so it can sweep
+    latent_dim / hidden_dim / epochs / lr.
+
+    Args:
+        X: Training features (with both normal and abnormal samples)
+        y: Training labels
+        normal_classification: Value indicating normal samples
+        param_grid: Grid over AE hyperparameters. Defaults sweep latent_dim
+            (the bottleneck -- the most impactful AE lever), hidden_dim, and
+            epochs.
+        n_splits: CV folds
+        random_state: Base seed; each fold/combination gets a distinct seed
+        scoring: Metric to optimize
+        refit: Refit best AE on all normal data
+
+    Returns:
+        Tuple of (best_model, scaler, best_params, results_df)
+    """
+    from .scorers import make_scorer
+
+    if param_grid is None:
+        param_grid = {
+            'latent_dim': [4, 8, 16],
+            'hidden_dim': [16, 32],
+            'epochs': [200, 400],
+        }
+
+    logger.info(f"\n{'='*70}")
+    logger.info("AE HYPERPARAMETER TUNING (grid search)")
+    logger.info(f"{'='*70}")
+    logger.info(f"Scoring metric: {scoring}")
+    logger.info(f"CV folds: {n_splits}")
+
+    normal_mask = (y == normal_classification).values
+    normal_indices = X.index[normal_mask]
+    abnormal_indices = X.index[~normal_mask]
+    logger.info(f"Training on {len(normal_indices)} normal samples")
+    logger.info(f"Validating on {len(X)} samples ({len(normal_indices)} normal, {len(abnormal_indices)} abnormal)")
+
+    # Scale on normals only (pure one-class design).
+    scaler = StandardScaler()
+    scaler.fit(X[normal_mask])
+    X_scaled = scaler.transform(X)
+    X_normal_scaled = X_scaled[normal_mask]
+
+    y_binary = (y != normal_classification).astype(int).values
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    param_combinations = list(ParameterGrid(param_grid))
+    logger.info(f"Testing {len(param_combinations)} AE parameter combinations")
+
+    results = []
+    best_score = -np.inf
+    best_params = None
+    best_model = None
+
+    for combo_idx, params in enumerate(param_combinations):
+        logger.info(f"\nAE combination {combo_idx + 1}/{len(param_combinations)}: {params}")
+        fold_scores = []
+
+        for fold_num, (train_fold_idx, val_fold_idx) in enumerate(skf.split(X_scaled, y_binary)):
+            train_y_binary = y_binary[train_fold_idx]
+            train_normal_positions = train_fold_idx[train_y_binary == 0]
+            X_train_fold = X_scaled[train_normal_positions]
+            X_val_fold = X_scaled[val_fold_idx]
+            y_val_fold = y.iloc[val_fold_idx]
+
+            # Distinct seed per combination x fold to decorrelate inits.
+            ae_params = dict(params)
+            ae_params['random_state'] = random_state + combo_idx * 100 + fold_num
+            fold_model = make_scorer('ae', **ae_params)
+            fold_model.fit(X_train_fold)
+
+            val_scores = fold_model.score_samples(X_val_fold)
+            # Flag = score below median of training-fold normal scores? No --
+            # use a fixed, prevalence-free ranking metric (roc_auc / pr_auc)
+            # which only needs scores, not a threshold. This matches the IF
+            # tuner, which uses scoring metrics computed from scores/preds.
+            y_true_binary = (y_val_fold != normal_classification).astype(int).values
+            # For threshold-based metrics, derive preds from the validation
+            # fold's own normal-score percentile (in-fold calibration).
+            fold_normal_scores = fold_model.score_samples(X_train_fold)
+            thresh = float(np.quantile(fold_normal_scores, 0.02))
+            y_pred_binary = (val_scores <= thresh).astype(int)
+            score = _compute_metric(y_true_binary, y_pred_binary, val_scores, scoring)
+            fold_scores.append(score)
+
+        avg_score = float(np.mean(fold_scores))
+        std_score = float(np.std(fold_scores))
+        results.append({
+            'combination': combo_idx,
+            **params,
+            'mean_score': avg_score,
+            'std_score': std_score,
+            'fold_scores': fold_scores,
+        })
+        logger.info(f"  AE score: {avg_score:.4f} +/- {std_score:.4f}")
+
+        if avg_score > best_score:
+            best_score = avg_score
+            best_params = dict(params)
+            if refit:
+                best_model = make_scorer('ae', random_state=random_state, **params)
+                best_model.fit(X_normal_scaled)
+            logger.info(f"  Current best AE: {best_score:.4f} with {best_params}")
+
+    results_df = pd.DataFrame(results)
+    logger.info(f"\n{'='*70}")
+    logger.info("AE TUNING COMPLETE")
+    logger.info(f"{'='*70}")
+    logger.info(f"Best AE parameters: {best_params}")
+    logger.info(f"Best score ({scoring}): {best_score:.4f}")
+
+    return best_model, scaler, best_params, results_df

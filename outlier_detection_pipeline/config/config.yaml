@@ -153,6 +153,12 @@ tuning_scoring: pr_auc          # Metric to optimize ('f1', 'precision', 'recall
 # If null, uses default grid
 param_grid: null
 
+# Parameter grid for AE tuning (used when scorer: ae AND use_hyperparameter_tuning: true).
+# Sweeps the bottleneck (latent_dim), hidden width (hidden_dim), epochs, and lr.
+# If null, uses a default grid sweeping latent_dim (the most impactful AE lever),
+# hidden_dim, and epochs. Tune lr only if the loss diverges.
+ae_param_grid: null
+
 # ============================================================================
 # Optuna Configuration (for Bayesian optimization)
 # ============================================================================
