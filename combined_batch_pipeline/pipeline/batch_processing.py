@@ -73,53 +73,66 @@ def pqn_normalize_batch(
     fallback_qc_pattern: Optional[str] = "QC3",
 ) -> pd.DataFrame:
     """
-    Apply PQN (Probabilistic Quotient Normalization) to a batch.
-    
-    PQN normalizes each sample to the median of QC samples.
-    Formula: normalized_value = raw_value * (qc_median / sample_median)
-    
-    This is more robust than simple median normalization as it uses
-    the QC sample median as the reference point.
-    
+    Apply Probabilistic Quotient Normalization (PQN; Dieterle et al. 2006).
+
+    Unlike a single-median scalar, PQN derives each sample's normalization
+    factor from the distribution of per-feature ratios, making it robust to a
+    small number of features changing biologically (they do not dominate the
+    median of quotients).
+
+    Steps:
+    1. Per-feature reference = median across QC samples of that feature's
+       values (a per-feature reference profile, not one global number).
+    2. For each sample, per-feature quotient = sample_value / reference_value,
+       computed only over features where both are positive and finite.
+    3. The sample's normalization factor = the median of those per-feature
+       quotients (the "probabilistic" part: the most likely overall scaling).
+    4. Divide every feature value in the sample by that factor.
+
     Args:
         df: DataFrame with features as rows, samples as columns
         sample_cols: List of sample column names to normalize
         sample_info: Optional dictionary with sample metadata
-        qc_pattern: Pattern to identify QC samples
+        qc_pattern: Pattern to identify QC samples (reference set)
         fallback_qc_pattern: Fallback QC pattern
-        
+
     Returns:
         DataFrame with PQN-normalized values
     """
-    # Identify QC samples
     qc_samples, _ = identify_qc_samples(sample_cols, sample_info, qc_pattern, fallback_qc_pattern)
-    
+
     if not qc_samples:
         logger.warning(f"No QC samples found. Skipping PQN normalization.")
         return df.copy()
-    
+
     logger.info(f"Using {len(qc_samples)} QC samples for PQN normalization: {qc_samples[:3]}...")
-    
-    # Calculate median for each sample across all features
-    sample_medians = df[sample_cols].median(axis=0)
-    
-    # Calculate QC median (median of all QC sample values across all features)
-    qc_values = df[qc_samples].values.flatten()
-    qc_median = np.median(qc_values[~np.isnan(qc_values)]) if len(qc_values) > 0 else 1.0
-    
-    logger.info(f"QC median: {qc_median:.2f}")
-    
-    # Apply PQN normalization
-    # Each sample is scaled so its median equals the QC median
+
+    # Step 1: per-feature reference profile = median across QC samples.
+    # Shape: (n_features,). NaN where no valid QC value.
+    qc_values = df[qc_samples].values.astype(float)  # (n_features, n_qc)
+    with np.errstate(invalid="ignore", all="ignore"):
+        reference = np.nanmedian(qc_values, axis=1)  # per-feature reference
+    logger.info(f"PQN reference: per-feature QC median over {len(qc_samples)} QC samples "
+                f"({np.sum(np.isfinite(reference))}/{len(reference)} features with valid reference)")
+
     df_normalized = df.copy()
+
+    valid_ref = np.isfinite(reference) & (reference > 0)
+
+    # Steps 2-4 per sample.
     for col in sample_cols:
-        sample_median = sample_medians[col]
-        if sample_median > 0 and not np.isnan(sample_median):
-            df_normalized[col] = df[col] * (qc_median / sample_median)
-        else:
-            # If sample median is 0 or NaN, keep original values
-            df_normalized[col] = df[col]
-    
+        vals = df[col].values.astype(float)
+        # Per-feature quotients over valid (positive, finite, ref>0) features.
+        ok = valid_ref & np.isfinite(vals) & (vals > 0)
+        if not np.any(ok):
+            # Cannot estimate a factor; leave the sample unchanged.
+            continue
+        quotients = vals[ok] / reference[ok]
+        factor = np.median(quotients)
+        if np.isfinite(factor) and factor > 0:
+            df_normalized[col] = df[col] / factor
+        # else: leave unchanged
+
     return df_normalized
 
 
