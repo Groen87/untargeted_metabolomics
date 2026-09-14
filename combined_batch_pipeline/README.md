@@ -200,6 +200,30 @@ Ensure your column names follow the expected format. The pipeline looks for patt
 ### ComBat fails
 Make sure you have `inmoose` installed: `pip install inmoose`
 
+## Add Classification Labels
+
+`pipeline/add_classification.py` is a standalone script that merges
+classification labels from a separate outlier file into the merged data.
+It reads `data/data outlier model.csv` (columns `Monster`,
+`Oordeel targeted`, `Classification`) and `data/merged_data.csv` (column
+`Sample`), joins them on `Monster` == `Sample`, and writes
+`data/merged_data_with_classification.csv` with `Oordeel targeted` and
+`Classification` placed immediately after the `Sample` column.
+
+```bash
+# Default paths (relative to the directory you run from)
+python combined_batch_pipeline/pipeline/add_classification.py
+
+# Custom paths
+python combined_batch_pipeline/pipeline/add_classification.py \
+    --outlier-file data/data_outlier_model.csv \
+    --merged-file data/merged_data.csv \
+    --output-file data/merged_data_with_classification.csv
+```
+
+This script is independent of the main batch-correction pipeline and can be
+run after the merged data has been produced.
+
 ## License
 
 This pipeline is part of the Groen87/untargeted_metabolomics project.
