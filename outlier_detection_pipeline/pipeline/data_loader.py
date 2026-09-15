@@ -302,7 +302,9 @@ def load_data(
             Oordeel!=0 as outlier). 'binary_simplified' ignores Oordeel
             entirely and remaps to a clean binary label: Classification 1 ->
             outlier (1), Classification 2 -> dropped, Classification 0 or 3
-            -> inlier (0).
+            -> inlier (0). 'oordeel' ignores the raw Classification entirely and
+            derives the label from Oordeel targeted: 0 -> inlier (0),
+            1 -> outlier (1); samples with any other Oordeel value are dropped.
 
     Returns:
         Tuple of:
@@ -326,7 +328,23 @@ def load_data(
     classification_col = df['Classification']
     oordeel_col = df['Oordeel targeted']
 
-    if classification_scheme == "binary_simplified":
+    if classification_scheme == "oordeel":
+        # Derive the label straight from Oordeel targeted, ignoring the raw
+        # Classification column: 0 -> inlier (0), 1 -> outlier (1). Samples with
+        # any other Oordeel value are dropped.
+        keep_mask = oordeel_col.isin([0, 1])
+        n_dropped = int((~keep_mask).sum())
+        if n_dropped > 0:
+            logger.info(f"oordeel: dropping {n_dropped} samples whose Oordeel "
+                        f"targeted is not 0 or 1.")
+            df = df[keep_mask]
+            oordeel_col = df['Oordeel targeted']
+        df['Classification'] = np.where(df['Oordeel targeted'] == 1, 1, 0)
+        n_inlier = int((df['Classification'] == 0).sum())
+        n_outlier = int((df['Classification'] == 1).sum())
+        logger.info(f"oordeel: {n_inlier} inliers (0), {n_outlier} outliers (1) "
+                    f"from Oordeel targeted.")
+    elif classification_scheme == "binary_simplified":
         # Ignore Oordeel entirely. Remap to a clean binary label:
         #   Classification 1      -> outlier (1)
         #   Classification 2     -> dropped (ambiguous; not used)
