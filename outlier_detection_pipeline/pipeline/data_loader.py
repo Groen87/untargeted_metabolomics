@@ -332,14 +332,27 @@ def load_data(
         # Derive the label straight from Oordeel targeted, ignoring the raw
         # Classification column: 0 -> inlier (0), 1 -> outlier (1). Samples with
         # any other Oordeel value are dropped.
-        keep_mask = oordeel_col.isin([0, 1])
+        unique_oordeel = sorted(pd.Series(oordeel_col).dropna().unique().tolist())
+        logger.info(f"oordeel: Oordeel targeted unique values found: {unique_oordeel}")
+        # Coerce to numeric so '0.0'/'1.0'/' 1' also map correctly.
+        oordeel_num = pd.to_numeric(pd.Series(oordeel_col), errors='coerce')
+        keep_mask = oordeel_num.isin([0, 1])
         n_dropped = int((~keep_mask).sum())
         if n_dropped > 0:
             logger.info(f"oordeel: dropping {n_dropped} samples whose Oordeel "
                         f"targeted is not 0 or 1.")
             df = df[keep_mask]
-            oordeel_col = df['Oordeel targeted']
-        df['Classification'] = np.where(df['Oordeel targeted'] == 1, 1, 0)
+            oordeel_num = oordeel_num[keep_mask]
+        if len(df) == 0:
+            raise ValueError(
+                f"oordeel scheme: all {len(oordeel_col)} samples were dropped "
+                f"because none had Oordeel targeted == 0 or 1. Unique values "
+                f"found: {unique_oordeel}. Check that the 'Oordeel targeted' "
+                f"column exists and uses 0/1 (the config non_feature_columns "
+                f"must list the exact CSV column name, e.g. 'Oordeel trageted' "
+                f"if that is the spelling in the CSV)."
+            )
+        df['Classification'] = np.where(oordeel_num.values == 1, 1, 0)
         n_inlier = int((df['Classification'] == 0).sum())
         n_outlier = int((df['Classification'] == 1).sum())
         logger.info(f"oordeel: {n_inlier} inliers (0), {n_outlier} outliers (1) "
