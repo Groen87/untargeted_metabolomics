@@ -280,6 +280,7 @@ def load_data(
     filter_to_endogenous: bool = False,
     use_hmdb_cache: bool = True,
     exclude_metabolites: Optional[List[str]] = None,
+    classification_scheme: str = "default",
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
@@ -295,6 +296,13 @@ def load_data(
         use_hmdb_cache: Whether to use cached HMDB data if available
         exclude_metabolites: Optional list of metabolite/feature names to drop
             from the analysis (exact, case-insensitive match)
+        classification_scheme: How to build the binary label from the raw
+            Classification column. 'default' keeps the legacy Oordeel-based
+            cleaning (drop ambiguous 2/3 with Oordeel=0; reclassify 0 with
+            Oordeel!=0 as outlier). 'binary_simplified' ignores Oordeel
+            entirely and remaps to a clean binary label: Classification 1 ->
+            outlier (1), Classification 2 -> dropped, Classification 0 or 3
+            -> inlier (0).
 
     Returns:
         Tuple of:
@@ -313,30 +321,58 @@ def load_data(
     logger.info(f"Loaded data with shape: {df.shape}")
     logger.info(f"Columns: {list(df.columns)}")
     
-    # Data cleaning: Filter samples based on Classification and Oordeel targeted
+    # Data cleaning: build the binary label from the raw Classification
+    # (and Oordeel targeted) columns. Two schemes are supported.
     classification_col = df['Classification']
     oordeel_col = df['Oordeel targeted']
-    
-    # Remove ambiguous: Classification 2 or 3 with Oordeel targeted = 0
-    ambiguous_mask = ((classification_col.isin([2, 3])) & (oordeel_col == 0))
-    n_ambiguous = ambiguous_mask.sum()
-    
-    if n_ambiguous > 0:
-        ambiguous_indices = df.index[ambiguous_mask]
-        logger.warning(f"Found {n_ambiguous} ambiguous samples (Classification 2/3 with Oordeel targeted=0). Removing these.")
-        df = df[~ambiguous_mask]
-        logger.warning(f"Removed samples: {list(ambiguous_indices[:5])}{'...' if n_ambiguous > 5 else ''}")
-    
-    # After removing ambiguous, update classification to be consistent
-    inconsistent_mask = (df['Classification'] == 0) & (df['Oordeel targeted'] != 0)
-    n_inconsistent = inconsistent_mask.sum()
-    
-    if n_inconsistent > 0:
-        inconsistent_indices = df.index[inconsistent_mask]
-        logger.warning(f"Found {n_inconsistent} samples with Classification=0 but Oordeel targeted!=0. "
-                      f"Updating Classification to 1 (outlier) for consistency.")
-        df.loc[inconsistent_mask, 'Classification'] = 1
-        logger.warning(f"Updated samples: {list(inconsistent_indices[:5])}{'...' if n_inconsistent > 5 else ''}")
+
+    if classification_scheme == "binary_simplified":
+        # Ignore Oordeel entirely. Remap to a clean binary label:
+        #   Classification 1      -> outlier (1)
+        #   Classification 2     -> dropped (ambiguous; not used)
+        #   Classification 0 or 3 -> inlier (0)
+        drop_mask = classification_col.isin([2])
+        n_dropped = int(drop_mask.sum())
+        if n_dropped > 0:
+            logger.info(f"binary_simplified: dropping {n_dropped} samples "
+                        f"with Classification=2 (ignored).")
+            df = df[~drop_mask]
+            classification_col = df['Classification']
+        inlier_mask = classification_col.isin([0, 3])
+        outlier_mask = (classification_col == 1)
+        n_inlier = int(inlier_mask.sum())
+        n_outlier = int(outlier_mask.sum())
+        n_other = int((~inlier_mask & ~outlier_mask).sum())
+        if n_other > 0:
+            logger.warning(f"binary_simplified: {n_other} samples had an "
+                           f"unrecognised Classification value; dropping them.")
+            df = df[inlier_mask | outlier_mask]
+            classification_col = df['Classification']
+        df['Classification'] = np.where(df['Classification'] == 1, 1, 0)
+        logger.info(f"binary_simplified: {n_inlier} inliers (0), {n_outlier} "
+                    f"outliers (1) after remap.")
+    else:
+        # Default (legacy) Oordeel-based cleaning.
+        # Remove ambiguous: Classification 2 or 3 with Oordeel targeted = 0
+        ambiguous_mask = ((classification_col.isin([2, 3])) & (oordeel_col == 0))
+        n_ambiguous = ambiguous_mask.sum()
+
+        if n_ambiguous > 0:
+            ambiguous_indices = df.index[ambiguous_mask]
+            logger.warning(f"Found {n_ambiguous} ambiguous samples (Classification 2/3 with Oordeel targeted=0). Removing these.")
+            df = df[~ambiguous_mask]
+            logger.warning(f"Removed samples: {list(ambiguous_indices[:5])}{'...' if n_ambiguous > 5 else ''}")
+
+        # After removing ambiguous, update classification to be consistent
+        inconsistent_mask = (df['Classification'] == 0) & (df['Oordeel targeted'] != 0)
+        n_inconsistent = inconsistent_mask.sum()
+
+        if n_inconsistent > 0:
+            inconsistent_indices = df.index[inconsistent_mask]
+            logger.warning(f"Found {n_inconsistent} samples with Classification=0 but Oordeel targeted!=0. "
+                          f"Updating Classification to 1 (outlier) for consistency.")
+            df.loc[inconsistent_mask, 'Classification'] = 1
+            logger.warning(f"Updated samples: {list(inconsistent_indices[:5])}{'...' if n_inconsistent > 5 else ''}")
     
     # Extract non-feature columns
     classification = df['Classification']

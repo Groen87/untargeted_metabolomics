@@ -16,6 +16,16 @@ non_feature_columns:
   - "Oordeel trageted"
   - "Classification"
 
+# How to build the binary sample label from the raw Classification column.
+#   default          : Legacy Oordeel-based cleaning. Drops ambiguous samples
+#                     (Classification 2/3 with Oordeel targeted = 0) and
+#                     reclassifies Classification=0 with Oordeel targeted!=0
+#                     as outliers (Classification -> 1).
+#   binary_simplified: Ignore Oordeel entirely and remap to a clean binary
+#                     label: Classification 1 -> outlier (1), Classification 2
+#                     -> dropped, Classification 0 or 3 -> inlier (0).
+classification_scheme: binary_simplified
+
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list
 

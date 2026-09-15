@@ -1118,6 +1118,7 @@ def run_pipeline(
         use_hmdb_cache=use_hmdb_cache,
         endogenous_metabolites_file=endogenous_metabolites_file,
         exclude_metabolites=exclude_metabolites,
+        classification_scheme=config.get('classification_scheme', 'default'),
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)
