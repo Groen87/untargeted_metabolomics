@@ -43,6 +43,19 @@ exclude_metabolites:
 #   - "Glucose"
 #   - "HMDB0000122"
 
+# Substring-based feature exclusion (negative deny-list; complements the
+# endogenous keep-list). Any feature column whose name contains one of these
+# substrings (case-insensitive) is dropped. Use to remove features that
+# mention a non-endogenous atom/group. Leave empty/null to disable.
+exclude_substrings:
+  - "bromo"
+  - "iodo"
+  - "chloro"
+  - "fluoro"
+  - "silyl"
+  - "cyano"
+  - "boronic"
+
 # HMDB filtering - keep only endogenous (Metabolic/Disease pathway) metabolites
 # Reads endogenous_metabolites.tsv produced by hmdb_drug_filter.py
 # (columns: HMDB_ID, Name, Synonyms). Acts as a positive keep-list:

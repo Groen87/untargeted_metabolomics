@@ -272,6 +272,61 @@ def _exclude_metabolites(
     return filtered_features
 
 
+def _exclude_by_substring(
+    features: pd.DataFrame,
+    substrings: List[str],
+) -> pd.DataFrame:
+    """
+    Drop feature columns whose names contain any of the given substrings.
+
+    Matching is case-insensitive (after Unicode normalization) substring
+    containment, not exact match -- this is for dropping features that mention
+    a non-endogenous atom/group, e.g. 'bromo', 'iodo', 'chloro', 'fluoro',
+    'silyl', 'cyano', 'boronic'. Complements (does not replace) the
+    endogenous keep-list: the keep-list is a positive allow-list, while this
+    is a negative deny-list applied to whatever survives.
+
+    Args:
+        features: DataFrame with feature columns
+        substrings: List of substrings to exclude on (case-insensitive)
+
+    Returns:
+        DataFrame with the matched feature columns removed
+    """
+    if not substrings:
+        return features
+
+    norm_subs = {
+        _normalize_name(s)
+        for s in substrings
+        if s is not None and str(s).strip() != ''
+    }
+    norm_subs = {s for s in norm_subs if s}
+    if not norm_subs:
+        return features
+
+    original_cols = list(features.columns)
+    kept_columns = [
+        col for col in original_cols
+        if not any(sub in _normalize_name(col) for sub in norm_subs)
+    ]
+    removed_cols = [col for col in original_cols if col not in kept_columns]
+
+    filtered_features = features[kept_columns]
+
+    logger.info(
+        f"Excluded {len(removed_cols)} features by substring filter "
+        f"({list(norm_subs)}), {len(kept_columns)} features remaining"
+    )
+    if removed_cols:
+        logger.info(
+            f"Excluded features: {removed_cols[:10]}"
+            f"{'...' if len(removed_cols) > 10 else ''}"
+        )
+
+    return filtered_features
+
+
 def load_data(
     input_file: str,
     non_feature_columns: List[str],
@@ -281,6 +336,7 @@ def load_data(
     use_hmdb_cache: bool = True,
     exclude_metabolites: Optional[List[str]] = None,
     classification_scheme: str = "default",
+    exclude_substrings: Optional[List[str]] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
@@ -416,6 +472,13 @@ def load_data(
     # Exclude user-specified metabolite features (exact, case-insensitive match)
     if exclude_metabolites:
         features = _exclude_metabolites(features, exclude_metabolites)
+
+    # Exclude feature columns whose names contain non-endogenous atom/group
+    # substrings (e.g. 'bromo', 'iodo', 'chloro', 'fluoro', 'silyl', 'cyano',
+    # 'boronic'). Case-insensitive substring deny-list; complements the
+    # endogenous keep-list.
+    if exclude_substrings:
+        features = _exclude_by_substring(features, exclude_substrings)
 
     # Filter to endogenous metabolite features if requested
     if filter_to_endogenous and endogenous_metabolites_file:
