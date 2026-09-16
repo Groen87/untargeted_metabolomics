@@ -388,6 +388,19 @@ def load_data(
     # (and Oordeel targeted) columns. Several schemes are supported.
     classification_col = df['Classification']
     oordeel_col = df['Oordeel targeted']
+
+    # Drop samples missing a label in either non-feature column: a NaN in
+    # 'Oordeel targeted' or 'Classification' leaves the sample's role
+    # undefined, so it cannot be trained or scored against ground truth.
+    label_nan_mask = classification_col.isna() | oordeel_col.isna()
+    n_label_nan = int(label_nan_mask.sum())
+    if n_label_nan > 0:
+        logger.info(f"Dropping {n_label_nan} samples with NaN in 'Oordeel "
+                    f"targeted' or 'Classification'.")
+        df = df[~label_nan_mask]
+        classification_col = df['Classification']
+        oordeel_col = df['Oordeel targeted']
+
     # Preserve the raw Classification (before any remap) so the per-group
     # evaluation can break results down by (Class, Oordeel).
     raw_classification = pd.Series(classification_col.values, index=df.index,
