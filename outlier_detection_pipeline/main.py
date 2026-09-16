@@ -1374,6 +1374,19 @@ def _run_outer_cv(
         logger.info(f"Saved {len(fp_df)} pooled false-positive sample(s) "
                     f"to {output_dir / 'false_positive_imds.csv'}")
 
+    # Generate the per-sample Z-score plots from the pooled FN/FP CSVs above
+    # (one plot per unique sample_id). Read from the CSVs so the plots always
+    # match the saved files; same helper used by the single-run path.
+    if original_features is not None:
+        try:
+            _plot_fn_fp_zscore_analysis(
+                original_features=original_features,
+                output_dir=output_dir,
+                config=config,
+            )
+        except Exception as e:
+            logger.exception(f"FN/FP Z-score analysis failed: {e}")
+
     # Pooled per-group breakdown across all outer-CV folds.
     if group_map is not None and len(group_map) > 0 and all_per_sample:
         # Pooled threshold: mean of the per-fold calibrated thresholds.
