@@ -128,6 +128,11 @@ def analyze_outliers(
             continue
 
         sample = all_features.loc[outlier_idx]
+        # A non-unique index (duplicate sample ids, e.g. pos/neg modes) makes
+        # .loc return a DataFrame; reduce to a single Series so the per-sample
+        # deviation math stays 1-D (one value per feature).
+        if isinstance(sample, pd.DataFrame):
+            sample = sample.iloc[0]
         weighted_deviations = compute_deviation_scores(sample, all_features, use_zscore=use_zscore)
         abs_deviations = compute_absolute_deviation(sample, all_features, use_zscore=use_zscore)
         # Signed deviation for directional plotting (Z-score mode only).
