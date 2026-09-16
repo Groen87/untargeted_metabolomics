@@ -358,30 +358,73 @@ def _filter_to_endogenous_features(
             f"(of {n_removed} total dropped); first 10: "
             f"{dropped_plain[:10]}"
         )
-        # Near-miss diagnostic: for each dropped plain name, check whether it
-        # appears as a SUBSTRING of any keep-list entry (or vice versa). A hit
-        # here usually means a naming/annotation difference that should be
-        # reconciled (e.g. 'Cortisol' vs 'Cortisol sulfate'), not a true
-        # exogenous compound. Short keep-list tokens (e.g. 'INO', 'THY', 'DOC')
-        # are ignored to avoid spurious matches inside long IUPAC names. Capped
-        # for speed.
+        # Near-miss diagnostic: surface dropped plain names that look like a
+        # real endogenous metabolite with a naming/annotation difference (e.g.
+        # 'Cortisol sulfate' vs keep-list 'Cortisol'), NOT exogenous drugs that
+        # merely contain a generic chemistry fragment. A genuine near-miss is
+        # a keep-list metabolite name appearing as a WORD-BOUNDARY substring of
+        # the feature name, where the keep-list token is a specific metabolite
+        # (not a chemical class). We exclude keep-list tokens that are generic
+        # chemistry suffixes/fragments and require the feature name to be a
+        # plausible metabolite name (no long IUPAC/stereochemistry form).
         if dropped_plain and len(endogenous_names) <= 400000:
+            # Generic chemistry-class fragments that appear in many IUPAC names
+            # and are NOT specific endogenous metabolites. Dropped names
+            # matching only these are almost certainly exogenous.
+            generic_fragments = {
+                'SULFATE', 'SULFONATE', 'SULFITE', 'PHOSPHATE', 'PHOSPHONATE',
+                'CARBOXYLIC ACID', 'DICARBOXYLIC ACID', 'BUTANOIC ACID',
+                'PROPANOIC ACID', 'PENTANOIC ACID', 'HEXANOIC ACID',
+                'OCTANOIC ACID', 'DECANOIC ACID', 'DODECANOIC ACID',
+                'TETRADECANOIC ACID', 'HEXADECANOIC ACID', 'OCTADECANOIC ACID',
+                'EICOSANOIC ACID', 'DOCOSANOIC ACID', 'TETRACOSANOIC ACID',
+                'DECANOATE', 'DODECANOATE', 'TETRADECANOATE', 'HEXADECANOATE',
+                'OCTADECANOATE', 'TETRACOSANOATE', 'DOCOSAHEXAENOATE',
+                'PROPANOATE', 'BUTANOATE', 'ACETATE', 'FORMATE', 'BENZOATE',
+                'GLUCOSIDE', 'GALACTOSIDE', 'RIBOSIDE', 'NUCLEOSIDE',
+                'PHOSPHATE', 'PHOSPHONOOXY', 'HYDROXY', 'AMINO', 'METHYL',
+                'ETHYL', 'PHENYL', 'BENZYL', 'GLYCEROL', 'PHOSPHOLIPID',
+            }
             min_token_len = 6
-            endo_list = [n for n in endogenous_names if len(n) >= min_token_len]
+            # Candidate keep-list tokens: specific enough (length) to be a real
+            # metabolite, not a stereochemistry marker or fragment.
+            endo_candidates = [
+                n for n in endogenous_names
+                if len(n) >= min_token_len and n not in generic_fragments
+            ]
+            # Heuristic: a feature name is a "plausible metabolite name" (not
+            # a long IUPAC/stereochemistry form) if it has no stereochemistry /
+            # locant markers and is not excessively long.
+            iupac_markers = re.compile(
+                r'(\(\d+[RS]?,?\d*[RS]?\)|^\(\d[EZ]?,'  # (1R,2S)-  / (11E)...
+                r'|\[[\d.]+[RS]?,'                          # [23.2.2.1...
+                r'|\bN\-[A-Z]|\bO\-[A-Z]|'                  # N-Acetyl, O-Methyl
+                r'|\bDIHYDROXY\b|\bTRIHYDROXY\b|\bPENTAHYDROXY\b)',
+                re.IGNORECASE,
+            )
+
             near_misses = []
             for col in dropped_plain[:200]:
                 cn = _normalize_name(col)
-                if not cn:
+                if not cn or len(cn) > 80 or iupac_markers.search(cn):
+                    # Skip long IUPAC / stereochemistry names: they are almost
+                    # never simple endogenous metabolites even if they share a
+                    # fragment.
                     continue
-                for en in endo_list:
-                    if cn in en or en in cn:
+                for en in endo_candidates:
+                    # Word-boundary containment, both directions, but only when
+                    # the shorter string is a specific metabolite (length>=6).
+                    shorter, longer = (en, cn) if len(en) <= len(cn) else (cn, en)
+                    if len(shorter) < min_token_len:
+                        continue
+                    if re.search(r'(?<![A-Z0-9])' + re.escape(shorter) + r'(?![A-Z0-9])', longer):
                         near_misses.append((col, en))
                         break
             if near_misses:
                 logger.info(
-                    f"Near-miss plain names (substring match to a keep-list "
-                    f"entry of length>={min_token_len}; likely naming difference, "
-                    f"not exogenous): {near_misses[:15]}"
+                    f"Near-miss plain names (word-boundary match to a specific "
+                    f"keep-list metabolite; likely a naming/annotation "
+                    f"difference, not exogenous): {near_misses[:15]}"
                 )
             else:
                 logger.info(
