@@ -16,6 +16,7 @@ Handles:
 import pandas as pd
 import numpy as np
 import unicodedata
+import re
 from typing import Tuple, Dict, List, Optional, Set
 from sklearn.model_selection import train_test_split
 import logging
@@ -24,15 +25,93 @@ import pickle
 import hashlib
 
 
+# Greek symbols -> spelled-out English canonical token. Metabolomics data
+# mixes three spellings of the same concept, e.g. omega:
+#   - Greek symbol : 18:2ω7
+#   - Latin letter : 18:2W7         (lipid shorthand in the HMDB keep-list)
+#   - spelled out  : omega-3
+# NFKC folds ω to Ω but NOT to W or 'omega', so without explicit folding a
+# feature named 'PS(18:2ω7)' never matches the keep-list entry 'PS(18:2W7)',
+# and lipid features silently drop out. Similarly 'α-Keto...' (symbol) must
+# match 'alpha-Keto...' (spelled out). We fold both to a single canonical
+# spelled-out token so all three spellings collapse to one.
+_GREEK_SYMBOL_TO_WORD = {
+    'α': 'ALPHA', 'Α': 'ALPHA',  # alpha
+    'β': 'BETA', 'Β': 'BETA',  # beta
+    'γ': 'GAMMA', 'Γ': 'GAMMA',  # gamma
+    'δ': 'DELTA', 'Δ': 'DELTA',  # delta
+    'ε': 'EPSILON', 'Ε': 'EPSILON',  # epsilon
+    'ζ': 'ZETA', 'Ζ': 'ZETA',  # zeta
+    'η': 'ETA', 'Η': 'ETA',  # eta
+    'θ': 'THETA', 'Θ': 'THETA', 'ϑ': 'THETA',  # theta
+    'ι': 'IOTA', 'Ι': 'IOTA',  # iota
+    'κ': 'KAPPA', 'Κ': 'KAPPA', 'ϰ': 'KAPPA',  # kappa
+    'λ': 'LAMBDA', 'Λ': 'LAMBDA',  # lambda
+    'μ': 'MU', 'Μ': 'MU',  # mu
+    'ν': 'NU', 'Ν': 'NU',  # nu
+    'ξ': 'XI', 'Ξ': 'XI',  # xi
+    'ο': 'OMICRON', 'Ο': 'OMICRON',  # omicron
+    'π': 'PI', 'Π': 'PI', 'ϖ': 'PI',  # pi
+    'ρ': 'RHO', 'Ρ': 'RHO', 'ϱ': 'RHO',  # rho
+    'σ': 'SIGMA', 'Σ': 'SIGMA', 'ς': 'SIGMA',  # sigma
+    'τ': 'TAU', 'Τ': 'TAU',  # tau
+    'υ': 'UPSILON', 'Υ': 'UPSILON',  # upsilon
+    'φ': 'PHI', 'Φ': 'PHI', 'ϕ': 'PHI',  # phi
+    'χ': 'CHI', 'Χ': 'CHI',  # chi
+    'ψ': 'PSI', 'Ψ': 'PSI',  # psi
+    'ω': 'OMEGA', 'Ω': 'OMEGA',  # omega
+}
+
+# Spelled-out Greek words (case-insensitive) -> same canonical token as the
+# symbols above. Lets 'alpha' match 'α', 'omega' match 'ω', etc.
+_GREEK_WORD_PATTERNS = [
+    (re.compile(r'(?i)\balpha\b'), 'ALPHA'),
+    (re.compile(r'(?i)\bbeta\b'), 'BETA'),
+    (re.compile(r'(?i)\bgamma\b'), 'GAMMA'),
+    (re.compile(r'(?i)\bdelta\b'), 'DELTA'),
+    (re.compile(r'(?i)\bepsilon\b'), 'EPSILON'),
+    (re.compile(r'(?i)\bzeta\b'), 'ZETA'),
+    (re.compile(r'(?i)\beta\b'), 'ETA'),
+    (re.compile(r'(?i)\btheta\b'), 'THETA'),
+    (re.compile(r'(?i)\biota\b'), 'IOTA'),
+    (re.compile(r'(?i)\bkappa\b'), 'KAPPA'),
+    (re.compile(r'(?i)\blambda\b'), 'LAMBDA'),
+    (re.compile(r'(?i)\bmu\b'), 'MU'),
+    (re.compile(r'(?i)\bnu\b'), 'NU'),
+    (re.compile(r'(?i)\bxi\b'), 'XI'),
+    (re.compile(r'(?i)\bomicron\b'), 'OMICRON'),
+    (re.compile(r'(?i)\bpi\b'), 'PI'),
+    (re.compile(r'(?i)\brho\b'), 'RHO'),
+    (re.compile(r'(?i)\bsigma\b'), 'SIGMA'),
+    (re.compile(r'(?i)\btau\b'), 'TAU'),
+    (re.compile(r'(?i)\bupsilon\b'), 'UPSILON'),
+    (re.compile(r'(?i)\bphi\b'), 'PHI'),
+    (re.compile(r'(?i)\bchi\b'), 'CHI'),
+    (re.compile(r'(?i)\bpsi\b'), 'PSI'),
+    (re.compile(r'(?i)\bomega\b'), 'OMEGA'),
+]
+
+# Lipid-shorthand omega: a lone 'W' sitting between two digits (e.g.
+# '18:2W7', '24:1W9') denotes an omega double bond. Fold it to OMEGA so the
+# HMDB keep-list's 'PS(18:2W6/24:1W9)' form matches feature columns using the
+# Greek symbol ('PS(18:2ω6/24:1ω9)') or the spelled word.
+_LIPID_W = re.compile(r'(?<=\d)W(?=\d)', re.IGNORECASE)
+
+
 def _normalize_name(name: str) -> str:
     """
     Normalize a metabolite or feature-column name for exact matching.
 
-    - Strips surrounding whitespace
-    - Applies Unicode NFKC normalization (e.g. folds full-width digits, unifies
-      Greek alpha variants such as U+0391 'Α' vs U+0041 'A')
+    - Strips surrounding whitespace and a leading UTF-8 BOM
+    - Applies Unicode NFKC normalization (folds full-width digits, unifies
+      some compatibility forms)
+    - Folds Greek symbols (α, β, ω, ...) AND spelled-out Greek words
+      (alpha, beta, omega, ...) to a single spelled-out English canonical
+      token, and folds lipid-shorthand 'W' between digits to OMEGA. This is
+      the critical step: the HMDB keep-list spells lipid omega as '18:2W7'
+      while feature columns use '18:2ω7' or '18:2omega7'; without this folding
+      they never match and lipid features are silently dropped.
     - Uppercases
-    - Strips a leading UTF-8 BOM if present
 
     Returns the normalized name. Exact (not partial) matching is preserved.
     """
@@ -41,8 +120,15 @@ def _normalize_name(name: str) -> str:
     s = str(name)
     if s.startswith('\ufeff'):
         s = s[1:]
-    s = unicodedata.normalize('NFKC', s).strip().upper()
-    return s
+    s = unicodedata.normalize('NFKC', s)
+    # Symbols -> spelled-out canonical token.
+    s = ''.join(_GREEK_SYMBOL_TO_WORD.get(ch, ch) for ch in s)
+    # Spelled-out words -> same canonical token (so 'alpha' == 'α').
+    for pattern, repl in _GREEK_WORD_PATTERNS:
+        s = pattern.sub(repl, s)
+    # Lipid-shorthand 'W' between digits -> OMEGA (so '18:2W7' == '18:2ω7').
+    s = _LIPID_W.sub('OMEGA', s)
+    return s.strip().upper()
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +314,43 @@ def _filter_to_endogenous_features(
     )
 
     if n_removed > 0:
-        logger.info(f"Example removed features: {removed_cols[:10]}{'...' if n_removed > 10 else ''}")
+        # Separately report dropped PLAIN names (no HMDB token); these are the
+        # only ones where a keep-list miss can be a real normalization bug
+        # rather than a deliberately excluded exogenous compound.
+        dropped_plain = [c for c in removed_cols if 'HMDB' not in _normalize_name(c)]
+        logger.info(
+            f"Dropped {len(dropped_plain)} plain-name features "
+            f"(of {n_removed} total dropped); first 10: "
+            f"{dropped_plain[:10]}"
+        )
+        # Near-miss diagnostic: for each dropped plain name, check whether it
+        # appears as a SUBSTRING of any keep-list entry (or vice versa). A hit
+        # here usually means a naming/annotation difference that should be
+        # reconciled (e.g. 'Cortisol' vs 'Cortisol sulfate'), not a true
+        # exogenous compound. Capped for speed.
+        if dropped_plain and len(endogenous_names) <= 400000:
+            endo_list = list(endogenous_names)
+            near_misses = []
+            for col in dropped_plain[:200]:
+                cn = _normalize_name(col)
+                if not cn:
+                    continue
+                for en in endo_list:
+                    if cn in en or en in cn:
+                        near_misses.append((col, en))
+                        break
+            if near_misses:
+                logger.info(
+                    f"Near-miss plain names (substring match to a keep-list "
+                    f"entry; likely naming difference, not exogenous): "
+                    f"{near_misses[:15]}"
+                )
+            else:
+                logger.info(
+                    "No near-miss plain names found among the first 200 dropped "
+                    "(dropped plain names appear genuinely absent from the "
+                    "keep-list)."
+                )
         if len(endogenous_names) > 0:
             sample_keep = list(endogenous_names)[:5]
             logger.info(f"Example keep-list names (normalized): {sample_keep}")
