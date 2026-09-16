@@ -97,6 +97,11 @@ _GREEK_WORD_PATTERNS = [
 # Greek symbol ('PS(18:2ω6/24:1ω9)') or the spelled word.
 _LIPID_W = re.compile(r'(?<=\d)W(?=\d)', re.IGNORECASE)
 
+# Bump this when _normalize_name's output changes (e.g. Greek-letter folding
+# added in v2) so the endogenous keep-list cache is rebuilt instead of
+# reusing a keep-list normalized with the old logic.
+_NORMALIZATION_VERSION = 2
+
 
 def _normalize_name(name: str) -> str:
     """
@@ -137,6 +142,14 @@ def _get_hmdb_cache_path(endogenous_file: str) -> Path:
     """
     Get the cache file path for a given endogenous metabolites file.
 
+    The cache key combines the file PATH with the file's CONTENT hash (md5 of
+    the bytes) and last-modified time. This means the cache is invalidated
+    automatically whenever the TSV is edited OR the normalization logic changes
+    its output (a content change), so a stale keep-list from an older
+    normalization version is never silently reused. The path alone is not
+    enough: the same path can hold different contents after the user regenerates
+    the TSV or after a normalization fix.
+
     Args:
         endogenous_file: Path to endogenous_metabolites.tsv
 
@@ -145,8 +158,21 @@ def _get_hmdb_cache_path(endogenous_file: str) -> Path:
     """
     cache_dir = Path.home() / ".cache" / "hmdb_metabolomics"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    file_hash = hashlib.md5(endogenous_file.encode()).hexdigest()[:16]
-    return cache_dir / f"endogenous_names_{file_hash}.pkl"
+    path_hash = hashlib.md5(endogenous_file.encode()).hexdigest()[:16]
+    content_hash = ""
+    mtime = ""
+    try:
+        p = Path(endogenous_file)
+        if p.exists():
+            mtime = str(int(p.stat().st_mtime))
+            content_hash = hashlib.md5(p.read_bytes()).hexdigest()[:16]
+    except Exception:
+        pass
+    # Bump _NORMALIZATION_VERSION whenever _normalize_name's output changes
+    # (e.g. Greek-letter folding) so a stale cache from the old logic is never
+    # reused, even when the TSV content itself is unchanged.
+    key = f"{path_hash}_{content_hash}_{mtime}_v{_NORMALIZATION_VERSION}"
+    return cache_dir / f"endogenous_names_{key}.pkl"
 
 
 def _load_endogenous_metabolite_names(endogenous_file: str, use_cache: bool = True) -> Set[str]:
