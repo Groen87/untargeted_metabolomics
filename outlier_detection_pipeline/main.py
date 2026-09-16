@@ -697,13 +697,29 @@ def _plot_fn_fp_zscore_analysis(
     gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
     gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
     gm = gm.dropna(subset=['oordeel'])
-    true_outlier_ids = set(gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist())
-    true_inlier_ids = set(gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist())
+    # Normalise ids to strings on both sides so an int index (group_map) and a
+    # str sample_id (per-sample rows, which round-trip through dict keys) still
+    # match. Without this a dtype mismatch silently yields zero matches.
+    true_outlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
+    true_inlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist()}
+
+    sample_ids_in_per = [str(r.get('sample_id')) for r in per_sample]
+    matched_outlier = sum(1 for sid in sample_ids_in_per if sid in true_outlier_ids)
+    matched_inlier = sum(1 for sid in sample_ids_in_per if sid in true_inlier_ids)
+    logger.info(f"FN/FP Z-score: {len(per_sample)} per-sample rows; "
+                f"group_map has {len(true_outlier_ids)} true_outlier / "
+                f"{len(true_inlier_ids)} true_inlier ids; "
+                f"{matched_outlier} per-sample rows matched a true_outlier id, "
+                f"{matched_inlier} matched a true_inlier id. "
+                f"per-sample sample_id sample={sample_ids_in_per[:3]} "
+                f"(type={type(sample_ids_in_per[0]).__name__ if sample_ids_in_per else 'n/a'}); "
+                f"group_map index sample={[str(i) for i in list(group_map.index[:3])]} "
+                f"(type={type(group_map.index[0]).__name__ if len(group_map.index) else 'n/a'}).")
 
     fn_ids = [r.get('sample_id') for r in per_sample
-              if r.get('sample_id') in true_outlier_ids and int(r.get('flagged', 0)) == 0]
+              if str(r.get('sample_id')) in true_outlier_ids and int(r.get('flagged', 0)) == 0]
     fp_ids = [r.get('sample_id') for r in per_sample
-              if r.get('sample_id') in true_inlier_ids and int(r.get('flagged', 0)) == 1]
+              if str(r.get('sample_id')) in true_inlier_ids and int(r.get('flagged', 0)) == 1]
 
     if not fn_ids and not fp_ids:
         logger.info("No false-negative or false-positive samples (clean roles) "
@@ -723,19 +739,41 @@ def _plot_fn_fp_zscore_analysis(
     zscore_dir = output_dir / "zscore_fn_fp"
     zscore_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        from outlier_detection_pipeline.pipeline.outlier_analysis import HAS_MATPLOTLIB
+    except Exception:
+        HAS_MATPLOTLIB = False
+    if not HAS_MATPLOTLIB:
+        logger.warning("matplotlib not available; FN/FP Z-score PNG plots will "
+                       "be skipped, but the ranked-feature CSV is still written.")
+
+    # Map the (string-normalised) per-sample ids back to the actual
+    # original_features index values so analyze_outliers' `idx in index`
+    # lookup succeeds regardless of index dtype.
+    of_index_by_str = {str(i): i for i in original_features.index}
+
     all_rows = []
     for kind, ids in (('fn', fn_ids), ('fp', fp_ids)):
         if not ids:
             continue
-        analysis = analyze_outliers(original_features, ids, n_top=n_top, use_zscore=True)
-        plot_outlier_analysis(analysis, original_features, zscore_dir, n_top=n_top, use_zscore=True)
-        # plot_outlier_analysis writes 'zscore_outlier_<id>.png'; rename to
-        # the fn/fp role so the two kinds are distinguishable.
-        for sid in ids:
-            src = zscore_dir / f"zscore_outlier_{sid}.png"
-            if src.exists():
-                dst = zscore_dir / f"zscore_{kind}_{sid}.png"
-                src.replace(dst)
+        resolved_ids = [of_index_by_str[str(sid)] for sid in ids if str(sid) in of_index_by_str]
+        missing = [sid for sid in ids if str(sid) not in of_index_by_str]
+        if missing:
+            logger.warning(f"{len(missing)} {kind} sample id(s) not found in "
+                           f"original_features index (e.g. {missing[:3]}); they "
+                           f"will be skipped in the Z-score analysis.")
+        if not resolved_ids:
+            continue
+        analysis = analyze_outliers(original_features, resolved_ids, n_top=n_top, use_zscore=True)
+        if analysis:
+            plot_outlier_analysis(analysis, original_features, zscore_dir, n_top=n_top, use_zscore=True)
+            # plot_outlier_analysis writes 'zscore_outlier_<id>.png'; rename to
+            # the fn/fp role so the two kinds are distinguishable.
+            for sid in analysis.keys():
+                src = zscore_dir / f"zscore_outlier_{sid}.png"
+                if src.exists():
+                    dst = zscore_dir / f"zscore_{kind}_{sid}.png"
+                    src.replace(dst)
         for sid, a in analysis.items():
             for rank, (feat, wdev, adev) in enumerate(a.get('top_features', [])[:n_top], 1):
                 all_rows.append({
@@ -745,8 +783,9 @@ def _plot_fn_fp_zscore_analysis(
 
     if all_rows:
         pd.DataFrame(all_rows).to_csv(zscore_dir / "zscore_fn_fp_analysis.csv", index=False)
-    logger.info(f"Saved Z-score plots for {len(fn_ids)} false-negative and "
-                f"{len(fp_ids)} false-positive sample(s) to {zscore_dir}")
+    logger.info(f"FN/FP Z-score analysis: {len(fn_ids)} false-negative, "
+                f"{len(fp_ids)} false-positive sample(s); wrote {len(all_rows)} "
+                f"ranked-feature rows and any available plots to {zscore_dir}")
 
 
 def _per_group_breakdown(
