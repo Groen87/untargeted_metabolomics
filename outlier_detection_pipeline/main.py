@@ -619,13 +619,25 @@ def _save_false_negatives_csv(
     realistic_results: Optional[Dict[str, Any]],
     output_dir: Path,
     fold: Optional[int] = None,
+    group_map: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Save a CSV of IMD samples flagged FALSE NEGATIVE (true_label=1, not flagged).
+    """Save CSVs of the realistic-eval false negatives and false positives.
 
-    Uses the per-sample rows produced by the realistic evaluation. Each row
-    records the sample_id, score, and anomaly_threshold so you can inspect
-    which IMDs slipped below the cutoff. The file is written next to the
-    other fold outputs; pooled across outer-CV folds by the caller.
+    Roles follow the lab protocol (matching the per-group breakdown and the
+    Z-score analysis): a sample is a false negative only if it is a TRUE
+    OUTLIER (raw Class 1 AND Oordeel 1) that was NOT flagged, and a false
+    positive only if it is a TRUE INLIER (raw Class 0 AND Oordeel 0) that WAS
+    flagged. Samples with NaN Oordeel and every other (Class, Oordeel)
+    combination are gray and excluded.
+
+    When `group_map` is not available (e.g. non-confident-normals schemes
+    with no Oordeel/Classification metadata), falls back to the binary label
+    (`true_label == 1` for false negatives) so the file is still produced.
+
+    Each row records the sample_id, role, raw Classification, Oordeel,
+    flagged, score, and anomaly_threshold so they can be inspected manually.
+    The files are written next to the other fold outputs; pooled across
+    outer-CV folds by the caller.
     """
     if realistic_results is None:
         return
@@ -633,27 +645,76 @@ def _save_false_negatives_csv(
     if not per_sample:
         return
 
-    rows = [
-        {
-            'sample_id': r.get('sample_id'),
-            'true_label': r.get('true_label'),
-            'flagged': r.get('flagged'),
-            'score': r.get('score'),
-            'anomaly_threshold': realistic_results.get('anomaly_threshold'),
-        }
-        for r in per_sample
-        if r.get('true_label') == 1 and int(r.get('flagged', 0)) == 0
-    ]
-    if not rows:
-        logger.info("No false-negative IMD samples (all abnormals flagged).")
-        return
+    threshold = realistic_results.get('anomaly_threshold')
 
-    fn_df = pd.DataFrame(rows)
-    if not fn_df.empty and 'sample_id' in fn_df.columns:
-        fn_df = fn_df.sort_values('sample_id')
-    name = "false_negative_imds.csv" if fold is None else f"false_negative_imds_fold{fold}.csv"
-    fn_df.to_csv(output_dir / name, index=False)
-    logger.info(f"Saved {len(fn_df)} false-negative IMD sample(s) to {output_dir / name}")
+    # Determine the true_outlier / true_inlier id sets from group_map. Ids are
+    # normalised to strings so a dtype mismatch between the per-sample rows
+    # (which round-trip through dict keys) and the group_map index does not
+    # silently drop every match.
+    if group_map is not None and len(group_map) > 0:
+        gm = group_map.copy()
+        gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
+        gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
+        gm = gm.dropna(subset=['oordeel'])
+        true_outlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
+        true_inlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist()}
+        rc_by_id = {str(i): v for i, v in gm['raw_classification'].to_dict().items()}
+        oo_by_id = {str(i): v for i, v in gm['oordeel'].to_dict().items()}
+        use_roles = True
+    else:
+        true_outlier_ids = set()
+        true_inlier_ids = set()
+        rc_by_id = {}
+        oo_by_id = {}
+        use_roles = False
+
+    fn_rows = []
+    fp_rows = []
+    for r in per_sample:
+        sid = r.get('sample_id')
+        sid_s = str(sid)
+        flagged = int(r.get('flagged', 0))
+        row = {
+            'sample_id': sid,
+            'flagged': flagged,
+            'score': r.get('score'),
+            'anomaly_threshold': threshold,
+        }
+        if use_roles:
+            row['raw_classification'] = rc_by_id.get(sid_s)
+            row['oordeel'] = oo_by_id.get(sid_s)
+            if sid_s in true_outlier_ids and flagged == 0:
+                row['role'] = 'false_negative'
+                fn_rows.append(row)
+            elif sid_s in true_inlier_ids and flagged == 1:
+                row['role'] = 'false_positive'
+                fp_rows.append(row)
+        else:
+            # Binary-label fallback (no group metadata): true_label == 1 is
+            # the abnormal pool; an unflagged one is a false negative.
+            row['true_label'] = r.get('true_label')
+            if r.get('true_label') == 1 and flagged == 0:
+                row['role'] = 'false_negative'
+                fn_rows.append(row)
+
+    suffix = "" if fold is None else f"_fold{fold}"
+    if fn_rows:
+        fn_df = pd.DataFrame(fn_rows)
+        if 'sample_id' in fn_df.columns:
+            fn_df = fn_df.sort_values('sample_id')
+        fn_df.to_csv(output_dir / f"false_negative_imds{suffix}.csv", index=False)
+        logger.info(f"Saved {len(fn_df)} false-negative IMD sample(s) to "
+                    f"{output_dir / f'false_negative_imds{suffix}.csv'}")
+    else:
+        logger.info("No false-negative IMD samples (all true outliers flagged).")
+
+    if fp_rows:
+        fp_df = pd.DataFrame(fp_rows)
+        if 'sample_id' in fp_df.columns:
+            fp_df = fp_df.sort_values('sample_id')
+        fp_df.to_csv(output_dir / f"false_positive_imds{suffix}.csv", index=False)
+        logger.info(f"Saved {len(fp_df)} false-positive sample(s) to "
+                    f"{output_dir / f'false_positive_imds{suffix}.csv'}")
 
 
 def _plot_fn_fp_zscore_analysis(
@@ -1050,7 +1111,7 @@ def _save_outputs(
 
     # Save the sample ids of IMD samples flagged false negative (true_label=1, not flagged)
     # so they can be inspected manually.
-    _save_false_negatives_csv(realistic_results, output_dir, fold=None)
+    _save_false_negatives_csv(realistic_results, output_dir, fold=None, group_map=group_map)
 
     return {
         'test_metrics': test_metrics,
@@ -1244,7 +1305,7 @@ def _run_outer_cv(
             fold_metrics['n_normal_test'] = realistic_results.get('n_normal_test')
             fold_metrics['n_abnormal_test'] = realistic_results.get('n_abnormal_test')
             # Per-fold list of IMD samples flagged false negative
-            _save_false_negatives_csv(realistic_results, fold_out_dir, fold=fold_num + 1)
+            _save_false_negatives_csv(realistic_results, fold_out_dir, fold=fold_num + 1, group_map=group_map)
             # Pool per-sample scores for an aggregated score-distribution view
             for r in realistic_results.get('per_iteration_results', []):
                 r = dict(r)
@@ -1312,19 +1373,46 @@ def _run_outer_cv(
     if all_per_sample:
         pd.DataFrame(all_per_sample).to_csv(output_dir / "outer_cv_per_sample.csv", index=False)
 
-    # Pooled false-negative IMD sample ids across all outer-CV folds
-    # (true_label=1, flagged=0) so they can be inspected manually.
-    fn_rows = [
-        {'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
-         'score': r.get('score'), 'flagged': r.get('flagged')}
-        for r in all_per_sample
-        if r.get('true_label') == 1 and int(r.get('flagged', 0)) == 0
-    ]
+    # Pooled false-negative / false-positive IMD sample ids across all
+    # outer-CV folds, using the lab-protocol roles (true outlier = Class 1 &
+    # Oordeel 1; true inlier = Class 0 & Oordeel 0). Gray groups and NaN
+    # Oordeel are excluded. Ids normalised to strings for dtype-safe matching.
+    if group_map is not None and len(group_map) > 0:
+        gm = group_map.copy()
+        gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
+        gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
+        gm = gm.dropna(subset=['oordeel'])
+        pooled_true_outlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
+        pooled_true_inlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist()}
+    else:
+        pooled_true_outlier_ids = set()
+        pooled_true_inlier_ids = set()
+    fn_rows = []
+    fp_rows = []
+    for r in all_per_sample:
+        sid_s = str(r.get('sample_id'))
+        flagged = int(r.get('flagged', 0))
+        if group_map is not None and len(group_map) > 0:
+            if sid_s in pooled_true_outlier_ids and flagged == 0:
+                fn_rows.append({'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
+                                'score': r.get('score'), 'flagged': flagged, 'role': 'false_negative'})
+            elif sid_s in pooled_true_inlier_ids and flagged == 1:
+                fp_rows.append({'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
+                                'score': r.get('score'), 'flagged': flagged, 'role': 'false_positive'})
+        else:
+            if r.get('true_label') == 1 and flagged == 0:
+                fn_rows.append({'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
+                                'score': r.get('score'), 'flagged': flagged, 'role': 'false_negative'})
     if fn_rows:
         fn_df = pd.DataFrame(fn_rows).sort_values(['sample_id', 'fold'])
         fn_df.to_csv(output_dir / "false_negative_imds.csv", index=False)
         logger.info(f"Saved {len(fn_df)} pooled false-negative IMD sample(s) "
                     f"to {output_dir / 'false_negative_imds.csv'}")
+    if fp_rows:
+        fp_df = pd.DataFrame(fp_rows).sort_values(['sample_id', 'fold'])
+        fp_df.to_csv(output_dir / "false_positive_imds.csv", index=False)
+        logger.info(f"Saved {len(fp_df)} pooled false-positive sample(s) "
+                    f"to {output_dir / 'false_positive_imds.csv'}")
 
     # Pooled per-group breakdown across all outer-CV folds.
     if group_map is not None and len(group_map) > 0 and all_per_sample:
