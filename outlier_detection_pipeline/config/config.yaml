@@ -71,6 +71,24 @@ use_hmdb_cache: true  # Use cached HMDB data for faster subsequent runs
 endogenous_metabolites_file: null  # Path to endogenous_metabolites.tsv (output of hmdb_drug_filter.py)
 
 # Outlier analysis
+# Univariate guardrail (deployment-time clinical safety net). A deterministic,
+# OR-combined flag that catches samples the multivariate model misses on
+# clinically must-not-miss metabolites. For each listed biomarker, computes
+# its mean/std over the TRAINING confident normals and flags any test sample
+# whose signed Z-score on that biomarker exceeds z_threshold in magnitude.
+# Writes guardrail_flags.csv (one row per fired biomarker-sample pair) and is
+# OR-combined with the model flag at deployment: a sample is reviewed if the
+# guardrail fires OR the model flags it. This does NOT filter training data.
+# Leave the list empty (or omit the section) to disable (default). Match each
+# `name` exactly to a feature column name (case-insensitive).
+univariate_guardrail:
+  biomarkers: []
+  # Example (catch samples with extreme acylcarnitines the model misses):
+  # biomarkers:
+  #   - name: "Glutarylcarnitine"
+  #     z_threshold: 10
+  #   - name: "Glutaric acid"
+  #     z_threshold: 10
 use_zscore_analysis: true  # Use Z-scores (True) or log IQR (False) for outlier feature analysis
 log_iqr_feature_filter: null  # Filter features for analysis. Options: null (no filter), 'hmdb', or custom string/list
 

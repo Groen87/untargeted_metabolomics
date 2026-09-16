@@ -713,6 +713,120 @@ def _save_false_negatives_csv(
                     f"{output_dir / f'false_positive_imds{suffix}.csv'}")
 
 
+def _apply_univariate_guardrail(
+    original_features: Optional[pd.DataFrame],
+    reference_normal_ids: Optional[pd.Index],
+    test_sample_ids: Optional[pd.Index],
+    output_dir: Path,
+    config: Config,
+) -> Dict[Any, List[str]]:
+    """Deterministic univariate guardrail for clinically important biomarkers.
+
+    A deployment-time safety net (NOT a training filter): for each biomarker
+    listed in the ``univariate_guardrail.biomarkers`` config (each entry a dict
+    with ``name`` and ``z_threshold``), compute the biomarker's mean/std over
+    the TRAINING confident normals (``reference_normal_ids``), then flag every
+    TEST sample (``test_sample_ids``) whose signed Z-score on that biomarker
+    exceeds the threshold in magnitude. A sample is flagged by the guardrail if
+    ANY listed biomarker exceeds its threshold.
+
+    This is intentionally OR-combined with the model flag by the caller: a
+    sample is reviewed if the guardrail fires OR the model flags it. The
+    guardrail guarantees that clinically must-not-miss metabolites (e.g.
+    glutarylcarnitine) are caught even when the multivariate model scores them
+    as normal, without biasing the training set.
+
+    Writes ``guardrail_flags.csv`` (one row per fired biomarker-sample pair:
+    sample_id, biomarker, zscore, z_threshold, direction) and returns a dict
+    mapping each flagged sample_id to its list of human-readable reasons.
+
+    When ``univariate_guardrail.biomarkers`` is absent or empty (the default),
+    this is a no-op and returns ``{}``.
+    """
+    if original_features is None or original_features.empty:
+        return {}
+    if reference_normal_ids is None or len(reference_normal_ids) == 0:
+        logger.info("Univariate guardrail skipped: no reference normal ids.")
+        return {}
+    if test_sample_ids is None or len(test_sample_ids) == 0:
+        return {}
+
+    biomarkers = config.get('univariate_guardrail.biomarkers', None)
+    if not biomarkers:
+        return {}
+    if not isinstance(biomarkers, list):
+        biomarkers = [biomarkers]
+
+    # Resolve each configured biomarker to an actual feature column (exact,
+    # case-insensitive match after Unicode normalization), skipping any that
+    # are not present so a typo never aborts the run.
+    available = {str(c).strip().casefold(): c for c in original_features.columns}
+    resolved = []
+    for bm in biomarkers:
+        if not isinstance(bm, dict):
+            continue
+        name = bm.get('name')
+        thr = bm.get('z_threshold')
+        if not name or thr is None:
+            logger.warning(f"Univariate guardrail: skipping malformed entry {bm}; "
+                           "expected {{name, z_threshold}}.")
+            continue
+        col = available.get(str(name).strip().casefold())
+        if col is None:
+            logger.warning(f"Univariate guardrail: biomarker '{name}' not found "
+                           f"in original_features columns; skipped.")
+            continue
+        resolved.append((name, col, float(thr)))
+    if not resolved:
+        logger.info("Univariate guardrail: no resolvable biomarkers configured; "
+                    "no-op.")
+        return {}
+
+    cols = [c for _, c, _ in resolved]
+    ref = original_features.reindex(reference_normal_ids).dropna(how='all')
+    if ref.empty:
+        logger.warning("Univariate guardrail: reference normal features empty "
+                       "after alignment; skipped.")
+        return {}
+    means = ref[cols].mean(axis=0)
+    stds = ref[cols].std(axis=0)
+
+    test_feats = original_features.reindex(test_sample_ids).dropna(how='all')
+    if test_feats.empty:
+        return {}
+
+    rows = []
+    flags: Dict[Any, List[str]] = {}
+    for sid in test_feats.index:
+        sample = test_feats.loc[sid]
+        if isinstance(sample, pd.DataFrame):
+            sample = sample.iloc[0]
+        for name, col, thr in resolved:
+            m = means[col]
+            s = stds[col]
+            if pd.isna(s) or s < 1e-10 or pd.isna(sample[col]):
+                continue
+            z = float((sample[col] - m) / (s + 1e-10))
+            if abs(z) > thr:
+                direction = 'increased' if z >= 0 else 'decreased'
+                reason = (f"{name} {z:+.2f}x std ({direction}, threshold {thr:g})")
+                flags.setdefault(sid, []).append(reason)
+                rows.append({
+                    'sample_id': sid, 'biomarker': name, 'zscore': z,
+                    'z_threshold': thr, 'direction': direction,
+                })
+
+    if rows:
+        pd.DataFrame(rows).to_csv(output_dir / "guardrail_flags.csv", index=False)
+        logger.info(f"Univariate guardrail: flagged {len(flags)} sample(s) on "
+                    f"{len(rows)} biomarker-sample pair(s); wrote "
+                    f"{output_dir / 'guardrail_flags.csv'}")
+    else:
+        logger.info("Univariate guardrail: no samples exceeded any configured "
+                    "biomarker threshold.")
+    return flags
+
+
 def _plot_fn_fp_zscore_analysis(
     original_features: Optional[pd.DataFrame],
     output_dir: Path,
@@ -1078,6 +1192,29 @@ def _save_outputs(
         except Exception as e:
             logger.exception(f"FN/FP Z-score analysis failed: {e}")
 
+    # Deterministic univariate guardrail for clinically important biomarkers
+    # (deployment-time safety net, OR-combined with the model flag). Reads the
+    # biomarker list from univariate_guardrail.biomarkers; no-op when unset.
+    try:
+        guardrail_flags = _apply_univariate_guardrail(
+            original_features=original_features,
+            reference_normal_ids=reference_normal_ids,
+            test_sample_ids=X_test.index,
+            output_dir=output_dir,
+            config=config,
+        )
+    except Exception as e:
+        logger.exception(f"Univariate guardrail failed: {e}")
+        guardrail_flags = {}
+    # Log which test samples the guardrail catches that the model missed
+    # (model flagged = test_preds == -1): these are the must-not-miss rescues.
+    if guardrail_flags:
+        model_flagged = set(X_test.index[test_preds == -1])
+        rescued = [str(s) for s in guardrail_flags if s not in model_flagged]
+        if rescued:
+            logger.info(f"Univariate guardrail rescued {len(rescued)} sample(s) "
+                        f"the model did NOT flag: {rescued}")
+
     return {
         'test_metrics': test_metrics,
         'model': model,
@@ -1391,6 +1528,34 @@ def _run_outer_cv(
             )
         except Exception as e:
             logger.exception(f"FN/FP Z-score analysis failed: {e}")
+
+    # Pooled deterministic univariate guardrail (deployment-time safety net,
+    # OR-combined with the model flag). In confident-normals mode the model
+    # only ever trains on confident normals, so use the full confident-normal
+    # set (binary label 0) as the reference; every test sample (abnormals +
+    # held-out normals across folds) is scored against it. Reference is
+    # undefined in non-confident-normals schemes, so skip there.
+    try:
+        if confident_normals_mode and original_features is not None:
+            y_bin_pooled = (classification != normal_class).astype(int)
+            pooled_normal_ids = classification.index[y_bin_pooled.values == 0]
+            # Test = every sample that appears in any fold's test set.
+            seen_test = set()
+            for r in all_per_sample:
+                seen_test.add(r.get('sample_id'))
+            test_ids = pd.Index([s for s in original_features.index if s in seen_test])
+            guardrail_flags = _apply_univariate_guardrail(
+                original_features=original_features,
+                reference_normal_ids=pooled_normal_ids,
+                test_sample_ids=test_ids,
+                output_dir=output_dir,
+                config=config,
+            )
+            if guardrail_flags:
+                logger.info(f"Univariate guardrail flagged {len(guardrail_flags)} "
+                            f"pooled test sample(s) on configured biomarkers.")
+    except Exception as e:
+        logger.exception(f"Univariate guardrail failed: {e}")
 
     # Pooled per-group breakdown across all outer-CV folds.
     if group_map is not None and len(group_map) > 0 and all_per_sample:
