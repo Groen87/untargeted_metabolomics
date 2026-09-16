@@ -611,12 +611,13 @@ def _per_group_breakdown(
     on confident normals.
 
     Ground-truth definition (lab protocol):
-      - True outlier = raw Classification 1 (IMD) OR Oordeel targeted 1
-        (abnormal profile). A flagged sample in these groups is a TP.
-      - Confident normal = raw Class 0 & Oordeel 0. Flagged here is a FP.
-      - raw Class 3 (non-IMD) flagged = FP.
-      - raw Class 2 (active investigation) = gray area: reported as its own
-        group but NOT counted in the TP/FN totals.
+      - True outlier  = raw Classification 1 (IMD) AND Oordeel targeted 1.
+        A flagged sample in this group is a TP.
+      - True inlier   = raw Class 0 AND Oordeel 0. A flagged sample here is
+        a FP.
+      - Every other (Class, Oordeel) combination is a gray area: reported
+        as its own group but NOT counted in the TP/FN totals. Samples with
+        a NaN Oordeel targeted are dropped entirely before the breakdown.
 
     Args:
         per_sample_results: rows with sample_id, true_label (binary), score, flagged
@@ -640,21 +641,44 @@ def _per_group_breakdown(
     merged = rows.join(group_map[['raw_classification', 'oordeel']], how='left')
     merged['raw_classification'] = pd.to_numeric(merged['raw_classification'], errors='coerce')
     merged['oordeel'] = pd.to_numeric(merged['oordeel'], errors='coerce')
-    merged['is_true_outlier'] = ((merged['raw_classification'] == 1) | (merged['oordeel'] == 1)).astype(int)
+
+    # Drop samples with a NaN Oordeel targeted: their role is undefined, so
+    # they cannot be scored against ground truth.
+    nan_oordeel_mask = merged['oordeel'].isna()
+    n_nan_oordeel = int(nan_oordeel_mask.sum())
+    if n_nan_oordeel > 0:
+        logger.info(f"Per-group breakdown: dropping {n_nan_oordeel} samples "
+                    f"with NaN in Oordeel targeted.")
+        merged = merged[~nan_oordeel_mask]
+
+    # Ground-truth roles (lab protocol):
+    #   true_outlier  = raw Class 1 AND Oordeel 1
+    #   true_inlier   = raw Class 0 AND Oordeel 0
+    #   gray_investigation = every other combination
+    rc = merged['raw_classification']
+    oo = merged['oordeel']
+    is_true_outlier = ((rc == 1) & (oo == 1)).astype(int)
+    is_true_inlier = ((rc == 0) & (oo == 0)).astype(int)
+    merged['is_true_outlier'] = is_true_outlier
+    merged['is_true_inlier'] = is_true_inlier
+    merged['role'] = np.select(
+        [is_true_outlier.astype(bool), is_true_inlier.astype(bool)],
+        ['true_outlier', 'true_inlier'],
+        default='gray_investigation',
+    )
 
     p = float(target_contamination)
     records = []
-    for (rc, oo), grp in merged.groupby(['raw_classification', 'oordeel'], dropna=False):
+    for (rcv, oov), grp in merged.groupby(['raw_classification', 'oordeel'], dropna=False):
         n = len(grp)
         n_flagged = int(grp['flagged'].sum())
         flag_rate = (n_flagged / n) if n else float('nan')
-        is_true_outlier = int(((rc == 1) | (oo == 1)))
-        is_gray = int(rc == 2)
-        role = ('true_outlier' if is_true_outlier else
-                'gray_investigation' if is_gray else 'true_inlier')
+        role = ('true_outlier' if (rcv == 1 and oov == 1)
+                else 'true_inlier' if (rcv == 0 and oov == 0)
+                else 'gray_investigation')
         records.append({
-            'raw_classification': rc,
-            'oordeel': oo,
+            'raw_classification': rcv,
+            'oordeel': oov,
             'role': role,
             'n_samples': n,
             'n_flagged': n_flagged,
@@ -663,15 +687,15 @@ def _per_group_breakdown(
 
     breakdown = pd.DataFrame(records).sort_values(['raw_classification', 'oordeel']).reset_index(drop=True)
 
-    # Headline metrics at deployment prevalence, excluding the gray (Class 2)
-    # group from TP/FN per the protocol.
-    non_gray = merged[merged['raw_classification'] != 2]
+    # Headline metrics at deployment prevalence, excluding the gray groups
+    # (everything that is not a true outlier or a true inlier) per the protocol.
+    non_gray = merged[merged['role'] != 'gray_investigation']
     tp = int(((non_gray['flagged'] == 1) & (non_gray['is_true_outlier'] == 1)).sum())
     fn = int(((non_gray['flagged'] == 0) & (non_gray['is_true_outlier'] == 1)).sum())
-    fp = int(((non_gray['flagged'] == 1) & (non_gray['is_true_outlier'] == 0)).sum())
-    tn = int(((non_gray['flagged'] == 0) & (non_gray['is_true_outlier'] == 0)).sum())
+    fp = int(((non_gray['flagged'] == 1) & (non_gray['is_true_inlier'] == 1)).sum())
+    tn = int(((non_gray['flagged'] == 0) & (non_gray['is_true_inlier'] == 1)).sum())
     n_true_outlier = int(non_gray['is_true_outlier'].sum())
-    n_true_inlier = int((non_gray['is_true_outlier'] == 0).sum())
+    n_true_inlier = int(non_gray['is_true_inlier'].sum())
     detection = (tp / n_true_outlier) if n_true_outlier else float('nan')
     fpr = (fp / n_true_inlier) if n_true_inlier else float('nan')
     valid = not (np.isnan(detection) or np.isnan(fpr))
@@ -695,7 +719,7 @@ def _per_group_breakdown(
     for _, r in breakdown.iterrows():
         logger.info(f"{r['raw_classification']:>6} {r['oordeel']:>8} {r['role']:>20} "
                     f"{r['n_samples']:>5} {r['n_flagged']:>8} {r['flag_rate']:>10.2%}")
-    logger.info(f"Headline (excl. Class 2 gray area): TP={tp} FN={fn} FP={fp} TN={tn} | "
+    logger.info(f"Headline (excl. gray groups): TP={tp} FN={fn} FP={fp} TN={tn} | "
                 f"detection={detection:.2%} FPR={fpr:.2%} "
                 f"precision@{p:.0%}={precision_deploy:.4f} f1={f1_deploy:.4f} acc={accuracy_deploy:.4f}")
     logger.info(f"Deployment-batch confusion (n={n_total} @ {p:.2%}):\n{cm}")
