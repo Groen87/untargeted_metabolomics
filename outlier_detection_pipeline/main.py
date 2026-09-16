@@ -836,10 +836,15 @@ def _plot_fn_fp_zscore_analysis(
         role = role_by_id.get(str(sid))
         if role is None:
             continue
-        for rank, (feat, wdev, adev) in enumerate(a.get('top_features', [])[:n_top], 1):
+        for rank, feat_tuple in enumerate(a.get('top_features', [])[:n_top], 1):
+            feat = feat_tuple[0]
+            wdev = feat_tuple[1]
+            adev = feat_tuple[2]
+            sdev = feat_tuple[3] if len(feat_tuple) > 3 else wdev
             all_rows.append({
                 'sample_id': sid, 'role': role, 'rank': rank,
                 'feature': feat, 'weighted_zscore': wdev, 'abs_zscore': adev,
+                'signed_zscore': sdev,
             })
 
     if all_rows:

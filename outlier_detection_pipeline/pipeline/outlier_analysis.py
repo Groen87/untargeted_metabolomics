@@ -43,6 +43,17 @@ def compute_zscore_deviation(sample: pd.Series, reference_features: pd.DataFrame
     return (sample - mean).abs() / (std + 1e-10)
 
 
+def compute_signed_zscore(sample: pd.Series, reference_features: pd.DataFrame) -> pd.Series:
+    """
+    Compute signed Z-score: (sample - mean) / std.
+    Positive = increased relative to the normal mean, negative = decreased.
+    Used for DIRECTIONAL plotting (ranking still uses the absolute value).
+    """
+    mean = reference_features.mean(axis=0)
+    std = compute_feature_std(reference_features)
+    return (sample - mean) / (std + 1e-10)
+
+
 def compute_deviation_scores(
     sample: pd.Series,
     reference_features: pd.DataFrame,
@@ -119,16 +130,21 @@ def analyze_outliers(
         sample = all_features.loc[outlier_idx]
         weighted_deviations = compute_deviation_scores(sample, all_features, use_zscore=use_zscore)
         abs_deviations = compute_absolute_deviation(sample, all_features, use_zscore=use_zscore)
+        # Signed deviation for directional plotting (Z-score mode only).
+        signed_deviations = (compute_signed_zscore(sample, all_features)
+                             if use_zscore else weighted_deviations)
         sorted_indices = np.argsort(weighted_deviations.values)[::-1]
 
         top_features = []
         for idx in sorted_indices[:n_top]:
             feature = weighted_deviations.index[idx]
-            top_features.append((feature, weighted_deviations.values[idx], abs_deviations.values[idx]))
+            top_features.append((feature, weighted_deviations.values[idx],
+                                 abs_deviations.values[idx], signed_deviations.values[idx]))
 
         results[outlier_idx] = {
             'top_features': top_features,
-            'all_deviations': {f: (weighted_deviations[f], abs_deviations[f]) for f in weighted_deviations.index},
+            'all_deviations': {f: (weighted_deviations[f], abs_deviations[f],
+                                   signed_deviations[f]) for f in weighted_deviations.index},
         }
 
     logger.info(f"Analyzed {len(results)} outliers using {method_name} method")
@@ -179,21 +195,33 @@ def plot_outlier_analysis(
         features = [f[0] for f in top_features[:n_top]]
         weighted_deviations = [f[1] for f in top_features[:n_top]]
         abs_deviations = [f[2] for f in top_features[:n_top]]
+        # Signed deviation (4th element) for directional bars; falls back to
+        # the absolute value for the legacy log-IQR path that has no sign.
+        signed_deviations = [f[3] if len(f) > 3 else f[1] for f in top_features[:n_top]]
 
         sorted_indices = np.argsort(weighted_deviations)[::-1]
         features = [features[i] for i in sorted_indices]
         weighted_deviations = [weighted_deviations[i] for i in sorted_indices]
         abs_deviations = [abs_deviations[i] for i in sorted_indices]
+        signed_deviations = [signed_deviations[i] for i in sorted_indices]
 
         fig, ax = plt.subplots(figsize=figsize)
-        colors = plt.cm.viridis(np.linspace(0, 1, len(features)))
-        ax.barh(features, weighted_deviations, color=colors, alpha=0.7)
+        # Colour by direction: increased (red) vs decreased (blue). In log-IQR
+        # mode signed==absolute (all positive), so everything is 'increased'.
+        colors = ['#d62728' if s >= 0 else '#1f77b4' for s in signed_deviations]
+        ax.barh(features, signed_deviations, color=colors, alpha=0.7)
+        ax.axvline(0, color='black', linewidth=0.8)
 
-        for i, (f, abs_dev) in enumerate(zip(features, abs_deviations)):
+        for i, (f, abs_dev, s) in enumerate(zip(features, abs_deviations, signed_deviations)):
             unit = "std" if use_zscore else "log(IQR)"
-            ax.text(weighted_deviations[i], i, f'  {weighted_deviations[i]:.2f}x {unit}', va='center', fontsize=8)
+            arrow = '+' if s >= 0 else '-'
+            # Place the label just past the bar tip, on the correct side.
+            x = s + (0.15 * s if s >= 0 else 0.15 * s)
+            ha = 'left' if s >= 0 else 'right'
+            ax.text(x, i, f'{s:+.2f}x {unit} ({arrow})', va='center', ha=ha, fontsize=8)
 
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel('Signed Z-score deviation (right = increased vs normal mean, left = decreased)'
+                      if use_zscore else xlabel)
         ax.set_title(f'Outlier {outlier_idx}: Top {n_top} Features by {title_prefix} Deviation')
         ax.invert_yaxis()
         ax.grid(True, alpha=0.3, axis='x')
@@ -238,13 +266,18 @@ def save_outlier_analysis_results(
 
     rows = []
     for outlier_idx, analysis in outlier_analysis.items():
-        for rank, (feature_name, weighted_dev, abs_dev) in enumerate(analysis.get('top_features', [])[:n_top], 1):
+        for rank, feat_tuple in enumerate(analysis.get('top_features', [])[:n_top], 1):
+            feature_name = feat_tuple[0]
+            weighted_dev = feat_tuple[1]
+            abs_dev = feat_tuple[2]
+            signed_dev = feat_tuple[3] if len(feat_tuple) > 3 else weighted_dev
             rows.append({
                 'outlier': outlier_idx,
                 'rank': rank,
                 'feature': feature_name,
                 weighted_col: weighted_dev,
                 abs_col: abs_dev,
+                'signed_zscore': signed_dev if use_zscore else '',
             })
 
     df = pd.DataFrame(rows)
