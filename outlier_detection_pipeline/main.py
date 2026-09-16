@@ -904,12 +904,25 @@ def _run_outer_cv(
     if confident_normals_mode:
         normal_idx = np.where(y_binary == 0)[0]
         abnormal_idx = np.where(y_binary == 1)[0]
-        logger.info(f"confident_normals split: {len(normal_idx)} confident normals "
-                    f"split into {n_folds} folds (held-out per fold for FPR); "
-                    f"{len(abnormal_idx)} abnormals scored in EVERY fold (never trained).")
-        folds = list(StratifiedKFold(n_splits=n_folds, shuffle=True,
-                                    random_state=random_seed).split(normal_idx,
-                                                                    y_binary[normal_idx]))
+        if n_folds <= 1:
+            train_ratio = float(config.get('train_ratio', 0.8))
+            n_normal = len(normal_idx)
+            n_train = int(round(train_ratio * n_normal))
+            rng = np.random.RandomState(random_seed)
+            perm = rng.permutation(n_normal)
+            normal_train_pos = perm[:n_train]
+            normal_test_pos = perm[n_train:]
+            folds = [(normal_train_pos, normal_test_pos)]
+            logger.info(f"confident_normals single split: {n_train}/{n_normal} "
+                        f"normals train, {n_normal - n_train} normals held out for FPR; "
+                        f"{len(abnormal_idx)} abnormals scored once (never trained).")
+        else:
+            logger.info(f"confident_normals split: {len(normal_idx)} confident normals "
+                        f"split into {n_folds} folds (held-out per fold for FPR); "
+                        f"{len(abnormal_idx)} abnormals scored in EVERY fold (never trained).")
+            folds = list(StratifiedKFold(n_splits=n_folds, shuffle=True,
+                                        random_state=random_seed).split(normal_idx,
+                                                                        y_binary[normal_idx]))
     else:
         folds = list(StratifiedKFold(n_splits=n_folds, shuffle=True,
                                      random_state=random_seed).split(features, y_binary))
@@ -1126,10 +1139,13 @@ def _run_components_sweep(
     if not sweep_values:
         sweep_values = [10, 20, 30, 40, 50, 60, 80, 100]
     sweep_values = [int(v) for v in sweep_values]
-    # Each sweep point uses outer k-fold CV for an honest out-of-sample
-    # estimate; default to 5 folds when the config leaves cv_outer_folds at 1.
+    # Each sweep point uses outer CV for an honest out-of-sample estimate;
+    # default to 5 folds when the config leaves cv_outer_folds at 1, unless
+    # confident_normals is active, in which case cv_outer_folds=1 means a
+    # single confident-normal split (train on most normals, test on the rest
+    # plus all abnormals).
     n_folds = int(config.get('cv_outer_folds', 1))
-    if n_folds < 2:
+    if n_folds < 2 and config.get('classification_scheme', 'default') != 'confident_normals':
         n_folds = 5
 
     # Save the original config values so we can restore them after the sweep.
