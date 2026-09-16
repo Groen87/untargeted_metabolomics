@@ -307,6 +307,7 @@ def _filter_to_endogenous_features(
     removed_cols = []
     n_matched_hmdb = 0
     n_matched_name = 0
+    kept_plain_names = []
 
     for col in features.columns:
         col_norm = _normalize_name(col)
@@ -325,6 +326,7 @@ def _filter_to_endogenous_features(
         if col_norm in endogenous_names:
             kept_columns.append(col)
             n_matched_name += 1
+            kept_plain_names.append(col)
             continue
 
         removed_cols.append(col)
@@ -338,6 +340,13 @@ def _filter_to_endogenous_features(
         f"({n_matched_hmdb} HMDB-annotated columns kept always, "
         f"{n_matched_name} plain-name columns matched by name/synonym)"
     )
+    # Log the kept PLAIN names so the user can verify directly that endogenous
+    # metabolites (e.g. 'Coproporphyrin III') are being retained.
+    if kept_plain_names:
+        logger.info(
+            f"Kept plain-name endogenous features ({len(kept_plain_names)}): "
+            f"{kept_plain_names}"
+        )
 
     if n_removed > 0:
         # Separately report dropped PLAIN names (no HMDB token); these are the
@@ -353,9 +362,12 @@ def _filter_to_endogenous_features(
         # appears as a SUBSTRING of any keep-list entry (or vice versa). A hit
         # here usually means a naming/annotation difference that should be
         # reconciled (e.g. 'Cortisol' vs 'Cortisol sulfate'), not a true
-        # exogenous compound. Capped for speed.
+        # exogenous compound. Short keep-list tokens (e.g. 'INO', 'THY', 'DOC')
+        # are ignored to avoid spurious matches inside long IUPAC names. Capped
+        # for speed.
         if dropped_plain and len(endogenous_names) <= 400000:
-            endo_list = list(endogenous_names)
+            min_token_len = 6
+            endo_list = [n for n in endogenous_names if len(n) >= min_token_len]
             near_misses = []
             for col in dropped_plain[:200]:
                 cn = _normalize_name(col)
@@ -368,8 +380,8 @@ def _filter_to_endogenous_features(
             if near_misses:
                 logger.info(
                     f"Near-miss plain names (substring match to a keep-list "
-                    f"entry; likely naming difference, not exogenous): "
-                    f"{near_misses[:15]}"
+                    f"entry of length>={min_token_len}; likely naming difference, "
+                    f"not exogenous): {near_misses[:15]}"
                 )
             else:
                 logger.info(
