@@ -683,14 +683,20 @@ def _plot_fn_fp_zscore_analysis(
     PNG named ``zscore_fn_<sample_id>.png`` / ``zscore_fp_<sample_id>.png``.
     A combined CSV of the ranked features is also written.
     """
+    logger.info(f"FN/FP Z-score analysis entered: realistic_results={realistic_results is not None}, "
+                f"original_features={original_features is not None}, "
+                f"group_map={group_map is not None}")
     if realistic_results is None or original_features is None or group_map is None:
+        logger.info("FN/FP Z-score analysis skipped: a required input is None.")
         return
     per_sample = realistic_results.get('per_iteration_results', [])
+    logger.info(f"FN/FP Z-score analysis: {len(per_sample)} per-sample rows available.")
     if not per_sample:
         return
 
     use_zscore = config.get('use_zscore_analysis', True)
     if not use_zscore:
+        logger.info("FN/FP Z-score analysis skipped: use_zscore_analysis is false.")
         return
 
     gm = group_map.copy()
@@ -947,39 +953,51 @@ def _save_outputs(
     save_model = config.get('save_model', True)
     save_preds = config.get('save_predictions', True)
 
-    # Perform outlier analysis using original features (before PCA/filtering)
+    # Per-sample Z-score plots for the realistic-eval false negatives (true
+    # outliers not flagged) and false positives (true inliers flagged), using
+    # the lab-protocol role definitions. Run this first (it is the targeted,
+    # role-aware analysis) and isolate it from the legacy general outlier
+    # analysis below so a failure in one cannot suppress the other.
+    if realistic_results is not None and original_features is not None:
+        try:
+            _plot_fn_fp_zscore_analysis(
+                realistic_results=realistic_results,
+                group_map=group_map,
+                original_features=original_features,
+                reference_normal_ids=reference_normal_ids,
+                output_dir=output_dir,
+                config=config,
+            )
+        except Exception as e:
+            logger.exception(f"FN/FP Z-score analysis failed: {e}")
+
+    # Legacy general outlier analysis using original features (before PCA).
+    # This uses the standard-eval predictions (test_preds == -1), which flag
+    # the whole abnormal pool including gray groups, so it is supplementary
+    # to the role-aware FN/FP analysis above. Isolated so it cannot block
+    # later output saving.
     outlier_mask = (test_preds == -1)
     outlier_indices = list(X_test.index[outlier_mask])
     log_iqr_feature_filter = config.get('log_iqr_feature_filter', None)
     use_zscore = config.get('use_zscore_analysis', True)
 
     if len(outlier_indices) > 0 and original_features is not None:
-        if use_zscore:
-            outlier_analysis = analyze_outliers(
-                original_features, outlier_indices, n_top=20, 
-                feature_filter=log_iqr_feature_filter, use_zscore=True
-            )
-            save_outlier_analysis_results(outlier_analysis, output_dir, n_top=20, use_zscore=True)
-            plot_outlier_analysis(outlier_analysis, original_features, output_dir, n_top=20, use_zscore=True)
-        else:
-            outlier_analysis = analyze_outliers_log_iqr(
-                original_features, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter
-            )
-            save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
-            plot_outlier_log_iqr(outlier_analysis, original_features, output_dir, n_top=20)
-
-    # Per-sample Z-score plots for the realistic-eval false negatives (true
-    # outliers not flagged) and false positives (true inliers flagged), using
-    # the lab-protocol role definitions.
-    if realistic_results is not None and original_features is not None:
-        _plot_fn_fp_zscore_analysis(
-            realistic_results=realistic_results,
-            group_map=group_map,
-            original_features=original_features,
-            reference_normal_ids=reference_normal_ids,
-            output_dir=output_dir,
-            config=config,
-        )
+        try:
+            if use_zscore:
+                outlier_analysis = analyze_outliers(
+                    original_features, outlier_indices, n_top=20, 
+                    feature_filter=log_iqr_feature_filter, use_zscore=True
+                )
+                save_outlier_analysis_results(outlier_analysis, output_dir, n_top=20, use_zscore=True)
+                plot_outlier_analysis(outlier_analysis, original_features, output_dir, n_top=20, use_zscore=True)
+            else:
+                outlier_analysis = analyze_outliers_log_iqr(
+                    original_features, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter
+                )
+                save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
+                plot_outlier_log_iqr(outlier_analysis, original_features, output_dir, n_top=20)
+        except Exception as e:
+            logger.exception(f"Legacy general outlier analysis failed: {e}")
 
     if save_model:
         model.save(output_dir / "model.joblib")
