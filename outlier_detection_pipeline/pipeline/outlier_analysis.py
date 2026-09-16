@@ -212,13 +212,23 @@ def plot_outlier_analysis(
         ax.barh(features, signed_deviations, color=colors, alpha=0.7)
         ax.axvline(0, color='black', linewidth=0.8)
 
+        # Label each bar just inside its tip (between the tip and zero) so the
+        # text never extends into the y-axis compound-name labels on the left.
+        # A white semi-transparent box keeps the text legible over the bar.
+        max_abs = max((abs(s) for s in signed_deviations), default=1.0)
+        offset = 0.02 * max_abs
         for i, (f, abs_dev, s) in enumerate(zip(features, abs_deviations, signed_deviations)):
             unit = "std" if use_zscore else "log(IQR)"
             arrow = '+' if s >= 0 else '-'
-            # Place the label just past the bar tip, on the correct side.
-            x = s + (0.15 * s if s >= 0 else 0.15 * s)
-            ha = 'left' if s >= 0 else 'right'
-            ax.text(x, i, f'{s:+.2f}x {unit} ({arrow})', va='center', ha=ha, fontsize=8)
+            if s >= 0:
+                x = s - offset
+                ha = 'right'
+            else:
+                x = s + offset
+                ha = 'left'
+            ax.text(x, i, f'{s:+.2f}x {unit} ({arrow})', va='center', ha=ha,
+                    fontsize=8, bbox=dict(facecolor='white', alpha=0.7,
+                                         edgecolor='none', pad=1))
 
         ax.set_xlabel('Signed Z-score deviation (right = increased vs normal mean, left = decreased)'
                       if use_zscore else xlabel)
