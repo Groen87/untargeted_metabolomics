@@ -421,6 +421,66 @@ def _train_without_tuning(
     return model
 
 
+def _train_without_cv(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    config: Config,
+    normal_class: int,
+    reference_normals: Optional[pd.DataFrame] = None,
+) -> ExtendedIsolationForestModel:
+    """Train the model once (no inner k-fold CV).
+
+    Fits the scaler and the scorer on the training normals only, in a single
+    pass. When `reference_normals` is provided (an out-of-sample set of
+    normals the model never trained on, e.g. the held-out confident-normal
+    test slice), their raw score_samples() are stored as the honest
+    `oof_normal_scores_` reference distribution for absolute-threshold
+    calibration. When omitted, `oof_normal_scores_` is left None and the
+    realistic eval falls back to in-sample training-normal scores (with a
+    warning that this is optimistic).
+    """
+    _log_section_header("Training (single fit, no inner CV)")
+    n_estimators = config.get('n_estimators', 100)
+    max_samples = config.get('max_samples', 'auto')
+    max_features = config.get('max_features', 1.0)
+    bootstrap = config.get('bootstrap', False)
+    n_jobs = config.get('n_jobs', -1)
+    random_state = config.get('random_state', 42)
+    contamination = config.get('contamination', 'auto')
+    scorer_name = config.get('scorer', 'iforest')
+    scorer_kwargs = config.get('scorer_kwargs', None)
+
+    model = ExtendedIsolationForestModel(
+        n_estimators=n_estimators,
+        max_samples=max_samples,
+        max_features=max_features,
+        bootstrap=bootstrap,
+        n_jobs=n_jobs,
+        random_state=random_state,
+        contamination=contamination,
+        scorer_name=scorer_name,
+        scorer_kwargs=scorer_kwargs,
+    )
+
+    model.fit(X_train, y_train, normal_classification=normal_class)
+
+    n_train_normal = int((y_train == normal_class).sum())
+    logger.info(f"Model trained on {n_train_normal} normal samples (single fit, "
+                f"no inner k-fold CV).")
+
+    if reference_normals is not None and len(reference_normals) > 0:
+        model.oof_normal_scores_ = np.asarray(model.score_samples(reference_normals))
+        logger.info(f"Calibrating absolute threshold from {len(model.oof_normal_scores_)} "
+                    f"out-of-sample (held-out) normal scores.")
+    else:
+        model.oof_normal_scores_ = None
+        logger.warning("No out-of-sample reference normals provided; threshold "
+                       "calibration will fall back to in-sample training-normal "
+                       "scores, which are optimistic and tend to inflate FPR.")
+
+    return model
+
+
 def _evaluate_realistic(
     model: ExtendedIsolationForestModel,
     X_train: pd.DataFrame,
@@ -1462,8 +1522,22 @@ def run_pipeline(
     logger.info(f"Train class distribution: {y_train.value_counts().to_dict()}")
     logger.info(f"Test class distribution: {y_test.value_counts().to_dict()}")
 
-    # Step 3: Train model with cross-validation
-    _log_section_header("STEP 3: Training Extended Isolation Forest with CV")
+    # Step 3: Train the model. In the confident-normals single-run path the
+    # model is fit once on the training normals (no inner k-fold CV), and the
+    # held-out confident normals provide the out-of-sample score reference
+    # for absolute-threshold calibration. With hyperparameter tuning, the
+    # tuner's own CV still runs and produces the OOF reference.
+    if config.get('classification_scheme', 'default') == 'confident_normals':
+        heldout_normal_mask = y_test == normal_class
+        reference_normals = (X_test[heldout_normal_mask]
+                             if heldout_normal_mask.any() else None)
+        if reference_normals is not None:
+            logger.info(f"Using {len(reference_normals)} held-out normal test "
+                        f"samples as the out-of-sample threshold reference.")
+    else:
+        reference_normals = None
+
+    _log_section_header("STEP 3: Training Extended Isolation Forest")
 
     use_hyperparameter_tuning = config.get('use_hyperparameter_tuning', False)
     scorer_name = config.get('scorer', 'iforest')
@@ -1492,7 +1566,8 @@ def run_pipeline(
             n_splits=config.get('n_splits_tuning', 5),
         )
     else:
-        model = _train_without_tuning(X_train, y_train, config, normal_class)
+        model = _train_without_cv(X_train, y_train, config, normal_class,
+                                  reference_normals=reference_normals)
 
     # Step 4: Evaluation (Standard or Realistic)
     evaluation_strategy = config.get('evaluation_strategy', 'standard')
