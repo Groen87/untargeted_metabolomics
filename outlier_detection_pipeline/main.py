@@ -50,10 +50,6 @@ from outlier_detection_pipeline.pipeline.evaluation import (
 from outlier_detection_pipeline.pipeline.outlier_analysis import (
     analyze_outliers,
     plot_outlier_analysis,
-    save_outlier_analysis_results,
-    analyze_outliers_log_iqr,
-    plot_outlier_log_iqr,
-    save_outlier_log_iqr_results,
 )
 from outlier_detection_pipeline.pipeline.realistic_evaluation import (
     run_realistic_evaluation,
@@ -718,41 +714,33 @@ def _save_false_negatives_csv(
 
 
 def _plot_fn_fp_zscore_analysis(
-    realistic_results: Optional[Dict[str, Any]],
-    group_map: Optional[pd.DataFrame],
     original_features: Optional[pd.DataFrame],
-    reference_normal_ids: Optional[pd.Index],
     output_dir: Path,
     config: Config,
     n_top: int = 20,
 ) -> None:
     """Plot a Z-score deviation bar chart for each false-negative and
-    false-positive sample from the realistic evaluation.
+    false-positive sample, reading the sample ids from the already-generated
+    ``false_negative_imds.csv`` and ``false_positive_imds.csv`` files in
+    ``output_dir``.
 
-    Roles follow the lab protocol (matching the per-group breakdown):
-      - true_outlier = raw Class 1 AND Oordeel 1
-      - true_inlier  = raw Class 0 AND Oordeel 0
-      - every other combination, and NaN Oordeel, are gray and skipped.
+    The role of each sample (false_negative / false_positive) is determined
+    solely by which CSV it was listed in; the CSVs themselves are produced by
+    ``_save_false_negatives_csv`` using the lab-protocol role definitions
+    (true_outlier = Class 1 & Oordeel 1 unflagged; true_inlier = Class 0 &
+    Oordeel 0 flagged). This avoids re-deriving the roles here and guarantees
+    the plots match the CSVs exactly.
 
-    False negative  = true_outlier that was NOT flagged.
-    False positive  = true_inlier that WAS flagged.
-
-    The Z-score reference distribution is the training confident normals
-    (`reference_normal_ids` subset of `original_features`); each FN/FP sample
-    is scored as |sample - mean| / std across features, and its top-`n_top`
-    most-deviating features are plotted as a horizontal bar chart saved as a
-    PNG named ``zscore_fn_<sample_id>.png`` / ``zscore_fp_<sample_id>.png``.
-    A combined CSV of the ranked features is also written.
+    Exactly one plot is produced per unique sample_id: if a sample appears in
+    both CSVs (should not happen with the role logic, but handled defensively)
+    it is plotted once and tagged with the first role encountered (false
+    negatives take precedence). Each plot is a horizontal bar chart of the
+    top-`n_top` most-deviating features, saved as
+    ``zscore_fn_<sample_id>.png`` / ``zscore_fp_<sample_id>.png`` inside a
+    ``zscore_fn_fp`` subfolder, and a combined ranked-feature CSV is written.
     """
-    logger.info(f"FN/FP Z-score analysis entered: realistic_results={realistic_results is not None}, "
-                f"original_features={original_features is not None}, "
-                f"group_map={group_map is not None}")
-    if realistic_results is None or original_features is None or group_map is None:
-        logger.info("FN/FP Z-score analysis skipped: a required input is None.")
-        return
-    per_sample = realistic_results.get('per_iteration_results', [])
-    logger.info(f"FN/FP Z-score analysis: {len(per_sample)} per-sample rows available.")
-    if not per_sample:
+    if original_features is None or original_features.empty:
+        logger.info("FN/FP Z-score analysis skipped: original_features is empty.")
         return
 
     use_zscore = config.get('use_zscore_analysis', True)
@@ -760,47 +748,62 @@ def _plot_fn_fp_zscore_analysis(
         logger.info("FN/FP Z-score analysis skipped: use_zscore_analysis is false.")
         return
 
-    gm = group_map.copy()
-    gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
-    gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
-    gm = gm.dropna(subset=['oordeel'])
-    # Normalise ids to strings on both sides so an int index (group_map) and a
-    # str sample_id (per-sample rows, which round-trip through dict keys) still
-    # match. Without this a dtype mismatch silently yields zero matches.
-    true_outlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
-    true_inlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist()}
+    # Read the generated FN/FP CSVs. The sample_id column is normalised to a
+    # string so a dtype mismatch with the original_features index (which may
+    # be int) does not silently drop every match.
+    fn_csv = output_dir / "false_negative_imds.csv"
+    fp_csv = output_dir / "false_positive_imds.csv"
+    fn_ids: List[Any] = []
+    fp_ids: List[Any] = []
+    if fn_csv.exists():
+        try:
+            fn_df = pd.read_csv(fn_csv)
+            if 'sample_id' in fn_df.columns:
+                fn_ids = fn_df['sample_id'].astype(str).tolist()
+        except Exception as e:
+            logger.warning(f"Could not read {fn_csv}: {e}")
+    if fp_csv.exists():
+        try:
+            fp_df = pd.read_csv(fp_csv)
+            if 'sample_id' in fp_df.columns:
+                fp_ids = fp_df['sample_id'].astype(str).tolist()
+        except Exception as e:
+            logger.warning(f"Could not read {fp_csv}: {e}")
 
-    sample_ids_in_per = [str(r.get('sample_id')) for r in per_sample]
-    matched_outlier = sum(1 for sid in sample_ids_in_per if sid in true_outlier_ids)
-    matched_inlier = sum(1 for sid in sample_ids_in_per if sid in true_inlier_ids)
-    logger.info(f"FN/FP Z-score: {len(per_sample)} per-sample rows; "
-                f"group_map has {len(true_outlier_ids)} true_outlier / "
-                f"{len(true_inlier_ids)} true_inlier ids; "
-                f"{matched_outlier} per-sample rows matched a true_outlier id, "
-                f"{matched_inlier} matched a true_inlier id. "
-                f"per-sample sample_id sample={sample_ids_in_per[:3]} "
-                f"(type={type(sample_ids_in_per[0]).__name__ if sample_ids_in_per else 'n/a'}); "
-                f"group_map index sample={[str(i) for i in list(group_map.index[:3])]} "
-                f"(type={type(group_map.index[0]).__name__ if len(group_map.index) else 'n/a'}).")
+    logger.info(f"FN/FP Z-score analysis: read {len(fn_ids)} false-negative and "
+                f"{len(fp_ids)} false-positive sample id(s) from CSVs in {output_dir}.")
 
-    fn_ids = [r.get('sample_id') for r in per_sample
-              if str(r.get('sample_id')) in true_outlier_ids and int(r.get('flagged', 0)) == 0]
-    fp_ids = [r.get('sample_id') for r in per_sample
-              if str(r.get('sample_id')) in true_inlier_ids and int(r.get('flagged', 0)) == 1]
+    # Deduplicate while preserving role precedence (fn before fp). Each
+    # sample_id is plotted exactly once.
+    role_by_id: Dict[str, str] = {}
+    ordered_ids: List[str] = []
+    for sid in fn_ids:
+        if sid not in role_by_id:
+            role_by_id[sid] = 'fn'
+            ordered_ids.append(sid)
+    for sid in fp_ids:
+        if sid not in role_by_id:
+            role_by_id[sid] = 'fp'
+            ordered_ids.append(sid)
 
-    if not fn_ids and not fp_ids:
-        logger.info("No false-negative or false-positive samples (clean roles) "
+    if not ordered_ids:
+        logger.info("No false-negative or false-positive samples in the CSVs "
                     "to plot Z-scores for.")
         return
 
-    if reference_normal_ids is None or len(reference_normal_ids) == 0:
-        logger.warning("No reference normal samples available for Z-score "
-                       "analysis; skipping FN/FP Z-score plots.")
-        return
-    reference_features = original_features.reindex(reference_normal_ids).dropna(how='all')
-    if reference_features.empty:
-        logger.warning("Reference normal features empty after alignment; "
-                       "skipping FN/FP Z-score plots.")
+    # Map the (string-normalised) CSV sample ids back to the actual
+    # original_features index values so analyze_outliers' `idx in index`
+    # lookup succeeds regardless of index dtype.
+    of_index_by_str = {str(i): i for i in original_features.index}
+    resolved_ids = [of_index_by_str[sid] for sid in ordered_ids if sid in of_index_by_str]
+    missing = [sid for sid in ordered_ids if sid not in of_index_by_str]
+    if missing:
+        logger.warning(f"{len(missing)} sample id(s) from the FN/FP CSVs not "
+                       f"found in original_features index (e.g. {missing[:3]}); "
+                       f"they will be skipped in the Z-score analysis.")
+    if not resolved_ids:
+        logger.warning("No FN/FP sample ids matched the original_features "
+                       "index; skipping Z-score plots.")
         return
 
     zscore_dir = output_dir / "zscore_fn_fp"
@@ -814,45 +817,37 @@ def _plot_fn_fp_zscore_analysis(
         logger.warning("matplotlib not available; FN/FP Z-score PNG plots will "
                        "be skipped, but the ranked-feature CSV is still written.")
 
-    # Map the (string-normalised) per-sample ids back to the actual
-    # original_features index values so analyze_outliers' `idx in index`
-    # lookup succeeds regardless of index dtype.
-    of_index_by_str = {str(i): i for i in original_features.index}
+    analysis = analyze_outliers(original_features, resolved_ids, n_top=n_top, use_zscore=True)
+    if analysis:
+        plot_outlier_analysis(analysis, original_features, zscore_dir, n_top=n_top, use_zscore=True)
+        # plot_outlier_analysis writes 'zscore_outlier_<id>.png'; rename to the
+        # fn/fp role so the two kinds are distinguishable.
+        for sid in analysis.keys():
+            role = role_by_id.get(str(sid))
+            if role is None:
+                continue
+            src = zscore_dir / f"zscore_outlier_{sid}.png"
+            if src.exists():
+                dst = zscore_dir / f"zscore_{role}_{sid}.png"
+                src.replace(dst)
 
     all_rows = []
-    for kind, ids in (('fn', fn_ids), ('fp', fp_ids)):
-        if not ids:
+    for sid, a in analysis.items():
+        role = role_by_id.get(str(sid))
+        if role is None:
             continue
-        resolved_ids = [of_index_by_str[str(sid)] for sid in ids if str(sid) in of_index_by_str]
-        missing = [sid for sid in ids if str(sid) not in of_index_by_str]
-        if missing:
-            logger.warning(f"{len(missing)} {kind} sample id(s) not found in "
-                           f"original_features index (e.g. {missing[:3]}); they "
-                           f"will be skipped in the Z-score analysis.")
-        if not resolved_ids:
-            continue
-        analysis = analyze_outliers(original_features, resolved_ids, n_top=n_top, use_zscore=True)
-        if analysis:
-            plot_outlier_analysis(analysis, original_features, zscore_dir, n_top=n_top, use_zscore=True)
-            # plot_outlier_analysis writes 'zscore_outlier_<id>.png'; rename to
-            # the fn/fp role so the two kinds are distinguishable.
-            for sid in analysis.keys():
-                src = zscore_dir / f"zscore_outlier_{sid}.png"
-                if src.exists():
-                    dst = zscore_dir / f"zscore_{kind}_{sid}.png"
-                    src.replace(dst)
-        for sid, a in analysis.items():
-            for rank, (feat, wdev, adev) in enumerate(a.get('top_features', [])[:n_top], 1):
-                all_rows.append({
-                    'sample_id': sid, 'role': kind, 'rank': rank,
-                    'feature': feat, 'weighted_zscore': wdev, 'abs_zscore': adev,
-                })
+        for rank, (feat, wdev, adev) in enumerate(a.get('top_features', [])[:n_top], 1):
+            all_rows.append({
+                'sample_id': sid, 'role': role, 'rank': rank,
+                'feature': feat, 'weighted_zscore': wdev, 'abs_zscore': adev,
+            })
 
     if all_rows:
         pd.DataFrame(all_rows).to_csv(zscore_dir / "zscore_fn_fp_analysis.csv", index=False)
-    logger.info(f"FN/FP Z-score analysis: {len(fn_ids)} false-negative, "
-                f"{len(fp_ids)} false-positive sample(s); wrote {len(all_rows)} "
-                f"ranked-feature rows and any available plots to {zscore_dir}")
+    logger.info(f"FN/FP Z-score analysis: plotted {len(analysis)} unique sample(s) "
+                f"({len(fn_ids)} false-negative, {len(fp_ids)} false-positive in "
+                f"CSVs); wrote {len(all_rows)} ranked-feature rows and any "
+                f"available plots to {zscore_dir}")
 
 
 def _per_group_breakdown(
@@ -1014,52 +1009,6 @@ def _save_outputs(
     save_model = config.get('save_model', True)
     save_preds = config.get('save_predictions', True)
 
-    # Per-sample Z-score plots for the realistic-eval false negatives (true
-    # outliers not flagged) and false positives (true inliers flagged), using
-    # the lab-protocol role definitions. Run this first (it is the targeted,
-    # role-aware analysis) and isolate it from the legacy general outlier
-    # analysis below so a failure in one cannot suppress the other.
-    if realistic_results is not None and original_features is not None:
-        try:
-            _plot_fn_fp_zscore_analysis(
-                realistic_results=realistic_results,
-                group_map=group_map,
-                original_features=original_features,
-                reference_normal_ids=reference_normal_ids,
-                output_dir=output_dir,
-                config=config,
-            )
-        except Exception as e:
-            logger.exception(f"FN/FP Z-score analysis failed: {e}")
-
-    # Legacy general outlier analysis using original features (before PCA).
-    # This uses the standard-eval predictions (test_preds == -1), which flag
-    # the whole abnormal pool including gray groups, so it is supplementary
-    # to the role-aware FN/FP analysis above. Isolated so it cannot block
-    # later output saving.
-    outlier_mask = (test_preds == -1)
-    outlier_indices = list(X_test.index[outlier_mask])
-    log_iqr_feature_filter = config.get('log_iqr_feature_filter', None)
-    use_zscore = config.get('use_zscore_analysis', True)
-
-    if len(outlier_indices) > 0 and original_features is not None:
-        try:
-            if use_zscore:
-                outlier_analysis = analyze_outliers(
-                    original_features, outlier_indices, n_top=20, 
-                    feature_filter=log_iqr_feature_filter, use_zscore=True
-                )
-                save_outlier_analysis_results(outlier_analysis, output_dir, n_top=20, use_zscore=True)
-                plot_outlier_analysis(outlier_analysis, original_features, output_dir, n_top=20, use_zscore=True)
-            else:
-                outlier_analysis = analyze_outliers_log_iqr(
-                    original_features, outlier_indices, n_top=20, feature_filter=log_iqr_feature_filter
-                )
-                save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
-                plot_outlier_log_iqr(outlier_analysis, original_features, output_dir, n_top=20)
-        except Exception as e:
-            logger.exception(f"Legacy general outlier analysis failed: {e}")
-
     if save_model:
         model.save(output_dir / "model.joblib")
 
@@ -1109,9 +1058,20 @@ def _save_outputs(
         if realistic_results is not None:
             plot_realistic_results(realistic_results, output_dir)
 
-    # Save the sample ids of IMD samples flagged false negative (true_label=1, not flagged)
-    # so they can be inspected manually.
+    # Save the false-negative and false-positive IMD CSVs first (these use the
+    # lab-protocol role definitions), then generate the per-sample Z-score
+    # plots by reading those CSVs so the plots always match the saved files.
     _save_false_negatives_csv(realistic_results, output_dir, fold=None, group_map=group_map)
+
+    if original_features is not None:
+        try:
+            _plot_fn_fp_zscore_analysis(
+                original_features=original_features,
+                output_dir=output_dir,
+                config=config,
+            )
+        except Exception as e:
+            logger.exception(f"FN/FP Z-score analysis failed: {e}")
 
     return {
         'test_metrics': test_metrics,
