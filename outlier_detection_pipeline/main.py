@@ -887,8 +887,32 @@ def _run_outer_cv(
     """
     _log_section_header(f"OUTER CROSS-VALIDATION ({n_folds} folds)")
 
+    # Confident-normals split: the CV folds are built over the CONFIDENT
+    # NORMALS only (binary label 0). Each fold holds out 1/k of normals as the
+    # FPR-measuring test normals, while ALL abnormals (binary label 1) go into
+    # the test set of EVERY fold. The model only ever fits on normals (y==0),
+    # so abnormals are never trained on, and no abnormal sample is wasted in a
+    # train split. This matches the lab protocol: train on confident normals,
+    # test on all abnormals + a held-out normal slice. It also corrects for the
+    # artificially enriched test set by scoring every abnormal in every fold
+    # while the realistic eval reports mixed metrics analytically at the
+    # (low) deployment prevalence, decoupled from the enriched test-set ratio.
+    scheme = config.get('classification_scheme', 'default')
+    confident_normals_mode = (scheme == 'confident_normals')
     y_binary = (classification != normal_class).astype(int).values
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_seed)
+
+    if confident_normals_mode:
+        normal_idx = np.where(y_binary == 0)[0]
+        abnormal_idx = np.where(y_binary == 1)[0]
+        logger.info(f"confident_normals split: {len(normal_idx)} confident normals "
+                    f"split into {n_folds} folds (held-out per fold for FPR); "
+                    f"{len(abnormal_idx)} abnormals scored in EVERY fold (never trained).")
+        folds = list(StratifiedKFold(n_splits=n_folds, shuffle=True,
+                                    random_state=random_seed).split(normal_idx,
+                                                                    y_binary[normal_idx]))
+    else:
+        folds = list(StratifiedKFold(n_splits=n_folds, shuffle=True,
+                                     random_state=random_seed).split(features, y_binary))
 
     fold_results = []
     all_per_sample = []
@@ -896,7 +920,14 @@ def _run_outer_cv(
     metrics_keys = ['detection_rate', 'false_positive_rate', 'roc_auc',
                    'precision', 'f1', 'accuracy', 'anomaly_threshold']
 
-    for fold_num, (train_idx, test_idx) in enumerate(skf.split(features, y_binary)):
+    for fold_num, fold_split in enumerate(folds):
+        if confident_normals_mode:
+            normal_train_pos, normal_test_pos = fold_split
+            train_idx = normal_idx[normal_train_pos]
+            # Test = held-out normals + ALL abnormals (every fold).
+            test_idx = np.concatenate([normal_idx[normal_test_pos], abnormal_idx])
+        else:
+            train_idx, test_idx = fold_split
         _log_section_header(f"OUTER FOLD {fold_num + 1}/{n_folds}")
 
         X_train = features.iloc[train_idx].copy()
@@ -1042,8 +1073,12 @@ def _run_outer_cv(
                      and np.isnan(fr.get('anomaly_threshold')))
         ]
         pooled_threshold = float(np.mean(per_fold_thresholds)) if per_fold_thresholds else float('nan')
+        # Dedupe so each sample counts once: in confident_normals mode an
+        # abnormal is scored in every fold, so keep one record per sample_id
+        # (the latest fold) to avoid double-counting in the pooled breakdown.
+        deduped = {r.get('sample_id'): r for r in all_per_sample}
         _per_group_breakdown(
-            per_sample_results=all_per_sample,
+            per_sample_results=list(deduped.values()),
             anomaly_threshold=pooled_threshold,
             group_map=group_map,
             target_contamination=config.get('realistic_test_contamination', 0.02),
@@ -1339,18 +1374,43 @@ def run_pipeline(
             group_map=group_map,
         )
 
-    splits = split_data(
-        features=features,
-        classification=classification,
-        normal_classification=normal_class,
-        outlier_classifications=outlier_classes,
-        train_ratio=train_ratio,
-        test_ratio=test_ratio,
-        random_seed=random_seed,
-    )
-
-    X_train, y_train = splits['train']
-    X_test, y_test = splits['test']
+    if config.get('classification_scheme', 'default') == 'confident_normals':
+        # Confident-normals single-run split: train on (1-test_ratio) of the
+        # confident normals; test on the held-out normal slice + ALL abnormals
+        # (so every abnormal is scored, none wasted in a train split). The
+        # model only fits on normals; the artificially enriched test set is
+        # handled by the realistic eval reporting at the deployment prevalence.
+        y_bin = (classification != normal_class).astype(int)
+        normal_ids = classification.index[y_bin.values == 0]
+        abnormal_ids = classification.index[y_bin.values == 1]
+        from sklearn.model_selection import train_test_split
+        train_normal_ids, test_normal_ids = train_test_split(
+            pd.Series(range(len(normal_ids)), index=normal_ids),
+            train_size=train_ratio, test_size=test_ratio,
+            random_state=random_seed,
+        )
+        train_idx = normal_ids[train_normal_ids.index]
+        test_idx = normal_ids[test_normal_ids.index].append(abnormal_ids)
+        X_train = features.loc[train_idx].copy()
+        y_train = classification.loc[train_idx].copy()
+        X_test = features.loc[test_idx].copy()
+        y_test = classification.loc[test_idx].copy()
+        logger.info("confident_normals single-run split: train on "
+                    f"{len(train_idx)} confident normals; test on "
+                    f"{len(test_normal_ids)} held-out normals + "
+                    f"{len(abnormal_ids)} abnormals.")
+    else:
+        splits = split_data(
+            features=features,
+            classification=classification,
+            normal_classification=normal_class,
+            outlier_classifications=outlier_classes,
+            train_ratio=train_ratio,
+            test_ratio=test_ratio,
+            random_seed=random_seed,
+        )
+        X_train, y_train = splits['train']
+        X_test, y_test = splits['test']
 
     # Step 1.5: Optional PCA for dimensionality reduction
     X_train, X_test, y_train, y_test, pca = _apply_pca(
