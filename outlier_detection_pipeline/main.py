@@ -666,6 +666,7 @@ def _save_false_negatives_csv(
 
     fn_rows = []
     fp_rows = []
+    gray_rows = []
     for r in per_sample:
         sid = r.get('sample_id')
         sid_s = str(sid)
@@ -685,6 +686,13 @@ def _save_false_negatives_csv(
             elif sid_s in true_inlier_ids and flagged == 1:
                 row['role'] = 'false_positive'
                 fp_rows.append(row)
+            elif flagged == 1:
+                # Neither a true outlier (1,1) nor a true inlier (0,0) but
+                # flagged by the model: a gray_investigation sample the model
+                # scored as an outlier. (True inliers that were flagged are
+                # already handled above, so this is genuinely the gray pool.)
+                row['role'] = 'gray_flagged'
+                gray_rows.append(row)
         else:
             # Binary-label fallback (no group metadata): true_label == 1 is
             # the abnormal pool; an unflagged one is a false negative.
@@ -711,6 +719,16 @@ def _save_false_negatives_csv(
         fp_df.to_csv(output_dir / f"false_positive_imds{suffix}.csv", index=False)
         logger.info(f"Saved {len(fp_df)} false-positive sample(s) to "
                     f"{output_dir / f'false_positive_imds{suffix}.csv'}")
+
+    if gray_rows:
+        gray_df = pd.DataFrame(gray_rows)
+        if 'sample_id' in gray_df.columns:
+            gray_df = gray_df.sort_values('sample_id')
+        gray_df.to_csv(output_dir / f"gray_flagged_imds{suffix}.csv", index=False)
+        logger.info(f"Saved {len(gray_df)} gray-investigation sample(s) flagged as "
+                    f"outliers to {output_dir / f'gray_flagged_imds{suffix}.csv'}")
+    elif use_roles:
+        logger.info("No gray-investigation samples flagged as outliers.")
 
 
 def _apply_univariate_guardrail(
@@ -833,24 +851,27 @@ def _plot_fn_fp_zscore_analysis(
     config: Config,
     n_top: int = 20,
 ) -> None:
-    """Plot a Z-score deviation bar chart for each false-negative and
-    false-positive sample, reading the sample ids from the already-generated
-    ``false_negative_imds.csv`` and ``false_positive_imds.csv`` files in
+    """Plot a Z-score deviation bar chart for each false-negative,
+    false-positive, and gray-investigation-flagged sample, reading the sample
+    ids from the already-generated ``false_negative_imds.csv``,
+    ``false_positive_imds.csv``, and ``gray_flagged_imds.csv`` files in
     ``output_dir``.
 
-    The role of each sample (false_negative / false_positive) is determined
-    solely by which CSV it was listed in; the CSVs themselves are produced by
-    ``_save_false_negatives_csv`` using the lab-protocol role definitions
-    (true_outlier = Class 1 & Oordeel 1 unflagged; true_inlier = Class 0 &
-    Oordeel 0 flagged). This avoids re-deriving the roles here and guarantees
-    the plots match the CSVs exactly.
+    The role of each sample (false_negative / false_positive / gray) is
+    determined solely by which CSV it was listed in; the CSVs themselves are
+    produced by ``_save_false_negatives_csv`` using the lab-protocol role
+    definitions (true_outlier = Class 1 & Oordeel 1 unflagged; true_inlier =
+    Class 0 & Oordeel 0 flagged; gray = every other combination flagged as an
+    outlier). This avoids re-deriving the roles here and guarantees the plots
+    match the CSVs exactly.
 
     Exactly one plot is produced per unique sample_id: if a sample appears in
-    both CSVs (should not happen with the role logic, but handled defensively)
-    it is plotted once and tagged with the first role encountered (false
-    negatives take precedence). Each plot is a horizontal bar chart of the
-    top-`n_top` most-deviating features, saved as
-    ``zscore_fn_<sample_id>.png`` / ``zscore_fp_<sample_id>.png`` inside a
+    multiple CSVs (should not happen with the role logic, but handled
+    defensively) it is plotted once and tagged with the first role
+    encountered (precedence: false negatives, then false positives, then
+    gray). Each plot is a horizontal bar chart of the top-`n_top` most-
+    deviating features, saved as ``zscore_fn_<sample_id>.png`` /
+    ``zscore_fp_<sample_id>.png`` / ``zscore_gray_<sample_id>.png`` inside a
     ``zscore_fn_fp`` subfolder, and a combined ranked-feature CSV is written.
     """
     if original_features is None or original_features.empty:
@@ -867,8 +888,10 @@ def _plot_fn_fp_zscore_analysis(
     # be int) does not silently drop every match.
     fn_csv = output_dir / "false_negative_imds.csv"
     fp_csv = output_dir / "false_positive_imds.csv"
+    gray_csv = output_dir / "gray_flagged_imds.csv"
     fn_ids: List[Any] = []
     fp_ids: List[Any] = []
+    gray_ids: List[Any] = []
     if fn_csv.exists():
         try:
             fn_df = pd.read_csv(fn_csv)
@@ -883,12 +906,20 @@ def _plot_fn_fp_zscore_analysis(
                 fp_ids = fp_df['sample_id'].astype(str).tolist()
         except Exception as e:
             logger.warning(f"Could not read {fp_csv}: {e}")
+    if gray_csv.exists():
+        try:
+            gray_df = pd.read_csv(gray_csv)
+            if 'sample_id' in gray_df.columns:
+                gray_ids = gray_df['sample_id'].astype(str).tolist()
+        except Exception as e:
+            logger.warning(f"Could not read {gray_csv}: {e}")
 
-    logger.info(f"FN/FP Z-score analysis: read {len(fn_ids)} false-negative and "
-                f"{len(fp_ids)} false-positive sample id(s) from CSVs in {output_dir}.")
+    logger.info(f"FN/FP Z-score analysis: read {len(fn_ids)} false-negative, "
+                f"{len(fp_ids)} false-positive, and {len(gray_ids)} gray-flagged "
+                f"sample id(s) from CSVs in {output_dir}.")
 
-    # Deduplicate while preserving role precedence (fn before fp). Each
-    # sample_id is plotted exactly once.
+    # Deduplicate while preserving role precedence (fn, then fp, then gray).
+    # Each sample_id is plotted exactly once.
     role_by_id: Dict[str, str] = {}
     ordered_ids: List[str] = []
     for sid in fn_ids:
@@ -899,10 +930,14 @@ def _plot_fn_fp_zscore_analysis(
         if sid not in role_by_id:
             role_by_id[sid] = 'fp'
             ordered_ids.append(sid)
+    for sid in gray_ids:
+        if sid not in role_by_id:
+            role_by_id[sid] = 'gray'
+            ordered_ids.append(sid)
 
     if not ordered_ids:
-        logger.info("No false-negative or false-positive samples in the CSVs "
-                    "to plot Z-scores for.")
+        logger.info("No false-negative, false-positive, or gray-flagged "
+                    "samples in the CSVs to plot Z-scores for.")
         return
 
     # Map the (string-normalised) CSV sample ids back to the actual
@@ -964,9 +999,9 @@ def _plot_fn_fp_zscore_analysis(
     if all_rows:
         pd.DataFrame(all_rows).to_csv(zscore_dir / "zscore_fn_fp_analysis.csv", index=False)
     logger.info(f"FN/FP Z-score analysis: plotted {len(analysis)} unique sample(s) "
-                f"({len(fn_ids)} false-negative, {len(fp_ids)} false-positive in "
-                f"CSVs); wrote {len(all_rows)} ranked-feature rows and any "
-                f"available plots to {zscore_dir}")
+                f"({len(fn_ids)} false-negative, {len(fp_ids)} false-positive, "
+                f"{len(gray_ids)} gray-flagged in CSVs); wrote {len(all_rows)} "
+                f"ranked-feature rows and any available plots to {zscore_dir}")
 
 
 def _per_group_breakdown(
@@ -1491,6 +1526,7 @@ def _run_outer_cv(
         pooled_true_inlier_ids = set()
     fn_rows = []
     fp_rows = []
+    gray_rows = []
     for r in all_per_sample:
         sid_s = str(r.get('sample_id'))
         flagged = int(r.get('flagged', 0))
@@ -1501,6 +1537,9 @@ def _run_outer_cv(
             elif sid_s in pooled_true_inlier_ids and flagged == 1:
                 fp_rows.append({'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
                                 'score': r.get('score'), 'flagged': flagged, 'role': 'false_positive'})
+            elif flagged == 1:
+                gray_rows.append({'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
+                                  'score': r.get('score'), 'flagged': flagged, 'role': 'gray_flagged'})
         else:
             if r.get('true_label') == 1 and flagged == 0:
                 fn_rows.append({'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
@@ -1515,6 +1554,12 @@ def _run_outer_cv(
         fp_df.to_csv(output_dir / "false_positive_imds.csv", index=False)
         logger.info(f"Saved {len(fp_df)} pooled false-positive sample(s) "
                     f"to {output_dir / 'false_positive_imds.csv'}")
+    if gray_rows:
+        gray_df = pd.DataFrame(gray_rows).sort_values(['sample_id', 'fold'])
+        gray_df.to_csv(output_dir / "gray_flagged_imds.csv", index=False)
+        logger.info(f"Saved {len(gray_df)} pooled gray-investigation sample(s) "
+                    f"flagged as outliers to "
+                    f"{output_dir / 'gray_flagged_imds.csv'}")
 
     # Generate the per-sample Z-score plots from the pooled FN/FP CSVs above
     # (one plot per unique sample_id). Read from the CSVs so the plots always
