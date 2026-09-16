@@ -161,25 +161,36 @@ def _filter_to_endogenous_features(
     """
     Keep only feature columns that match the HMDB endogenous metabolite keep-list.
 
-    A feature column is retained if EITHER:
-      - its name contains 'HMDB' (endogenous metabolites are always kept), OR
-      - its name EXACTLY matches (case-insensitive) a name in the keep-list.
+    Feature columns in metabolomics data are commonly named either as a plain
+    metabolite name (e.g. ``Coproporphyrin III``), a bare HMDB ID
+    (``HMDB0000063``), or a compound name with an ``.HMDB########`` suffix
+    (``Cortisol.HMDB0000063``). A column is retained if ANY of the following
+    holds (all matching is case-insensitive after Unicode NFKC normalization):
+
+      - an HMDB ID (``HMDB`` followed by >=5 digits) appears in the column name
+        AND that exact ID is in the keep-list; OR
+      - the full column name exactly matches a Name/synonym in the keep-list; OR
+      - the compound-name part before an ``.HMDB########`` suffix exactly
+        matches a Name/synonym in the keep-list.
 
     Feature columns that do not match are removed. This is a positive
     keep-list: features not present in the HMDB keep-list are dropped.
 
     Args:
         features: DataFrame with feature columns
-        endogenous_names: Set of HMDB endogenous metabolite names (uppercase)
+        endogenous_names: Set of HMDB endogenous metabolite names (uppercase,
+            normalized) -- includes HMDB_ID, primary Name, and synonyms
 
     Returns:
         Filtered DataFrame containing only kept feature columns
     """
+    import re
     if not endogenous_names:
         logger.warning("No endogenous metabolite names provided. Returning all features.")
         return features
 
     original_cols = set(features.columns)
+    hmdb_re = re.compile(r'(HMDB\d{5,})', re.IGNORECASE)
 
     kept_columns = []
     removed_cols = []
@@ -187,20 +198,41 @@ def _filter_to_endogenous_features(
     n_matched_name = 0
 
     for col in features.columns:
-        col_upper = _normalize_name(col)
+        col_norm = _normalize_name(col)
+        matched = False
 
-        # Always keep HMDB features regardless of keep-list match
-        if 'HMDB' in col_upper:
-            kept_columns.append(col)
-            n_matched_hmdb += 1
+        # 1) HMDB ID anywhere in the column name (e.g. 'Cortisol.HMDB0000063',
+        #    'HMDB0000063', 'feature HMDB0000063 adduct'). Keep only if that ID
+        #    is itself in the endogenous keep-list (so a drug's HMDB ID is not
+        #    blindly kept). Try each ID found; the first match wins.
+        for m in hmdb_re.finditer(col_norm):
+            if m.group(1) in endogenous_names:
+                kept_columns.append(col)
+                n_matched_hmdb += 1
+                matched = True
+                break
+        if matched:
             continue
 
-        # Exact match (case-insensitive, Unicode-normalized) against the keep-list
-        if col_upper in endogenous_names:
+        # 2) Exact full-name match against the keep-list.
+        if col_norm in endogenous_names:
             kept_columns.append(col)
             n_matched_name += 1
-        else:
-            removed_cols.append(col)
+            continue
+
+        # 3) Compound-name part before a '.HMDB########' suffix. e.g. for
+        #    'Cortisol.HMDB0000063' where HMDB0000063 is NOT endogenous, still
+        #    match if 'Cortisol' is in the keep-list (the suffix is just an
+        #    annotation of the bare name).
+        m = hmdb_re.search(col_norm)
+        if m:
+            prefix = col_norm[:m.start()].rstrip('.').strip()
+            if prefix and prefix in endogenous_names:
+                kept_columns.append(col)
+                n_matched_name += 1
+                continue
+
+        removed_cols.append(col)
 
     filtered_features = features[kept_columns]
     n_removed = len(original_cols) - len(kept_columns)
@@ -208,7 +240,7 @@ def _filter_to_endogenous_features(
     logger.info(
         f"Filtered to endogenous metabolite features: {n_removed} features removed, "
         f"{len(kept_columns)} endogenous features retained "
-        f"({n_matched_hmdb} matched by HMDB prefix, {n_matched_name} matched by name)"
+        f"({n_matched_hmdb} matched by HMDB ID, {n_matched_name} matched by name)"
     )
 
     if n_removed > 0:
