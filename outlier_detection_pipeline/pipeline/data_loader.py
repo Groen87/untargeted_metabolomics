@@ -97,10 +97,17 @@ _GREEK_WORD_PATTERNS = [
 # Greek symbol ('PS(18:2ω6/24:1ω9)') or the spelled word.
 _LIPID_W = re.compile(r'(?<=\d)W(?=\d)', re.IGNORECASE)
 
+# Strip every non-alphanumeric character (used only as a loose fallback for
+# endogenous matching, after the exact normalized match misses). Collapses
+# hyphen/space/punctuation/quote differences such as 'Coproporphyrin III' vs
+# 'Coproporphyrin-III' -> 'COPROPORPHYRINIII'. Kept separate from
+# _normalize_name so the primary (exact) path is unchanged.
+_NON_ALNUM = re.compile(r'[^A-Z0-9]+')
+
 # Bump this when _normalize_name's output changes (e.g. Greek-letter folding
 # added in v2) so the endogenous keep-list cache is rebuilt instead of
 # reusing a keep-list normalized with the old logic.
-_NORMALIZATION_VERSION = 2
+_NORMALIZATION_VERSION = 3
 
 
 def _normalize_name(name: str) -> str:
@@ -134,6 +141,25 @@ def _normalize_name(name: str) -> str:
     # Lipid-shorthand 'W' between digits -> OMEGA (so '18:2W7' == '18:2ω7').
     s = _LIPID_W.sub('OMEGA', s)
     return s.strip().upper()
+
+
+def _normalize_loose(name: str) -> str:
+    """
+    Aggressive normalization used only as a fallback for endogenous matching.
+
+    Applies _normalize_name (NFKC + Greek folding + uppercasing) and then
+    removes every non-alphanumeric character. This collapses differences in
+    hyphenation, spacing, punctuation, and quotes that exact matching cannot
+    bridge, e.g.:
+        'Coproporphyrin III' -> 'COPROPORPHYRINIII'
+        'Coproporphyrin-III' -> 'COPROPORPHYRINIII'
+        'D-Mannoheptulose'    -> 'DMANNOHEPTULOSE'
+        'D-Manno-heptulose'   -> 'DMANNOHEPTULOSE'
+    Returns '' for names that reduce to nothing usable.
+    """
+    s = _normalize_name(name)
+    s = _NON_ALNUM.sub('', s)
+    return s
 
 logger = logging.getLogger(__name__)
 
@@ -175,25 +201,32 @@ def _get_hmdb_cache_path(endogenous_file: str) -> Path:
     return cache_dir / f"endogenous_names_{key}.pkl"
 
 
-def _load_endogenous_metabolite_names(endogenous_file: str, use_cache: bool = True) -> Set[str]:
+def _load_endogenous_metabolite_names(endogenous_file: str, use_cache: bool = True) -> Tuple[Set[str], Set[str]]:
     """
-    Load the set of endogenous metabolite names from a precomputed TSV file.
+    Load endogenous metabolite name sets from a precomputed TSV file.
 
     The TSV is produced by hmdb_drug_filter.py and contains metabolites that
     have at least one Metabolic or Disease pathway. It has the columns:
         HMDB_ID <TAB> Name <TAB> Synonyms
     where Synonyms is a '; '-separated list of alternative names.
 
-    The returned set contains the HMDB ID, the primary Name, and each synonym,
-    all normalized to uppercase. Very short names (shorter than 3 characters)
-    are skipped to avoid false-positive matches.
+    Returns two sets, both as uppercase normalized strings:
+      - exact set: the HMDB ID, the primary Name, and each synonym, normalized
+        with _normalize_name (NFKC + Greek folding). Used for exact matching.
+      - loose set: the same names further reduced with _normalize_loose
+        (all non-alphanumeric chars removed), used as a fallback for exact
+        matching so hyphenation/spacing/punctuation differences (e.g.
+        'Coproporphyrin III' vs 'Coproporphyrin-III') still match.
+
+    Very short names (shorter than 3 characters) are skipped to avoid
+    false-positive matches.
 
     Args:
         endogenous_file: Path to endogenous_metabolites.tsv
         use_cache: Whether to use cached results if available
 
     Returns:
-        Set of endogenous metabolite names (uppercase). Empty on failure.
+        Tuple of (exact_names, loose_names). Both empty on failure.
     """
     try:
         cache_path = _get_hmdb_cache_path(endogenous_file)
@@ -203,9 +236,10 @@ def _load_endogenous_metabolite_names(endogenous_file: str, use_cache: bool = Tr
             with open(cache_path, 'rb') as f:
                 cached_data = pickle.load(f)
             logger.info(f"Loaded endogenous metabolite names from cache: {cache_path}")
-            return cached_data['endogenous']
+            return cached_data['endogenous'], cached_data['endogenous_loose']
 
         endogenous_names: Set[str] = set()
+        endogenous_names_loose: Set[str] = set()
 
         endogenous_path = Path(endogenous_file)
         with open(endogenous_path, 'r', encoding='utf-8') as f:
@@ -230,45 +264,57 @@ def _load_endogenous_metabolite_names(endogenous_file: str, use_cache: bool = Tr
                 name = fields[1]
                 synonyms_str = fields[2]
 
-                hmdb_id = _normalize_name(hmdb_id)
-                name = _normalize_name(name)
-                if hmdb_id:
-                    endogenous_names.add(hmdb_id)
-                if name:
-                    endogenous_names.add(name)
+                for raw in (hmdb_id, name):
+                    if not raw:
+                        continue
+                    n_exact = _normalize_name(raw)
+                    if n_exact:
+                        endogenous_names.add(n_exact)
+                    n_loose = _normalize_loose(raw)
+                    if n_loose:
+                        endogenous_names_loose.add(n_loose)
                 if synonyms_str:
                     for syn in synonyms_str.split(';'):
-                        syn = _normalize_name(syn)
-                        if syn:
-                            endogenous_names.add(syn)
+                        if not syn:
+                            continue
+                        n_exact = _normalize_name(syn)
+                        if n_exact:
+                            endogenous_names.add(n_exact)
+                        n_loose = _normalize_loose(syn)
+                        if n_loose:
+                            endogenous_names_loose.add(n_loose)
 
-        # Drop very short names that cause false positives
+        # Drop very short names that cause false positives (on both sets).
         endogenous_names = {n for n in endogenous_names if len(n) >= 3}
+        endogenous_names_loose = {n for n in endogenous_names_loose if len(n) >= 3}
 
         # Save to cache
         if use_cache:
             with open(cache_path, 'wb') as f:
-                pickle.dump({'endogenous': endogenous_names}, f)
+                pickle.dump({'endogenous': endogenous_names,
+                            'endogenous_loose': endogenous_names_loose}, f)
             logger.info(f"Saved endogenous metabolite names cache to {cache_path}")
 
-        logger.info(f"Loaded {len(endogenous_names)} endogenous metabolite names from {endogenous_file}")
+        logger.info(f"Loaded {len(endogenous_names)} endogenous metabolite names "
+                    f"({len(endogenous_names_loose)} loose) from {endogenous_file}")
 
         if len(endogenous_names) > 0:
             sample_endogenous = list(endogenous_names)[:10]
             logger.info(f"Sample endogenous metabolite names: {sample_endogenous}{'...' if len(endogenous_names) > 10 else ''}")
 
-        return endogenous_names
+        return endogenous_names, endogenous_names_loose
 
     except Exception as e:
         logger.error(f"Failed to load endogenous metabolites file {endogenous_file}: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
-        return set()
+        return set(), set()
 
 
 def _filter_to_endogenous_features(
     features: pd.DataFrame,
     endogenous_names: set,
+    endogenous_names_loose: Optional[set] = None,
 ) -> pd.DataFrame:
     """
     Keep feature columns that match the HMDB endogenous metabolite keep-list.
@@ -284,15 +330,26 @@ def _filter_to_endogenous_features(
         not applied to them (this mirrors the unconditional HMDB retention used
         elsewhere in the pipeline, e.g. ``feature_filter: 'hmdb'``). OR
       - the full column name exactly matches a Name or synonym in the
-        keep-list.
+        keep-list (exact, after _normalize_name). OR
+      - if a loose keep-list is provided and the exact match missed, the
+        column's loose-normalized form (all non-alphanumeric chars removed)
+        exactly matches a loose-normalized keep-list entry. This catches
+        hyphenation/spacing/punctuation differences (e.g.
+        'Coproporphyrin III' == 'Coproporphyrin-III' == 'CoproporphyrinIII')
+        that exact matching cannot bridge.
 
-    Plain-name columns (no ``HMDB`` token) that do not match the keep-list are
-    removed. This is a positive keep-list for plain names only.
+    Plain-name columns (no ``HMDB`` token) that do not match either keep-list
+    are removed. This is a positive keep-list for plain names only.
 
     Args:
         features: DataFrame with feature columns
         endogenous_names: Set of HMDB endogenous metabolite names (uppercase,
-            normalized) -- includes HMDB_ID, primary Name, and synonyms
+            normalized) -- includes HMDB_ID, primary Name, and synonyms.
+            Used for exact matching.
+        endogenous_names_loose: Optional set of the same names reduced with
+            _normalize_loose (non-alphanumeric chars removed), used as a
+            fallback for exact matching. When None, only exact matching is
+            used.
 
     Returns:
         Filtered DataFrame containing only kept feature columns
@@ -307,6 +364,8 @@ def _filter_to_endogenous_features(
     removed_cols = []
     n_matched_hmdb = 0
     n_matched_name = 0
+    n_matched_loose = 0
+    matched_loose_names = []
     kept_plain_names = []
 
     for col in features.columns:
@@ -329,6 +388,19 @@ def _filter_to_endogenous_features(
             kept_plain_names.append(col)
             continue
 
+        # 3) Loose fallback: collapse all non-alphanumeric chars and match
+        #    against the loose keep-list. Catches hyphenation/spacing/
+        #    punctuation differences that exact matching misses, e.g.
+        #    'Coproporphyrin III' (feature, space) vs 'Coproporphyrin-III'
+        #    (TSV, hyphen) both reduce to 'COPROPORPHYRINIII'.
+        if endogenous_names_loose:
+            col_loose = _normalize_loose(col)
+            if col_loose and len(col_loose) >= 3 and col_loose in endogenous_names_loose:
+                kept_columns.append(col)
+                n_matched_loose += 1
+                matched_loose_names.append(col)
+                continue
+
         removed_cols.append(col)
 
     filtered_features = features[kept_columns]
@@ -338,14 +410,22 @@ def _filter_to_endogenous_features(
         f"Filtered to endogenous metabolite features: {n_removed} features removed, "
         f"{len(kept_columns)} endogenous features retained "
         f"({n_matched_hmdb} HMDB-annotated columns kept always, "
-        f"{n_matched_name} plain-name columns matched by name/synonym)"
+        f"{n_matched_name} plain-name matched exact, "
+        f"{n_matched_loose} plain-name matched loose fallback)"
     )
-    # Log the kept PLAIN names so the user can verify directly that endogenous
-    # metabolites (e.g. 'Coproporphyrin III') are being retained.
+    # Log the kept PLAIN names (exact) so the user can verify directly that
+    # endogenous metabolites are being retained.
     if kept_plain_names:
         logger.info(
-            f"Kept plain-name endogenous features ({len(kept_plain_names)}): "
+            f"Kept plain-name endogenous features (exact, {len(kept_plain_names)}): "
             f"{kept_plain_names}"
+        )
+    # Log the names recovered ONLY by the loose fallback -- these are the
+    # ones that previously dropped out due to hyphenation/spacing/punctuation.
+    if matched_loose_names:
+        logger.info(
+            f"Kept plain-name endogenous features (loose fallback, "
+            f"{len(matched_loose_names)}): {matched_loose_names}"
         )
 
     if n_removed > 0:
@@ -742,9 +822,11 @@ def load_data(
     if filter_to_endogenous and endogenous_metabolites_file:
         endogenous_path = Path(endogenous_metabolites_file)
         if endogenous_path.exists():
-            endogenous_names = _load_endogenous_metabolite_names(str(endogenous_path), use_cache=use_hmdb_cache)
+            endogenous_names, endogenous_names_loose = _load_endogenous_metabolite_names(str(endogenous_path), use_cache=use_hmdb_cache)
             if endogenous_names:
-                features = _filter_to_endogenous_features(features, endogenous_names)
+                features = _filter_to_endogenous_features(
+                    features, endogenous_names, endogenous_names_loose
+                )
             else:
                 logger.warning(f"Could not load endogenous metabolite names from {endogenous_metabolites_file}. Using all features.")
         else:
