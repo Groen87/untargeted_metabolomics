@@ -656,6 +656,99 @@ def _save_false_negatives_csv(
     logger.info(f"Saved {len(fn_df)} false-negative IMD sample(s) to {output_dir / name}")
 
 
+def _plot_fn_fp_zscore_analysis(
+    realistic_results: Optional[Dict[str, Any]],
+    group_map: Optional[pd.DataFrame],
+    original_features: Optional[pd.DataFrame],
+    reference_normal_ids: Optional[pd.Index],
+    output_dir: Path,
+    config: Config,
+    n_top: int = 20,
+) -> None:
+    """Plot a Z-score deviation bar chart for each false-negative and
+    false-positive sample from the realistic evaluation.
+
+    Roles follow the lab protocol (matching the per-group breakdown):
+      - true_outlier = raw Class 1 AND Oordeel 1
+      - true_inlier  = raw Class 0 AND Oordeel 0
+      - every other combination, and NaN Oordeel, are gray and skipped.
+
+    False negative  = true_outlier that was NOT flagged.
+    False positive  = true_inlier that WAS flagged.
+
+    The Z-score reference distribution is the training confident normals
+    (`reference_normal_ids` subset of `original_features`); each FN/FP sample
+    is scored as |sample - mean| / std across features, and its top-`n_top`
+    most-deviating features are plotted as a horizontal bar chart saved as a
+    PNG named ``zscore_fn_<sample_id>.png`` / ``zscore_fp_<sample_id>.png``.
+    A combined CSV of the ranked features is also written.
+    """
+    if realistic_results is None or original_features is None or group_map is None:
+        return
+    per_sample = realistic_results.get('per_iteration_results', [])
+    if not per_sample:
+        return
+
+    use_zscore = config.get('use_zscore_analysis', True)
+    if not use_zscore:
+        return
+
+    gm = group_map.copy()
+    gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
+    gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
+    gm = gm.dropna(subset=['oordeel'])
+    true_outlier_ids = set(gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist())
+    true_inlier_ids = set(gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist())
+
+    fn_ids = [r.get('sample_id') for r in per_sample
+              if r.get('sample_id') in true_outlier_ids and int(r.get('flagged', 0)) == 0]
+    fp_ids = [r.get('sample_id') for r in per_sample
+              if r.get('sample_id') in true_inlier_ids and int(r.get('flagged', 0)) == 1]
+
+    if not fn_ids and not fp_ids:
+        logger.info("No false-negative or false-positive samples (clean roles) "
+                    "to plot Z-scores for.")
+        return
+
+    if reference_normal_ids is None or len(reference_normal_ids) == 0:
+        logger.warning("No reference normal samples available for Z-score "
+                       "analysis; skipping FN/FP Z-score plots.")
+        return
+    reference_features = original_features.reindex(reference_normal_ids).dropna(how='all')
+    if reference_features.empty:
+        logger.warning("Reference normal features empty after alignment; "
+                       "skipping FN/FP Z-score plots.")
+        return
+
+    zscore_dir = output_dir / "zscore_fn_fp"
+    zscore_dir.mkdir(parents=True, exist_ok=True)
+
+    all_rows = []
+    for kind, ids in (('fn', fn_ids), ('fp', fp_ids)):
+        if not ids:
+            continue
+        analysis = analyze_outliers(original_features, ids, n_top=n_top, use_zscore=True)
+        plot_outlier_analysis(analysis, original_features, zscore_dir, n_top=n_top, use_zscore=True)
+        # plot_outlier_analysis writes 'zscore_outlier_<id>.png'; rename to
+        # the fn/fp role so the two kinds are distinguishable.
+        for sid in ids:
+            src = zscore_dir / f"zscore_outlier_{sid}.png"
+            if src.exists():
+                dst = zscore_dir / f"zscore_{kind}_{sid}.png"
+                src.replace(dst)
+        for sid, a in analysis.items():
+            for rank, (feat, wdev, adev) in enumerate(a.get('top_features', [])[:n_top], 1):
+                all_rows.append({
+                    'sample_id': sid, 'role': kind, 'rank': rank,
+                    'feature': feat, 'weighted_zscore': wdev, 'abs_zscore': adev,
+                })
+
+    if all_rows:
+        pd.DataFrame(all_rows).to_csv(zscore_dir / "zscore_fn_fp_analysis.csv", index=False)
+    logger.info(f"Saved Z-score plots for {len(fn_ids)} false-negative and "
+                f"{len(fp_ids)} false-positive sample(s) to {zscore_dir}")
+
+
 def _per_group_breakdown(
     per_sample_results: List[Dict[str, Any]],
     anomaly_threshold: float,
@@ -805,6 +898,8 @@ def _save_outputs(
     realistic_results: Optional[Dict[str, Any]] = None,
     pca: Optional[SparsePCAWrapper] = None,
     original_features: Optional[pd.DataFrame] = None,
+    group_map: Optional[pd.DataFrame] = None,
+    reference_normal_ids: Optional[pd.Index] = None,
 ) -> Dict[str, Any]:
     """Save all pipeline outputs."""
     _log_section_header("Saving outputs")
@@ -833,6 +928,19 @@ def _save_outputs(
             )
             save_outlier_log_iqr_results(outlier_analysis, output_dir, n_top=20)
             plot_outlier_log_iqr(outlier_analysis, original_features, output_dir, n_top=20)
+
+    # Per-sample Z-score plots for the realistic-eval false negatives (true
+    # outliers not flagged) and false positives (true inliers flagged), using
+    # the lab-protocol role definitions.
+    if realistic_results is not None and original_features is not None:
+        _plot_fn_fp_zscore_analysis(
+            realistic_results=realistic_results,
+            group_map=group_map,
+            original_features=original_features,
+            reference_normal_ids=reference_normal_ids,
+            output_dir=output_dir,
+            config=config,
+        )
 
     if save_model:
         model.save(output_dir / "model.joblib")
@@ -1598,6 +1706,8 @@ def run_pipeline(
         realistic_results=realistic_results,
         pca=pca,
         original_features=original_features,
+        group_map=group_map,
+        reference_normal_ids=y_train[y_train == normal_class].index,
     )
 
     return results
