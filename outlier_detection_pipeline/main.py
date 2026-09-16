@@ -1698,20 +1698,26 @@ def run_pipeline(
         normal_ids = classification.index[y_bin.values == 0]
         abnormal_ids = classification.index[y_bin.values == 1]
         from sklearn.model_selection import train_test_split
-        train_normal_ids, test_normal_ids = train_test_split(
-            pd.Series(range(len(normal_ids)), index=normal_ids),
+        # Split the confident normals by POSITION (not label): build a Series
+        # of positional indices 0..len-1 carrying the normal_ids as its index,
+        # split it, then select train/test normal labels via .loc on the Series'
+        # own index. Using the positional values (not the .index labels) avoids
+        # an IndexError when the sample ids are not 0..N-1 or are strings.
+        pos_series = pd.Series(np.arange(len(normal_ids)), index=normal_ids)
+        train_pos, test_pos = train_test_split(
+            pos_series,
             train_size=train_ratio, test_size=test_ratio,
             random_state=random_seed,
         )
-        train_idx = normal_ids[train_normal_ids.index]
-        test_idx = normal_ids[test_normal_ids.index].append(abnormal_ids)
+        train_idx = train_pos.index
+        test_idx = test_pos.index.append(abnormal_ids)
         X_train = features.loc[train_idx].copy()
         y_train = classification.loc[train_idx].copy()
         X_test = features.loc[test_idx].copy()
         y_test = classification.loc[test_idx].copy()
         logger.info("confident_normals single-run split: train on "
                     f"{len(train_idx)} confident normals; test on "
-                    f"{len(test_normal_ids)} held-out normals + "
+                    f"{len(test_pos)} held-out normals + "
                     f"{len(abnormal_ids)} abnormals.")
     else:
         splits = split_data(
