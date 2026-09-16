@@ -337,7 +337,7 @@ def load_data(
     exclude_metabolites: Optional[List[str]] = None,
     classification_scheme: str = "default",
     exclude_substrings: Optional[List[str]] = None,
-) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
+) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
 
@@ -361,12 +361,17 @@ def load_data(
             -> inlier (0). 'oordeel' ignores the raw Classification entirely and
             derives the label from Oordeel targeted: 0 -> inlier (0),
             1 -> outlier (1); samples with any other Oordeel value are dropped.
+            'confident_normals' is the semi-supervised strategy: training
+            inliers are ONLY the confident normals (Classification 0 AND
+            Oordeel targeted 0); every other sample is labelled outlier (1)
+            and used only for testing. No samples are dropped.
 
     Returns:
         Tuple of:
         - features: DataFrame of features (rows = samples, columns = features)
-        - classification: Series with Classification values
-        - oordeel: Series with Oordeel targeted values
+        - classification: Series with the binary label (0=inlier, 1=outlier)
+        - oordeel: Series with the raw Oordeel targeted values
+        - raw_classification: Series with the raw Classification values
     """
     logger.info(f"Loading data from {input_file}")
 
@@ -380,11 +385,30 @@ def load_data(
     logger.info(f"Columns: {list(df.columns)}")
     
     # Data cleaning: build the binary label from the raw Classification
-    # (and Oordeel targeted) columns. Two schemes are supported.
+    # (and Oordeel targeted) columns. Several schemes are supported.
     classification_col = df['Classification']
     oordeel_col = df['Oordeel targeted']
+    # Preserve the raw Classification (before any remap) so the per-group
+    # evaluation can break results down by (Class, Oordeel).
+    raw_classification = pd.Series(classification_col.values, index=df.index,
+                                   name='raw_Classification')
 
-    if classification_scheme == "oordeel":
+    if classification_scheme == "confident_normals":
+        # Semi-supervised strategy (lab protocol):
+        #   Training inliers = ONLY confident normals: Classification 0 AND
+        #     Oordeel targeted 0 (least ambiguous). Every other sample is
+        #     labelled outlier (1) and used only for testing. No samples are
+        #     dropped, so all groups (1/2/3 and Oordeel=1) appear in the test set
+        #     for the per-group breakdown.
+        oordeel_num = pd.to_numeric(pd.Series(oordeel_col), errors='coerce')
+        class_num = pd.to_numeric(pd.Series(classification_col), errors='coerce')
+        confident_normal = (class_num == 0) & (oordeel_num == 0)
+        df['Classification'] = np.where(confident_normal.values, 0, 1)
+        n_inlier = int((df['Classification'] == 0).sum())
+        n_outlier = int((df['Classification'] == 1).sum())
+        logger.info(f"confident_normals: {n_inlier} confident-normal inliers "
+                    f"(Class=0 & Oordeel=0), {n_outlier} outliers (all others).")
+    elif classification_scheme == "oordeel":
         # Derive the label straight from Oordeel targeted, ignoring the raw
         # Classification column: 0 -> inlier (0), 1 -> outlier (1). Samples with
         # any other Oordeel value are dropped.
@@ -464,6 +488,8 @@ def load_data(
     # Extract non-feature columns
     classification = df['Classification']
     oordeel = df['Oordeel targeted']
+    # Keep raw_classification aligned to the (possibly subsetted) df index.
+    raw_classification = raw_classification.reindex(df.index)
     
     # Get feature columns (all columns except non-feature columns)
     feature_cols = [col for col in df.columns if col not in non_feature_columns]
@@ -495,7 +521,7 @@ def load_data(
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
     
-    return features, classification, oordeel
+    return features, classification, oordeel, raw_classification
 
 
 def split_data(

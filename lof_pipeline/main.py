@@ -105,7 +105,7 @@ def run_pipeline(
     non_feature_cols = config.get_list('non_feature_columns', ['Oordeel targeted', 'Classification'])
     patient_id_col = config.get('patient_id_column', None)
     
-    features, classification, oordeel = load_data(
+    features, classification, oordeel, _raw_classification = load_data(
         input_file=input_file,
         non_feature_columns=non_feature_cols,
         patient_id_column=patient_id_col,

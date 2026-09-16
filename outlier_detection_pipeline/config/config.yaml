@@ -28,7 +28,12 @@ non_feature_columns:
 #                     label from Oordeel targeted: 0 -> inlier (0),
 #                     1 -> outlier (1). Samples with any other Oordeel value
 #                     are dropped.
-classification_scheme: oordeel
+#   confident_normals : Semi-supervised strategy. Training inliers = ONLY the
+#                     confident normals (Classification 0 AND Oordeel targeted
+#                     0); every other sample is labelled outlier (1) and used
+#                     only for testing. No samples are dropped, so all groups
+#                     appear in the test set for the per-group breakdown.
+classification_scheme: confident_normals
 
 # Feature filtering (optional)
 feature_filter: null  # Filter features by substring. Options: null (no filter), 'hmdb', or custom string/list

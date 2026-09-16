@@ -431,6 +431,7 @@ def _evaluate_realistic(
     output_dir: Path,
     normal_class: int,
     outlier_classes: List[int],
+    group_map: Optional[pd.DataFrame] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """Run realistic evaluation."""
     _log_section_header("Realistic Evaluation (LOO Abnormal)")
@@ -493,6 +494,17 @@ def _evaluate_realistic(
             anomaly_threshold=realistic_results.get('anomaly_threshold', float('nan')),
             output_dir=output_dir,
             fold_num=None,
+        )
+
+    # Per-group breakdown by (raw Classification, Oordeel) at deployment prevalence.
+    if group_map is not None and len(group_map) > 0:
+        _per_group_breakdown(
+            per_sample_results=realistic_results.get('per_iteration_results', []),
+            anomaly_threshold=float(realistic_results.get('anomaly_threshold', float('nan'))),
+            group_map=group_map,
+            target_contamination=realistic_contamination,
+            output_dir=output_dir,
+            label="",
         )
 
     return test_preds, test_scores, realistic_results
@@ -581,6 +593,117 @@ def _save_false_negatives_csv(
     name = "false_negative_imds.csv" if fold is None else f"false_negative_imds_fold{fold}.csv"
     fn_df.to_csv(output_dir / name, index=False)
     logger.info(f"Saved {len(fn_df)} false-negative IMD sample(s) to {output_dir / name}")
+
+
+def _per_group_breakdown(
+    per_sample_results: List[Dict[str, Any]],
+    anomaly_threshold: float,
+    group_map: pd.DataFrame,
+    target_contamination: float,
+    output_dir: Path,
+    label: str = "",
+) -> Optional[pd.DataFrame]:
+    """Score the model per (raw Classification, Oordeel targeted) group.
+
+    For each (Class, Oordeel) combination present in the test set, reports the
+    flag rate and a per-group confusion count at the deployment prevalence
+    (target_contamination), using the absolute anomaly threshold calibrated
+    on confident normals.
+
+    Ground-truth definition (lab protocol):
+      - True outlier = raw Classification 1 (IMD) OR Oordeel targeted 1
+        (abnormal profile). A flagged sample in these groups is a TP.
+      - Confident normal = raw Class 0 & Oordeel 0. Flagged here is a FP.
+      - raw Class 3 (non-IMD) flagged = FP.
+      - raw Class 2 (active investigation) = gray area: reported as its own
+        group but NOT counted in the TP/FN totals.
+
+    Args:
+        per_sample_results: rows with sample_id, true_label (binary), score, flagged
+        anomaly_threshold: the calibrated absolute score cutoff used
+        group_map: DataFrame indexed by sample_id with columns
+            'raw_classification' and 'oordeel'
+        target_contamination: assumed deployment prevalence (e.g. 0.02)
+        output_dir: where to save the per-group CSV/log
+        label: optional prefix for the saved filename
+
+    Returns:
+        DataFrame with one row per (Class, Oordeel) group, or None.
+    """
+    if not per_sample_results or group_map is None or len(group_map) == 0:
+        return None
+
+    rows = pd.DataFrame(per_sample_results)
+    if 'sample_id' not in rows.columns:
+        return None
+    rows = rows.set_index('sample_id')
+    merged = rows.join(group_map[['raw_classification', 'oordeel']], how='left')
+    merged['raw_classification'] = pd.to_numeric(merged['raw_classification'], errors='coerce')
+    merged['oordeel'] = pd.to_numeric(merged['oordeel'], errors='coerce')
+    merged['is_true_outlier'] = ((merged['raw_classification'] == 1) | (merged['oordeel'] == 1)).astype(int)
+
+    p = float(target_contamination)
+    records = []
+    for (rc, oo), grp in merged.groupby(['raw_classification', 'oordeel'], dropna=False):
+        n = len(grp)
+        n_flagged = int(grp['flagged'].sum())
+        flag_rate = (n_flagged / n) if n else float('nan')
+        is_true_outlier = int(((rc == 1) | (oo == 1)))
+        is_gray = int(rc == 2)
+        role = ('true_outlier' if is_true_outlier else
+                'gray_investigation' if is_gray else 'true_inlier')
+        records.append({
+            'raw_classification': rc,
+            'oordeel': oo,
+            'role': role,
+            'n_samples': n,
+            'n_flagged': n_flagged,
+            'flag_rate': flag_rate,
+        })
+
+    breakdown = pd.DataFrame(records).sort_values(['raw_classification', 'oordeel']).reset_index(drop=True)
+
+    # Headline metrics at deployment prevalence, excluding the gray (Class 2)
+    # group from TP/FN per the protocol.
+    non_gray = merged[merged['raw_classification'] != 2]
+    tp = int(((non_gray['flagged'] == 1) & (non_gray['is_true_outlier'] == 1)).sum())
+    fn = int(((non_gray['flagged'] == 0) & (non_gray['is_true_outlier'] == 1)).sum())
+    fp = int(((non_gray['flagged'] == 1) & (non_gray['is_true_outlier'] == 0)).sum())
+    tn = int(((non_gray['flagged'] == 0) & (non_gray['is_true_outlier'] == 0)).sum())
+    n_true_outlier = int(non_gray['is_true_outlier'].sum())
+    n_true_inlier = int((non_gray['is_true_outlier'] == 0).sum())
+    detection = (tp / n_true_outlier) if n_true_outlier else float('nan')
+    fpr = (fp / n_true_inlier) if n_true_inlier else float('nan')
+    valid = not (np.isnan(detection) or np.isnan(fpr))
+    denom = (p * detection) + ((1.0 - p) * fpr) if valid else 0.0
+    precision_deploy = float((p * detection) / denom) if denom else float('nan')
+    f1_deploy = (2 * precision_deploy * detection / (precision_deploy + detection)) if (precision_deploy + detection) else 0.0
+    accuracy_deploy = float((1 - p) * (1 - fpr) + p * detection) if valid else float('nan')
+
+    n_total = int(len(non_gray))
+    n_out_batch = max(1, int(round(p * n_total)))
+    n_in_batch = n_total - n_out_batch
+    cm = (np.array([
+        [int(round(n_in_batch * (1 - fpr))), int(round(n_in_batch * fpr))],
+        [int(round(n_out_batch * (1 - detection))), int(round(n_out_batch * detection))],
+    ]) if valid else np.array([[tn, fp], [fn, tp]]))
+
+    hdr = f"PER-GROUP BREAKDOWN ({label})" if label else "PER-GROUP BREAKDOWN"
+    _log_section_header(hdr)
+    logger.info(f"Anomaly threshold: {anomaly_threshold:.6f}  | deployment prevalence: {p:.2%}")
+    logger.info(f"{'Class':>6} {'Oordeel':>8} {'role':>20} {'n':>5} {'flagged':>8} {'flag_rate':>10}")
+    for _, r in breakdown.iterrows():
+        logger.info(f"{r['raw_classification']:>6} {r['oordeel']:>8} {r['role']:>20} "
+                    f"{r['n_samples']:>5} {r['n_flagged']:>8} {r['flag_rate']:>10.2%}")
+    logger.info(f"Headline (excl. Class 2 gray area): TP={tp} FN={fn} FP={fp} TN={tn} | "
+                f"detection={detection:.2%} FPR={fpr:.2%} "
+                f"precision@{p:.0%}={precision_deploy:.4f} f1={f1_deploy:.4f} acc={accuracy_deploy:.4f}")
+    logger.info(f"Deployment-batch confusion (n={n_total} @ {p:.2%}):\n{cm}")
+
+    fname = (f"per_group_breakdown_{label}.csv" if label else "per_group_breakdown.csv")
+    breakdown.to_csv(output_dir / fname, index=False)
+    logger.info(f"Per-group breakdown saved to {output_dir / fname}")
+    return breakdown
 
 
 def _save_outputs(
@@ -747,6 +870,7 @@ def _run_outer_cv(
     n_folds: int,
     random_seed: int,
     original_features: Optional[pd.DataFrame] = None,
+    group_map: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """
     Run k-fold outer cross-validation of the full pipeline.
@@ -820,6 +944,7 @@ def _run_outer_cv(
             test_preds, test_scores, realistic_results = _evaluate_realistic(
                 model, X_train_p, y_train_p, X_test_p, y_test_p, config,
                 fold_out_dir, normal_class, outlier_classes,
+                group_map=group_map,
             )
             fold_metrics = {k: realistic_results.get(k) for k in metrics_keys}
             fold_metrics['n_normal_test'] = realistic_results.get('n_normal_test')
@@ -907,6 +1032,25 @@ def _run_outer_cv(
         logger.info(f"Saved {len(fn_df)} pooled false-negative IMD sample(s) "
                     f"to {output_dir / 'false_negative_imds.csv'}")
 
+    # Pooled per-group breakdown across all outer-CV folds.
+    if group_map is not None and len(group_map) > 0 and all_per_sample:
+        # Pooled threshold: mean of the per-fold calibrated thresholds.
+        per_fold_thresholds = [
+            fr.get('anomaly_threshold') for fr in fold_results
+            if fr.get('anomaly_threshold') is not None
+            and not (isinstance(fr.get('anomaly_threshold'), float)
+                     and np.isnan(fr.get('anomaly_threshold')))
+        ]
+        pooled_threshold = float(np.mean(per_fold_thresholds)) if per_fold_thresholds else float('nan')
+        _per_group_breakdown(
+            per_sample_results=all_per_sample,
+            anomaly_threshold=pooled_threshold,
+            group_map=group_map,
+            target_contamination=config.get('realistic_test_contamination', 0.02),
+            output_dir=output_dir,
+            label="pooled_outer_cv",
+        )
+
     return {
         'evaluation_strategy': 'outer_cv',
         'n_folds': n_folds,
@@ -925,6 +1069,7 @@ def _run_components_sweep(
     output_dir: Path,
     random_seed: int,
     original_features: Optional[pd.DataFrame] = None,
+    group_map: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """
     Sweep n_components to map the bias-variance tradeoff between detection
@@ -986,6 +1131,7 @@ def _run_components_sweep(
             n_folds=n_folds,
             random_seed=random_seed,
             original_features=original_features,
+            group_map=group_map,
         )
 
         agg = result.get('aggregated', {})
@@ -1111,7 +1257,7 @@ def run_pipeline(
     exclude_metabolites = config.get_list('exclude_metabolites', [])
     exclude_substrings = config.get_list('exclude_substrings', [])
 
-    features, classification, oordeel = load_data(
+    features, classification, oordeel, raw_classification = load_data(
         input_file=input_file,
         non_feature_columns=non_feature_cols,
         patient_id_column=patient_id_col,
@@ -1132,6 +1278,14 @@ def run_pipeline(
     # Step 1.2: Optional feature filtering
     feature_filter = config.get('feature_filter', None)
     features = _apply_feature_filter(features, feature_filter)
+
+    # Build a sample_id -> (raw Classification, Oordeel) group map aligned to
+    # the features index, for the per-group evaluation breakdown. Feature
+    # filtering only drops columns, so the row index is unchanged.
+    group_map = pd.DataFrame({
+        'raw_classification': raw_classification.reindex(features.index),
+        'oordeel': oordeel.reindex(features.index),
+    }, index=features.index)
 
     # Step 2: Split data (stratified train-test split)
     _log_section_header("STEP 2: Splitting data (stratified train-test)")
@@ -1161,6 +1315,7 @@ def run_pipeline(
             output_dir=output_dir,
             random_seed=random_seed,
             original_features=original_features,
+            group_map=group_map,
         )
 
     if cv_outer_folds > 1:
@@ -1181,6 +1336,7 @@ def run_pipeline(
             n_folds=cv_outer_folds,
             random_seed=random_seed,
             original_features=original_features,
+            group_map=group_map,
         )
 
     splits = split_data(
@@ -1243,7 +1399,7 @@ def run_pipeline(
 
     if evaluation_strategy == 'realistic':
         test_preds, test_scores, realistic_results = _evaluate_realistic(
-            model, X_train, y_train, X_test, y_test, config, output_dir, normal_class, outlier_classes
+            model, X_train, y_train, X_test, y_test, config, output_dir, normal_class, outlier_classes, group_map=group_map
         )
     else:
         test_preds, test_scores, test_metrics = _evaluate_standard(
