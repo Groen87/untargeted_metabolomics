@@ -49,6 +49,7 @@ def run_realistic_evaluation(
     outlier_classes: Optional[List[int]] = None,
     X_normal_train: Optional[pd.DataFrame] = None,
     y_normal_train: Optional[pd.Series] = None,
+    group_map: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     """
     Run realistic evaluation with an absolute anomaly threshold (single pass).
@@ -171,11 +172,41 @@ def run_realistic_evaluation(
     normal_pred = (normal_scores <= anomaly_threshold).astype(int)
     abnormal_pred = (abnormal_scores <= anomaly_threshold).astype(int) if n_abnormal > 0 else np.array([], dtype=int)
 
-    # Per-sample metrics (prevalence-independent, deployment-representative).
-    n_detected = int(abnormal_pred.sum()) if n_abnormal > 0 else 0
-    detection_rate = (n_detected / n_abnormal) if n_abnormal > 0 else float('nan')
-    n_fp = int(normal_pred.sum())
-    false_positive_rate = (n_fp / n_normal) if n_normal > 0 else float('nan')
+    # Headline-metric role masks. By default every test normal counts as an
+    # inlier (TN/FP) and every test abnormal as an outlier (TP/FN). When a
+    # per-sample group_map (raw Classification + Oordeel) is provided, restrict
+    # the headline detection/FPR/precision/f1/accuracy to the lab-protocol
+    # clean groups only: true_outlier = (Class 1 AND Oordeel 1), true_inlier =
+    # (Class 0 AND Oordeel 0). Samples with NaN Oordeel and every other
+    # (Class, Oordeel) combination are gray and excluded from the headline
+    # totals (they remain in per_sample_results and the per-group breakdown).
+    normal_role_mask = np.ones(n_normal, dtype=bool)
+    abnormal_role_mask = (np.ones(n_abnormal, dtype=bool)
+                          if n_abnormal > 0 else np.zeros(0, dtype=bool))
+    if group_map is not None and len(group_map) > 0:
+        gm = group_map.copy()
+        gm['raw_classification'] = pd.to_numeric(
+            gm.get('raw_classification'), errors='coerce')
+        gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
+        gm = gm.dropna(subset=['oordeel'])
+        to_mask = gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index
+        tio_mask = gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index
+        # Outlier rows that are actually true outliers (1,1): keep in headline.
+        ab_idx = pd.Index(X_abnormal_test.index)
+        normal_idx = pd.Index(X_normal_test.index)
+        abnormal_role_mask = ab_idx.isin(to_mask) if n_abnormal > 0 else abnormal_role_mask
+        normal_role_mask = normal_idx.isin(tio_mask)
+
+    # Per-sample metrics (prevalence-independent, deployment-representative),
+    # restricted to the clean roles when a group_map is supplied.
+    n_abheadline = int(abnormal_role_mask.sum())
+    n_norheadline = int(normal_role_mask.sum())
+    ab_pred_clean = abnormal_pred[abnormal_role_mask] if n_abnormal > 0 else np.array([], dtype=int)
+    no_pred_clean = normal_pred[normal_role_mask]
+    n_detected = int(ab_pred_clean.sum())
+    detection_rate = (n_detected / n_abheadline) if n_abheadline > 0 else float('nan')
+    n_fp = int(no_pred_clean.sum())
+    false_positive_rate = (n_fp / n_norheadline) if n_norheadline > 0 else float('nan')
 
     # ROC-AUC over the scored test set (ranking quality, prevalence-independent).
     try:
@@ -194,7 +225,7 @@ def run_realistic_evaluation(
     #   precision = (p * recall) / (p * recall + (1-p) * fpr)
     # This avoids resampling a 2%-contaminated batch and is exact.
     p = target_contamination
-    if n_abnormal > 0 and n_normal > 0:
+    if n_abheadline > 0 and n_norheadline > 0:
         denom = (p * detection_rate) + ((1.0 - p) * false_positive_rate)
         precision_deploy = float((p * detection_rate) / denom) if denom > 0 else float('nan')
         recall_deploy = float(detection_rate)
@@ -244,8 +275,8 @@ def run_realistic_evaluation(
     logger.info(f"Target (deployment) contamination: {target_contamination:.2%}")
     logger.info(f"Threshold calibration source: {reference_source}")
     logger.info(f"Anomaly threshold ({100.0*target_contamination:.4g}-th pct of normal scores): {anomaly_threshold:.6f}")
-    logger.info(f"Detection rate (recall): {detection_rate:.2%}  ({n_detected}/{n_abnormal})")
-    logger.info(f"False positive rate: {false_positive_rate:.2%}  ({n_fp}/{n_normal})")
+    logger.info(f"Detection rate (recall): {detection_rate:.2%}  ({n_detected}/{n_abheadline} true-outlier)")
+    logger.info(f"False positive rate: {false_positive_rate:.2%}  ({n_fp}/{n_norheadline} true-inlier)")
     logger.info(f"ROC AUC (test ranking): {roc_auc:.4f}")
     logger.info(f"Precision @ {target_contamination:.2%} prevalence: {precision_deploy:.4f}")
     logger.info(f"F1 @ {target_contamination:.2%} prevalence: {f1_deploy:.4f}")
@@ -258,6 +289,8 @@ def run_realistic_evaluation(
         'scoring_mode': 'single_pass_absolute_threshold',
         'n_normal_test': n_normal,
         'n_abnormal_test': n_abnormal,
+        'n_true_outlier': n_abheadline,
+        'n_true_inlier': n_norheadline,
         'n_reference_normals': int(len(reference_scores)),
         'target_contamination': target_contamination,
         'anomaly_threshold': anomaly_threshold,

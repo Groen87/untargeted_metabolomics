@@ -524,6 +524,7 @@ def _evaluate_realistic(
         outlier_classes=outlier_classes,
         X_normal_train=X_train[y_train == normal_class],
         y_normal_train=y_train[y_train == normal_class],
+        group_map=group_map,
     )
 
     # Save realistic results
