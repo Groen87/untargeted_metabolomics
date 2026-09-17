@@ -70,6 +70,40 @@ filter_to_endogenous: false  # Filter features to the endogenous metabolite keep
 use_hmdb_cache: true  # Use cached HMDB data for faster subsequent runs
 endogenous_metabolites_file: null  # Path to endogenous_metabolites.tsv (output of hmdb_drug_filter.py)
 
+# FAIR-TPs drug-metabolite filter (separate, toggleable step).
+# When this list is non-empty, the pipeline queries the FAIR-TPs public API
+# (https://fairtps.lcsb.uni.lu/api/v1) to resolve each drug name to its
+# InChIKey and all transformation reactions, then drops feature columns that
+# match a drug parent or any of its transformation products (metabolites).
+# Matching is case-insensitive and uses the same name normalization as the
+# endogenous keep-list. An audit of dropped columns is written to
+# outputs/<run>/fairtps_drug_metabolites.csv. Leave empty (or null) to disable.
+# Example to drop caffeine and its metabolites:
+#   fairtps_drug_metabolites:
+#     - "Caffeine"
+fairtps_drug_metabolites: []
+
+# FAIR-TPs client tuning. All keys optional; sensible defaults apply.
+#   direction : 'both' (parent + all TPs), 'outgoing' (parent + products),
+#               or 'incoming' (parent + precursors). Default 'both'.
+#   use_cache : true (default) caches the resolved name set to a pickle so
+#               repeated runs/tests don't re-hit the network.
+#   cache_path : explicit cache file. Defaults to
+#               <output_dir>/fairtps_cache.pkl when use_cache is true.
+#   base_url, timeout, retries, retry_backoff, rate_limit : transport tuning.
+#               On a permanent API failure the filter is skipped (all features
+#               kept) and logged, so a down API never blocks the run; a prior
+#               cache (if present) is still reused.
+fairtps:
+  direction: both
+  use_cache: true
+  cache_path: null
+  base_url: "https://fairtps.lcsb.uni.lu/api/v1"
+  timeout: 30
+  retries: 3
+  retry_backoff: 1.5
+  rate_limit: 0.2
+
 # Outlier analysis
 # Univariate guardrail (deployment-time clinical safety net). A deterministic,
 # OR-combined flag that catches samples the multivariate model misses on

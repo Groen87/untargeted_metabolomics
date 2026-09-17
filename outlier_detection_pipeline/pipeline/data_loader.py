@@ -626,6 +626,143 @@ def _exclude_by_substring(
     return filtered_features
 
 
+def _exclude_fairtps_drug_metabolites(
+    features: pd.DataFrame,
+    drug_names: List[str],
+    *,
+    base_url: Optional[str] = None,
+    timeout: Optional[int] = None,
+    retries: Optional[int] = None,
+    retry_backoff: Optional[float] = None,
+    rate_limit: Optional[float] = None,
+    cache_path: Optional[str] = None,
+    direction: str = "both",
+    output_dir: Optional[Path] = None,
+) -> pd.DataFrame:
+    """
+    Drop feature columns that are drug parents or their transformation
+    products (metabolites), as resolved from the FAIR-TPs public API.
+
+    For each drug name the client resolves an InChIKey via
+    /api/v1/compounds?q=..., then lists every transformation reaction via
+    /api/v1/compounds/{inchikey}/connections. The set of compound names to drop
+    is the union of the parents' own names and the names of every connected
+    substrate/product. Matching against feature columns is case-insensitive
+    and uses the same name normalization as the endogenous keep-list, so
+    'Caffeine' / 'caffeine' / a synonym variant all match.
+
+    The fetched name set is cached on disk (see `cache_path`) keyed by the
+    drug-name list + endpoint + direction, so repeated runs and tests do not
+    re-hit the network.
+
+    Args:
+        features: DataFrame of feature columns (rows = samples).
+        drug_names: Drug names to resolve parents + transformation products
+            for. Empty list disables the filter.
+        base_url: FAIR-TPs API base URL (default uses the public endpoint).
+        timeout, retries, retry_backoff, rate_limit: client tuning; None ->
+            client defaults.
+        cache_path: Optional pickle cache file for the resolved name set.
+        direction: 'both' (parents + TPs), 'outgoing' (parents + products),
+            or 'incoming' (parents + precursors). Default 'both'.
+        output_dir: If given, write a fairtps_drug_metabolites.csv audit of
+            which feature columns were dropped and the drug parent(s) that
+            produced each.
+
+    Returns:
+        DataFrame with the drug-metabolite feature columns removed.
+    """
+    from . import fairtps_client
+
+    if not drug_names:
+        return features
+
+    kwargs: Dict[str, object] = {"direction": direction}
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    if retries is not None:
+        kwargs["retries"] = retries
+    if retry_backoff is not None:
+        kwargs["retry_backoff"] = retry_backoff
+    if rate_limit is not None:
+        kwargs["rate_limit"] = rate_limit
+    if cache_path is not None:
+        kwargs["cache_path"] = cache_path
+
+    try:
+        drop_names, provenance = fairtps_client.build_drug_name_set(
+            drug_names, **kwargs  # type: ignore[arg-type]
+        )
+    except fairtps_client.FairTPSError as e:
+        logger.error(
+            "FAIR-TPs drug-metabolite filter disabled after API failure: %s. "
+            "Keeping all features. Set fairtps_drug_metabolites.use_cache to "
+            "reuse a prior cache, or check network/API availability.", e,
+        )
+        return features
+
+    if not drop_names:
+        logger.info(
+            "FAIR-TPs drug-metabolite filter: no compounds resolved for drugs "
+            f"{drug_names}; keeping all features."
+        )
+        return features
+
+    drop_norm = {_normalize_name(n) for n in drop_names}
+    drop_norm = {n for n in drop_norm if n}
+    if not drop_norm:
+        return features
+
+    original_cols = list(features.columns)
+    dropped: List[Tuple[str, str, str]] = []
+    kept_columns: List[str] = []
+    for col in original_cols:
+        col_norm = _normalize_name(col)
+        if col_norm and col_norm in drop_norm:
+            matched = next(
+                (n for n in drop_names if _normalize_name(n) == col_norm), col
+            )
+            parents = "; ".join(
+                provenance.get(matched, provenance.get(matched.lower(), []))
+            )
+            dropped.append((col, matched, parents))
+        else:
+            kept_columns.append(col)
+
+    if not dropped:
+        logger.info(
+            f"FAIR-TPs drug-metabolite filter: resolved {len(drop_names)} "
+            f"compound names but none matched feature columns; keeping all "
+            f"{len(original_cols)} features."
+        )
+        return features
+
+    filtered_features = features[kept_columns]
+    logger.info(
+        f"FAIR-TPs drug-metabolite filter: dropped {len(dropped)} feature "
+        f"columns ({len(kept_columns)} remaining) from {len(drop_names)} "
+        f"resolved drug/TP names."
+    )
+    logger.info(f"Dropped feature columns: {[d[0] for d in dropped[:10]]}"
+                f"{'...' if len(dropped) > 10 else ''}")
+
+    if output_dir is not None:
+        try:
+            audit = pd.DataFrame(
+                dropped, columns=["feature_column", "matched_compound", "drug_parents"]
+            )
+            audit_path = Path(output_dir) / "fairtps_drug_metabolites.csv"
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            audit.to_csv(audit_path, index=False)
+            logger.info(f"FAIR-TPs audit written to {audit_path}")
+        except OSError as e:
+            logger.warning(f"FAIR-TPs audit could not be written: {e}")
+
+    return filtered_features
+
+
 def load_data(
     input_file: str,
     non_feature_columns: List[str],
@@ -636,6 +773,9 @@ def load_data(
     exclude_metabolites: Optional[List[str]] = None,
     classification_scheme: str = "default",
     exclude_substrings: Optional[List[str]] = None,
+    fairtps_drug_metabolites: Optional[List[str]] = None,
+    fairtps_config: Optional[Dict[str, object]] = None,
+    output_dir: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
@@ -664,6 +804,23 @@ def load_data(
             inliers are ONLY the confident normals (Classification 0 AND
             Oordeel targeted 0); every other sample is labelled outlier (1)
             and used only for testing. No samples are dropped.
+        fairtps_drug_metabolites: Optional list of drug names whose parents
+            AND transformation products (metabolites) should be dropped as a
+            separate feature filter. When non-empty, the FAIR-TPs public API
+            (https://fairtps.lcsb.uni.lu/api/v1) is queried to resolve each drug
+            to its InChIKey and all transformation reactions; feature columns
+            matching the drug or any of its connected compounds are removed.
+            None or empty disables the filter. See `fairtps_config` for
+            endpoint/cache tuning.
+        fairtps_config: Optional dict of FAIR-TPs client tuning keys:
+            base_url, timeout, retries, retry_backoff, rate_limit,
+            cache_path, direction ('both'|'outgoing'|'incoming'),
+            use_cache (bool). None uses client defaults. `cache_path` defaults
+            to <output_dir>/fairtps_cache.pkl when output_dir is set and
+            use_cache is not False.
+        output_dir: Output directory. Used to (1) write the
+            fairtps_drug_metabolites.csv audit of dropped feature columns, and
+            (2) default the FAIR-TPs cache location.
 
     Returns:
         Tuple of:
@@ -817,6 +974,32 @@ def load_data(
     # endogenous keep-list.
     if exclude_substrings:
         features = _exclude_by_substring(features, exclude_substrings)
+
+    # Separate FAIR-TPs drug-metabolite filter (toggleable). Drops feature
+    # columns that are drug parents or their transformation products, as
+    # resolved from the FAIR-TPs public API. Applied after the static
+    # exclude lists but before the endogenous keep-list so an explicitly
+    # requested drug/TP is removed even if it is nominally endogenous.
+    if fairtps_drug_metabolites:
+        ftps_cfg = dict(fairtps_config or {})
+        use_cache = bool(ftps_cfg.get("use_cache", True))
+        cache_path = ftps_cfg.get("cache_path")
+        if cache_path is None and use_cache and output_dir:
+            cache_path = str(Path(output_dir) / "fairtps_cache.pkl")
+        elif not use_cache:
+            cache_path = None
+        features = _exclude_fairtps_drug_metabolites(
+            features,
+            list(fairtps_drug_metabolites),
+            base_url=ftps_cfg.get("base_url"),
+            timeout=ftps_cfg.get("timeout"),
+            retries=ftps_cfg.get("retries"),
+            retry_backoff=ftps_cfg.get("retry_backoff"),
+            rate_limit=ftps_cfg.get("rate_limit"),
+            cache_path=cache_path,
+            direction=str(ftps_cfg.get("direction", "both")),
+            output_dir=Path(output_dir) if output_dir else None,
+        )
 
     # Filter to endogenous metabolite features if requested
     if filter_to_endogenous and endogenous_metabolites_file:

@@ -1834,6 +1834,18 @@ def run_pipeline(
     exclude_metabolites = config.get_list('exclude_metabolites', [])
     exclude_substrings = config.get_list('exclude_substrings', [])
 
+    # FAIR-TPs drug-metabolite filter (toggleable, off by default). When the
+    # `fairtps_drug_metabolites` list is non-empty the pipeline queries the
+    # FAIR-TPs public API to resolve each drug to its InChIKey and all
+    # transformation reactions, then drops feature columns matching the drug
+    # parent or any of its transformation products. Tuning lives under the
+    # `fairtps` config block (base_url, timeout, retries, retry_backoff,
+    # rate_limit, cache_path, direction, use_cache).
+    fairtps_drug_metabolites = config.get_list('fairtps_drug_metabolites', [])
+    fairtps_cfg = config.get('fairtps', None)
+    if fairtps_cfg is None:
+        fairtps_cfg = {}
+
     features, classification, oordeel, raw_classification = load_data(
         input_file=input_file,
         non_feature_columns=non_feature_cols,
@@ -1844,6 +1856,9 @@ def run_pipeline(
         exclude_metabolites=exclude_metabolites,
         classification_scheme=config.get('classification_scheme', 'default'),
         exclude_substrings=exclude_substrings,
+        fairtps_drug_metabolites=fairtps_drug_metabolites or None,
+        fairtps_config=fairtps_cfg or None,
+        output_dir=str(output_dir),
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)
