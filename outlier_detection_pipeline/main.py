@@ -1834,14 +1834,6 @@ def run_pipeline(
     exclude_metabolites = config.get_list('exclude_metabolites', [])
     exclude_substrings = config.get_list('exclude_substrings', [])
 
-    # Transformation-compound filter (toggleable, off by default). When
-    # `transformations_file` points at a transformations CSV (the FAIR-TPs
-    # transformations export, with `predecessor` and `successor` compound-name
-    # columns), feature columns matching any compound listed as a predecessor
-    # or successor are dropped. This covers drug parents and their
-    # transformation products.
-    transformations_file = config.get('transformations_file', None)
-
     features, classification, oordeel, raw_classification = load_data(
         input_file=input_file,
         non_feature_columns=non_feature_cols,
@@ -1852,8 +1844,6 @@ def run_pipeline(
         exclude_metabolites=exclude_metabolites,
         classification_scheme=config.get('classification_scheme', 'default'),
         exclude_substrings=exclude_substrings,
-        transformations_file=transformations_file,
-        output_dir=str(output_dir),
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)
