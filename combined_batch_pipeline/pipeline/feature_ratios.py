@@ -150,7 +150,12 @@ def add_feature_ratios(
         # Align to column index; ensure a Series named for the new row.
         ratio_series = pd.Series(ratio_log, index=out.columns, name=name)
         out = out.drop(index=[name], errors='ignore')
-        out = pd.concat([out, pd.DataFrame([ratio_series], index=[name])])
+        # Use to_frame().T (not DataFrame([series])) so duplicate sample
+        # column labels (duplicate injections) are preserved without
+        # triggering a unique-index check.
+        row = ratio_series.to_frame().T
+        row.index = [name]
+        out = pd.concat([out, row])
 
         added += 1
         logger.info(
