@@ -801,7 +801,10 @@ def _apply_univariate_guardrail(
         return {}
 
     cols = [c for _, c, _ in resolved]
-    ref = original_features.reindex(reference_normal_ids).dropna(how='all')
+    # Select by membership (not reindex) so duplicate sample IDs in the index
+    # do not raise 'cannot reindex on an axis with duplicate labels'. A sample
+    # may appear more than once; both rows are scored.
+    ref = original_features.loc[original_features.index.isin(reference_normal_ids)].dropna(how='all')
     if ref.empty:
         logger.warning("Univariate guardrail: reference normal features empty "
                        "after alignment; skipped.")
@@ -809,7 +812,7 @@ def _apply_univariate_guardrail(
     means = ref[cols].mean(axis=0)
     stds = ref[cols].std(axis=0)
 
-    test_feats = original_features.reindex(test_sample_ids).dropna(how='all')
+    test_feats = original_features.loc[original_features.index.isin(test_sample_ids)].dropna(how='all')
     if test_feats.empty:
         return {}
 
