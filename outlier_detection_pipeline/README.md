@@ -85,6 +85,24 @@ outlier_classifications:
   - 3
 ```
 
+### Transformation-Compound Filter (toggleable)
+
+A separate feature-filtering step that removes any feature matching a compound
+listed in a transformations CSV (the FAIR-TPs transformations export, with
+`predecessor` and `successor` compound-name columns). This covers drug parents
+**and** their transformation products (metabolites). It is **off by default**
+and requires no network access — set a path to enable it:
+
+```yaml
+# Drops feature columns matching any predecessor or successor in the CSV.
+# Matching is exact, case-insensitive after Unicode normalization; a loose
+# alphanumeric-only fallback also catches hyphenation/spacing differences.
+# An audit is written to <output_dir>/transformation_compounds_dropped.csv.
+transformations_file: "data/transformations.csv"
+```
+
+The CSV must contain at least `predecessor` and `successor` columns.
+
 ### Data Splitting
 
 ```yaml

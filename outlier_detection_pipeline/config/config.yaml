@@ -70,6 +70,22 @@ filter_to_endogenous: false  # Filter features to the endogenous metabolite keep
 use_hmdb_cache: true  # Use cached HMDB data for faster subsequent runs
 endogenous_metabolites_file: null  # Path to endogenous_metabolites.tsv (output of hmdb_drug_filter.py)
 
+# Transformation-compound filter (separate, toggleable step).
+# Point this at a transformations CSV (the FAIR-TPs transformations export,
+# with `predecessor` and `successor` compound-name columns). Every feature
+# column that matches a compound listed as a predecessor or successor in the
+# file is dropped from the analysis — this covers drug parents and their
+# transformation products (metabolites). Matching is exact, case-insensitive
+# after Unicode normalization (same as the endogenous keep-list); a loose
+# alphanumeric-only fallback also catches hyphenation/spacing/punctuation
+# differences such as 'Coproporphyrin III' vs 'Coproporphyrin-III'.
+# An audit of dropped columns is written to
+# <output_dir>/transformation_compounds_dropped.csv.
+# Set to null (or omit) to disable (default). No network access required.
+# Example:
+#   transformations_file: "data/transformations.csv"
+transformations_file: null
+
 # Outlier analysis
 # Univariate guardrail (deployment-time clinical safety net). A deterministic,
 # OR-combined flag that catches samples the multivariate model misses on

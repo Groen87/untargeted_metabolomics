@@ -626,6 +626,134 @@ def _exclude_by_substring(
     return filtered_features
 
 
+def _exclude_transformation_compounds(
+    features: pd.DataFrame,
+ transformations_file: str,
+    *,
+    output_dir: Optional[Path] = None,
+    loose_match: bool = True,
+) -> pd.DataFrame:
+    """
+    Drop feature columns that match a compound listed in a transformations
+    CSV (predecessors and successors of transformation reactions).
+
+    Reads a CSV with at least `predecessor` and `successor` name columns (the
+    FAIR-TPs transformations export format), collects every distinct compound
+    name from both, and removes feature columns that match any of them.
+    Matching is exact and case-insensitive after the same Unicode normalization
+    used by the endogenous keep-list, so 'Caffeine' / 'caffeine' match. With
+    `loose_match=True` (default) a second alphanumeric-only fallback pass also
+    catches hyphenation/spacing/punctuation differences such as
+    'Coproporphyrin III' vs 'Coproporphyrin-III' (the same loose normalization
+    the endogenous keep-list uses).
+
+    Args:
+        features: DataFrame of feature columns (rows = samples).
+        transformations_file: Path to the transformations CSV. Must contain
+            `predecessor` and `successor` columns.
+        output_dir: If given, write a transformation_compounds_dropped.csv
+            audit of which feature columns were dropped and the matched
+            compound name.
+        loose_match: Also apply the alphanumeric-only loose normalization
+            fallback (default True).
+
+    Returns:
+        DataFrame with the matched feature columns removed. If the file is
+        missing or unreadable, all features are kept and a warning is logged.
+    """
+    csv_path = Path(transformations_file)
+    if not csv_path.exists():
+        logger.warning(
+            f"Transformations file not found at {transformations_file}. "
+            f"Transformation-compound filter disabled; keeping all features."
+        )
+        return features
+
+    try:
+        tf = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+    except (OSError, pd.errors.ParserError, ValueError) as e:
+        logger.warning(
+            f"Could not read transformations CSV {transformations_file}: {e}. "
+            f"Keeping all features."
+        )
+        return features
+
+    missing = [c for c in ("predecessor", "successor") if c not in tf.columns]
+    if missing:
+        logger.warning(
+            f"Transformations CSV {transformations_file} is missing required "
+            f"column(s) {missing}; expected at least 'predecessor' and "
+            f"'successor'. Keeping all features."
+        )
+        return features
+
+    # Collect every distinct non-empty compound name from both columns.
+    names_raw: List[str] = []
+    for col in ("predecessor", "successor"):
+        names_raw.extend(str(v).strip() for v in tf[col].tolist() if str(v).strip())
+    if not names_raw:
+        logger.info(
+            f"Transformations CSV {transformations_file} contained no "
+            f"compound names; keeping all features."
+        )
+        return features
+
+    drop_exact = {_normalize_name(n) for n in names_raw}
+    drop_exact = {n for n in drop_exact if n}
+    drop_loose: Set[str] = set()
+    if loose_match:
+        drop_loose = {_normalize_loose(n) for n in names_raw}
+        drop_loose = {n for n in drop_loose if n}
+
+    original_cols = list(features.columns)
+    dropped: List[Tuple[str, str]] = []  # (column, matched_compound)
+    kept_columns: List[str] = []
+    for col in original_cols:
+        col_exact = _normalize_name(col)
+        col_loose = _normalize_loose(col) if loose_match else ""
+        matched = None
+        if col_exact and col_exact in drop_exact:
+            matched = next((n for n in names_raw if _normalize_name(n) == col_exact), col)
+        elif loose_match and col_loose and col_loose in drop_loose:
+            matched = next((n for n in names_raw if _normalize_loose(n) == col_loose), col)
+        if matched is not None:
+            dropped.append((col, matched))
+        else:
+            kept_columns.append(col)
+
+    if not dropped:
+        logger.info(
+            f"Transformation-compound filter: loaded {len(drop_exact)} "
+            f"distinct compound names from {transformations_file} but none "
+            f"matched feature columns; keeping all {len(original_cols)} "
+            f"features."
+        )
+        return features
+
+    filtered_features = features[kept_columns]
+    logger.info(
+        f"Transformation-compound filter: dropped {len(dropped)} feature "
+        f"columns ({len(kept_columns)} remaining) matching compounds in "
+        f"{transformations_file}."
+    )
+    logger.info(f"Dropped feature columns: {[d[0] for d in dropped[:10]]}"
+                f"{'...' if len(dropped) > 10 else ''}")
+
+    if output_dir is not None:
+        try:
+            audit = pd.DataFrame(
+                dropped, columns=["feature_column", "matched_compound"]
+            )
+            audit_path = Path(output_dir) / "transformation_compounds_dropped.csv"
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            audit.to_csv(audit_path, index=False)
+            logger.info(f"Transformation-compound audit written to {audit_path}")
+        except OSError as e:
+            logger.warning(f"Transformation-compound audit could not be written: {e}")
+
+    return filtered_features
+
+
 def load_data(
     input_file: str,
     non_feature_columns: List[str],
@@ -636,6 +764,8 @@ def load_data(
     exclude_metabolites: Optional[List[str]] = None,
     classification_scheme: str = "default",
     exclude_substrings: Optional[List[str]] = None,
+    transformations_file: Optional[str] = None,
+    output_dir: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
@@ -664,6 +794,14 @@ def load_data(
             inliers are ONLY the confident normals (Classification 0 AND
             Oordeel targeted 0); every other sample is labelled outlier (1)
             and used only for testing. No samples are dropped.
+        transformations_file: Optional path to a transformations CSV (the
+            FAIR-TPs transformations export) with `predecessor` and `successor`
+            compound-name columns. When set, feature columns matching any
+            compound in the file are dropped as a separate filter step. None
+            disables the filter.
+        output_dir: Output directory. Used to write the
+            transformation_compounds_dropped.csv audit of dropped feature
+            columns.
 
     Returns:
         Tuple of:
@@ -817,6 +955,18 @@ def load_data(
     # endogenous keep-list.
     if exclude_substrings:
         features = _exclude_by_substring(features, exclude_substrings)
+
+    # Transformation-compound filter (toggleable). Drops feature columns that
+    # match a compound listed as a predecessor or successor in a
+    # transformations CSV (e.g. the FAIR-TPs transformations export), covering
+    # drug parents and their transformation products. Applied after the static
+    # exclude lists and before the endogenous keep-list.
+    if transformations_file:
+        features = _exclude_transformation_compounds(
+            features,
+            transformations_file,
+            output_dir=Path(output_dir) if output_dir else None,
+        )
 
     # Filter to endogenous metabolite features if requested
     if filter_to_endogenous and endogenous_metabolites_file:
