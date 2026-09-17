@@ -848,6 +848,109 @@ def _apply_univariate_guardrail(
     return flags
 
 
+def _compute_combined_guardrail_metrics(
+    per_sample_results: List[Dict[str, Any]],
+    guardrail_flags: Dict[Any, List[str]],
+    group_map: Optional[pd.DataFrame],
+    target_contamination: float,
+) -> Dict[str, Any]:
+    """Recompute detection/FPR/precision/F1/accuracy/ROC-AUC for the COMBINED
+    decision (model flag OR univariate guardrail), mirroring the prevalence-
+    aware computation in realistic_evaluation.run_realistic_evaluation.
+
+    The combined flag for a test sample is 1 if the model flagged it
+    (``flagged`` in per_sample_results) OR the guardrail flagged it (its id is
+    a key in ``guardrail_flags``). Headline totals are restricted to the clean
+    lab-protocol roles (true outlier = Class 1 & Oordeel 1; true inlier =
+    Class 0 & Oordeel 0) when a group_map is supplied, exactly as the model-
+    only metrics are. Returns a dict with the same keys the sweep consumes.
+    """
+    if not per_sample_results:
+        return {}
+    gm_norm_ids = {str(i) for i in guardrail_flags.keys()} if guardrail_flags else set()
+
+    rows = []
+    for r in per_sample_results:
+        sid = r.get('sample_id')
+        model_flagged = int(r.get('flagged', 0))
+        gr_flagged = 1 if str(sid) in gm_norm_ids else 0
+        rows.append({
+            'sample_id': sid,
+            'true_label': int(r.get('true_label', 0)),
+            'score': float(r.get('score', float('nan'))),
+            'flagged': 1 if (model_flagged or gr_flagged) else 0,
+            'model_flagged': model_flagged,
+            'guardrail_flagged': gr_flagged,
+        })
+    df = pd.DataFrame(rows)
+
+    # Clean roles: true outlier = (1,1), true inlier = (0,0); gray excluded.
+    if group_map is not None and len(group_map) > 0:
+        gm = group_map.copy()
+        gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
+        gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
+        gm = gm.dropna(subset=['oordeel'])
+        to_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
+        tio_ids = {str(i) for i in gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist()}
+        df['sid_s'] = df['sample_id'].astype(str)
+        is_true_outlier = df['sid_s'].isin(to_ids)
+        is_true_inlier = df['sid_s'].isin(tio_ids)
+    else:
+        is_true_outlier = df['true_label'] == 1
+        is_true_inlier = df['true_label'] == 0
+
+    n_abheadline = int(is_true_outlier.sum())
+    n_norheadline = int(is_true_inlier.sum())
+    ab_flagged = df.loc[is_true_outlier, 'flagged'].to_numpy(dtype=int) if n_abheadline > 0 else np.array([], dtype=int)
+    no_flagged = df.loc[is_true_inlier, 'flagged'].to_numpy(dtype=int)
+    n_detected = int(ab_flagged.sum())
+    detection_rate = (n_detected / n_abheadline) if n_abheadline > 0 else float('nan')
+    n_fp = int(no_flagged.sum())
+    false_positive_rate = (n_fp / n_norheadline) if n_norheadline > 0 else float('nan')
+
+    # ROC-AUC is ranking quality of the MODEL score; the guardrail has no
+    # ranking, so the combined ROC-AUC equals the model-only ROC-AUC. We keep
+    # it for a complete combined row but note it is unchanged.
+    try:
+        ab = df.loc[df['true_label'] == 1, 'score'].to_numpy(dtype=float)
+        no = df.loc[df['true_label'] == 0, 'score'].to_numpy(dtype=float)
+        if len(ab) > 0 and len(no) > 0:
+            from sklearn.metrics import roc_auc_score
+            roc_auc = float(roc_auc_score(np.concatenate([np.zeros(len(no)), np.ones(len(ab))]),
+                                         -np.concatenate([no, ab])))
+        else:
+            roc_auc = float('nan')
+    except Exception:
+        roc_auc = float('nan')
+
+    p = target_contamination
+    if n_abheadline > 0 and n_norheadline > 0 and not np.isnan(detection_rate) and not np.isnan(false_positive_rate):
+        denom = (p * detection_rate) + ((1.0 - p) * false_positive_rate)
+        precision_deploy = float((p * detection_rate) / denom) if denom > 0 else float('nan')
+        recall_deploy = float(detection_rate)
+        f1_deploy = float(2.0 * precision_deploy * recall_deploy / (precision_deploy + recall_deploy)) \
+            if (precision_deploy + recall_deploy) > 0 else 0.0
+        accuracy_deploy = float((1.0 - p) * (1.0 - false_positive_rate) + p * detection_rate)
+    else:
+        precision_deploy = float('nan')
+        f1_deploy = float('nan')
+        accuracy_deploy = float('nan')
+
+    return {
+        'detection_rate': float(detection_rate) if not np.isnan(detection_rate) else float('nan'),
+        'false_positive_rate': float(false_positive_rate) if not np.isnan(false_positive_rate) else float('nan'),
+        'roc_auc': roc_auc,
+        'precision': precision_deploy,
+        'f1': f1_deploy,
+        'accuracy': accuracy_deploy,
+        'n_detected': n_detected,
+        'n_false_positives': n_fp,
+        'n_true_outlier': n_abheadline,
+        'n_true_inlier': n_norheadline,
+        'per_sample': df.to_dict(orient='records'),
+    }
+
+
 def _plot_fn_fp_zscore_analysis(
     original_features: Optional[pd.DataFrame],
     output_dir: Path,
@@ -1583,6 +1686,7 @@ def _run_outer_cv(
     # set (binary label 0) as the reference; every test sample (abnormals +
     # held-out normals across folds) is scored against it. Reference is
     # undefined in non-confident-normals schemes, so skip there.
+    guardrail_flags: Dict[Any, List[str]] = {}
     try:
         if confident_normals_mode and original_features is not None:
             y_bin_pooled = (classification != normal_class).astype(int)
@@ -1604,6 +1708,44 @@ def _run_outer_cv(
                             f"pooled test sample(s) on configured biomarkers.")
     except Exception as e:
         logger.exception(f"Univariate guardrail failed: {e}")
+
+    # Combined (model flag OR univariate guardrail) metrics, pooled across
+    # all outer-CV folds. A true outlier is detected if EITHER the model or
+    # the guardrail flags it (e.g. an IMD patient the model misses but the
+    # guardrail catches is counted as detected). ROC-AUC is ranking quality of
+    # the model score and is unchanged by the OR (the guardrail has no rank).
+    combined: Dict[str, Any] = {}
+    if all_per_sample:
+        # Dedupe so each sample counts once: in confident_normals mode an
+        # abnormal is scored in every fold, so keep one record per sample_id.
+        deduped = {r.get('sample_id'): r for r in all_per_sample}
+        try:
+            combined = _compute_combined_guardrail_metrics(
+                per_sample_results=list(deduped.values()),
+                guardrail_flags=guardrail_flags,
+                group_map=group_map,
+                target_contamination=float(config.get('realistic_test_contamination', 0.02)),
+            )
+            if combined:
+                _log_section_header("COMBINED (MODEL OR GUARDRAIL) POOLED RESULTS")
+                logger.info(
+                    f"Combined detection rate: {combined.get('detection_rate')}  "
+                    f"({combined.get('n_detected')}/{combined.get('n_true_outlier')} true-outlier; "
+                    f"model-only + guardrail rescues counted)")
+                logger.info(f"Combined false positive rate: {combined.get('false_positive_rate')}  "
+                            f"({combined.get('n_false_positives')}/{combined.get('n_true_inlier')} true-inlier)")
+                logger.info(f"Combined precision: {combined.get('precision')}")
+                logger.info(f"Combined F1: {combined.get('f1')}")
+                logger.info(f"Combined accuracy: {combined.get('accuracy')}")
+                logger.info(f"Combined ROC-AUC (= model-only; guardrail has no rank): {combined.get('roc_auc')}")
+                # Audit CSV: per-sample combined flags.
+                try:
+                    pd.DataFrame(combined.get('per_sample', [])).to_csv(
+                        output_dir / "combined_model_or_guardrail.csv", index=False)
+                except Exception as e2:
+                    logger.warning(f"Could not write combined audit CSV: {e2}")
+        except Exception as e3:
+            logger.exception(f"Combined guardrail metrics failed: {e3}")
 
     # Pooled per-group breakdown across all outer-CV folds.
     if group_map is not None and len(group_map) > 0 and all_per_sample:
@@ -1634,6 +1776,7 @@ def _run_outer_cv(
         'per_fold_results': fold_results,
         'aggregated': agg,
         'per_sample_results': all_per_sample,
+        'combined': combined,
     }
 
 
@@ -1715,6 +1858,7 @@ def _run_components_sweep(
         )
 
         agg = result.get('aggregated', {})
+        comb = result.get('combined', {}) or {}
         row = {
             'n_components': nc,
             'detection_rate': agg.get('detection_rate_mean', float('nan')),
@@ -1726,12 +1870,26 @@ def _run_components_sweep(
             'f1': agg.get('f1_mean', float('nan')),
             'accuracy': agg.get('accuracy_mean', float('nan')),
             'anomaly_threshold': agg.get('anomaly_threshold_mean', float('nan')),
+            # Combined (model flag OR univariate guardrail) metrics, pooled
+            # across folds. A true outlier is detected if EITHER fires; an IMD
+            # patient the model misses but the guardrail catches is counted as
+            # detected. ROC-AUC is ranking quality of the model score and is
+            # unchanged by the OR (the guardrail has no rank).
+            'combined_detection_rate': comb.get('detection_rate', float('nan')),
+            'combined_false_positive_rate': comb.get('false_positive_rate', float('nan')),
+            'combined_precision': comb.get('precision', float('nan')),
+            'combined_f1': comb.get('f1', float('nan')),
+            'combined_accuracy': comb.get('accuracy', float('nan')),
+            'combined_roc_auc': comb.get('roc_auc', float('nan')),
         }
         sweep_rows.append(row)
         logger.info(f"SWEEP POINT n_components={nc}: "
                     f"detection={row['detection_rate']:.3f}, "
                     f"FPR={row['false_positive_rate']:.3f}, "
-                    f"roc_auc={row['roc_auc']:.3f}")
+                    f"roc_auc={row['roc_auc']:.3f}; "
+                    f"combined det={row['combined_detection_rate']:.3f}, "
+                    f"combined FPR={row['combined_false_positive_rate']:.3f}, "
+                    f"combined F1={row['combined_f1']:.3f}")
 
     # Restore the original config values.
     config.set('n_components', orig_n_components)
@@ -1743,15 +1901,19 @@ def _run_components_sweep(
     sweep_df.to_csv(output_dir / "components_sweep.csv", index=False)
     logger.info(f"Components sweep table saved to {output_dir / 'components_sweep.csv'}")
 
-    _log_section_header("COMPONENTS SWEEP SUMMARY (detection vs FPR vs n_components)")
-    logger.info(f"{'n_comp':>7} {'detect':>8} {'FPR':>8} {'roc_auc':>8} {'prec':>8} {'f1':>8}")
+    _log_section_header("COMPONENTS SWEEP SUMMARY (model vs combined model+guardrail)")
+    logger.info(f"{'n_comp':>7} {'detect':>8} {'FPR':>8} {'roc':>8} {'f1':>8} "
+                f"{'comb_det':>9} {'comb_FPR':>9} {'comb_f1':>8} {'comb_roc':>8}")
     for _, r in sweep_df.iterrows():
         logger.info(f"{int(r['n_components']):>7d} "
                     f"{r['detection_rate']:>8.3f} "
                     f"{r['false_positive_rate']:>8.3f} "
                     f"{r['roc_auc']:>8.3f} "
-                    f"{r['precision']:>8.3f} "
-                    f"{r['f1']:>8.3f}")
+                    f"{r['f1']:>8.3f} "
+                    f"{r['combined_detection_rate']:>9.3f} "
+                    f"{r['combined_false_positive_rate']:>9.3f} "
+                    f"{r['combined_f1']:>8.3f} "
+                    f"{r['combined_roc_auc']:>8.3f}")
 
     # Detection-vs-FPR tradeoff plot over n_components.
     try:
@@ -1761,15 +1923,21 @@ def _run_components_sweep(
         fig, ax1 = plt.subplots(figsize=(10, 6))
         x = sweep_df['n_components'].values
         ax1.plot(x, sweep_df['detection_rate'].values, 'o-', color='tab:red',
-                 label='Detection rate (recall)')
+                 label='Detection rate (model, recall)')
         ax1.plot(x, sweep_df['false_positive_rate'].values, 's--', color='tab:blue',
-                 label='False positive rate')
+                 label='False positive rate (model)')
+        # Combined (model OR guardrail): detection can only rise, FPR can only
+        # rise, vs the model-only curves.
+        ax1.plot(x, sweep_df['combined_detection_rate'].values, 'D-', color='tab:orange',
+                 label='Detection rate (model OR guardrail)')
+        ax1.plot(x, sweep_df['combined_false_positive_rate'].values, 'x--', color='tab:purple',
+                 label='False positive rate (model OR guardrail)')
         ax1.set_xlabel('n_components')
         ax1.set_ylabel('Rate')
         ax1.set_ylim(0, 1)
         ax1.axhline(config.get('realistic_test_contamination', 0.02), color='tab:blue',
                     linestyle=':', alpha=0.5, label='Nominal contamination (2%)')
-        ax1.set_title('n_components sweep: detection rate vs FPR')
+        ax1.set_title('n_components sweep: detection rate vs FPR (model vs model+guardrail)')
         ax1.legend(loc='center right')
         ax1.grid(True, alpha=0.3)
 
