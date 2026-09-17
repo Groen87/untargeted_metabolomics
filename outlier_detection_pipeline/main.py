@@ -1744,6 +1744,37 @@ def _run_outer_cv(
                         output_dir / "combined_model_or_guardrail.csv", index=False)
                 except Exception as e2:
                     logger.warning(f"Could not write combined audit CSV: {e2}")
+
+                # True outliers missed by BOTH the model and the guardrail
+                # (the combined system's residual false negatives). These are
+                # the must-not-miss patients that slip through entirely.
+                missed = [r for r in combined.get('per_sample', [])
+                          if int(r.get('true_label', 0)) == 1
+                          and int(r.get('model_flagged', 0)) == 0
+                          and int(r.get('guardrail_flagged', 0)) == 0]
+                # When a group_map is supplied, restrict the headline count to
+                # the clean true-outlier role (Class 1 & Oordeel 1) so it is
+                # consistent with the combined detection_rate denominator.
+                if group_map is not None and len(group_map) > 0 and missed:
+                    gm = group_map.copy()
+                    gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
+                    gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
+                    gm = gm.dropna(subset=['oordeel'])
+                    to_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
+                    missed = [r for r in missed if str(r.get('sample_id')) in to_ids]
+                missed_ids = [str(r.get('sample_id')) for r in missed]
+                logger.info(f"Missed by BOTH model and guardrail: {len(missed)} "
+                            f"true-outlier sample(s){(' -> ' + str(missed_ids)) if missed_ids else ''}")
+                if missed:
+                    try:
+                        pd.DataFrame(missed)[
+                            ['sample_id', 'true_label', 'score',
+                             'model_flagged', 'guardrail_flagged', 'flagged']
+                        ].to_csv(output_dir / "missed_by_both.csv", index=False)
+                        logger.info(f"Missed-by-both list saved to "
+                                    f"{output_dir / 'missed_by_both.csv'}")
+                    except Exception as e4:
+                        logger.warning(f"Could not write missed-by-both CSV: {e4}")
         except Exception as e3:
             logger.exception(f"Combined guardrail metrics failed: {e3}")
 

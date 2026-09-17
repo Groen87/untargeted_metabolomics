@@ -70,6 +70,23 @@ def test_empty_returns_empty():
     assert _compute_combined_guardrail_metrics([], {}, None, 0.02) == {}
 
 
+def test_missed_by_both_identifiable_from_per_sample():
+    # The missed-by-both set = true_label==1, model_flagged==0, guardrail==0.
+    per_sample = _per_sample([
+        ('A1', 1, 0.05, 1),   # detected by model
+        ('A2', 1, 0.8, 0),    # model misses, guardrail catches
+        ('A3', 1, 0.7, 0),    # MISSED BY BOTH
+        ('N1', 0, 0.9, 0),
+    ])
+    guardrail = {'A2': ['rescue']}
+    m = _compute_combined_guardrail_metrics(per_sample, guardrail, None, 0.02)
+    missed = [r for r in m['per_sample']
+              if int(r['true_label']) == 1
+              and int(r['model_flagged']) == 0
+              and int(r['guardrail_flagged']) == 0]
+    assert [r['sample_id'] for r in missed] == ['A3']
+
+
 def test_group_map_restricts_headline_roles():
     # gray samples (Class/Oordeel not clean roles) excluded from headline
     idx = ['TO', 'TI', 'GRAY']
