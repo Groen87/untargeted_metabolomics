@@ -56,6 +56,7 @@ from combined_batch_pipeline.pipeline.batch_processing import (
     identify_qc_samples,
 )
 from combined_batch_pipeline.pipeline.feature_filtering import filter_features
+from combined_batch_pipeline.pipeline.feature_ratios import add_feature_ratios
 from combined_batch_pipeline.pipeline.combat_correction import run_combat_on_merged_data
 from combined_batch_pipeline.pipeline.quality_control import run_qc_analysis, log_qc_rsd_simple
 from combined_batch_pipeline.pipeline.ralps_correction import run_ralps_correction
@@ -544,6 +545,22 @@ def run_full_pipeline(
     logger.info("Applying log10 transformation...")
     corrected_data_no_qc = np.log10(corrected_data_no_qc)
     logger.info("Log10 transformation complete.")
+    
+    # Add configured metabolite ratio features (e.g. acylcarnitine ratios)
+    # on the log10 scale, BEFORE robust scaling. Ratios are computed on the
+    # raw concentration scale (the log values are exponentiated back) so that
+    # sums in the numerator/denominator are correct, then re-log10-transformed
+    # so the new features sit in the same space as the others and are scaled
+    # together with them. See pipeline/feature_ratios.py and config
+    # `feature_ratios`.
+    ratio_specs = config.get('feature_ratios', [])
+    if ratio_specs:
+        logger.info(f"\n{'='*70}")
+        logger.info("STEP 3.6: Adding metabolite ratio features")
+        logger.info(f"{'='*70}")
+        corrected_data_no_qc = add_feature_ratios(corrected_data_no_qc, ratio_specs)
+    else:
+        logger.info("No feature_ratios configured; skipping ratio feature step.")
     
     # Apply RobustScaler (less sensitive to outliers) per feature
     logger.info("Applying RobustScaler (scaling per feature, robust to outliers)...")

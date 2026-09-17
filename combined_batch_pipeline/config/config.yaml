@@ -161,3 +161,43 @@ bridge_qc_scaling: false  # Set true to enable bridge-QC batch alignment
 bridge_qc_patterns: ["QC3", "QC4", "blauw"]  # Substrings identifying bridge QCs
 bridge_qc_min_batches: 8  # Feature must be present in bridge QCs in >= this many batches to be corrected
 bridge_qc_max_factor: 2.0  # Correction factors clipped to [1/this, this] (2.0 => [0.5, 2.0])
+
+# ============================================================================
+# Metabolite Ratio Features
+# ============================================================================
+# Adds clinically-informative metabolite ratios (e.g. acylcarnitine ratios)
+# as new feature rows. Ratios are added AFTER log10 transformation and BEFORE
+# RobustScaler, so they are computed on the log10 scale and then scaled
+# together with the other features.
+#
+# Each ratio has:
+#   name:        the output feature name (must be unique; must not collide with
+#                an existing feature name unless you intend to overwrite it)
+#   numerator:   list of feature names; summed on the raw concentration scale
+#   denominator: list of feature names; summed on the raw concentration scale
+#
+# Sums let you express ratio-of-sums such as L-carnitine / (C16 + C18).
+# Feature names must match the DataFrame index EXACTLY (case-sensitive) as
+# they appear after feature filtering -- e.g. "Propionylcarnitine.HMDB0000842".
+# A ratio whose numerator/denominator feature is missing from the data is
+# skipped with a warning.
+feature_ratios:
+  - name: "ratio_C3_C2"
+    numerator: ["Propionylcarnitine.HMDB0000842"]
+    denominator: ["L-Acetylcarnitine.HMDB0000201"]
+  - name: "ratio_C8_C10"
+    numerator: ["Octanoylcarnitine.HMDB0000791"]
+    denominator: ["Decanoylcarnitine.HMDB0000651"]
+  - name: "ratio_C14_1_C12_1"
+    numerator: ["cis-5-Tetradecenoylcarnitine.HMDB0002014"]
+    denominator: ["5-Dodecenoylcarnitine.HMDB0241212"]
+  - name: "ratio_C0_long"
+    numerator: ["L-carnitine.HMDB0000062"]
+    denominator:
+      - "Palmitoylcarnitine.HMDB0000222"
+      - "Stearoylcarnitine.HMDB0000848"
+  - name: "ratio_long_C2"
+    numerator:
+      - "Palmitoylcarnitine.HMDB0000222"
+      - "Oleoylcarnitine.HMDB0005065"
+    denominator: ["L-Acetylcarnitine.HMDB0000201"]
