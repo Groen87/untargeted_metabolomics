@@ -85,36 +85,6 @@ outlier_classifications:
   - 3
 ```
 
-### FAIR-TPs Drug-Metabolite Filter (toggleable)
-
-A separate feature-filtering step that removes drug parents **and** their
-transformation products (metabolites) from the feature matrix, resolved live
-from the [FAIR-TPs](https://fairtps.lcsb.uni.lu) public API
-(`/api/v1/compounds` + `/api/v1/compounds/{inchikey}/connections`). It is **off
-by default**; enable it by listing drug names:
-
-```yaml
-# Drop feature columns that are a listed drug or any of its transformation
-# products. Empty (or null) disables the filter. An audit of dropped columns
-# is written to <output_dir>/fairtps_drug_metabolites.csv.
-fairtps_drug_metabolites:
-  - "Caffeine"
-  - "Diclofenac"
-
-# Optional client tuning. On a permanent API failure the filter is skipped
-# (all features kept) and logged; a prior cache (if present) is still reused.
-fairtps:
-  direction: both          # both | outgoing (parent + products) | incoming
-  use_cache: true          # cache resolved names to <output_dir>/fairtps_cache.pkl
-  base_url: "https://fairtps.lcsb.uni.lu/api/v1"
-  timeout: 30
-  retries: 3
-  retry_backoff: 1.5
-  rate_limit: 0.2
-```
-
-No new dependencies are required (stdlib `urllib` only).
-
 ### Data Splitting
 
 ```yaml
