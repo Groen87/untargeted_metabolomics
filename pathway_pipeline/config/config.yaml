@@ -26,7 +26,9 @@ non_feature_columns:
 #   default          : legacy Oordeel-based cleaning
 #   binary_simplified: Class 1 -> outlier, Class 2 -> dropped, Class 0/3 -> inlier
 #   oordeel          : label from Oordeel targeted (0 inlier, 1 outlier)
-#   confident_normals: train inliers = Class 0 AND Oordeel 0; all others outlier
+#   confident_normals: normals = Class 0 AND Oordeel 0; everything else = outlier
+#   class1_imd:      normals = Class 0 AND Oordeel 0; Class 1 = IMD (disease);
+#                    Class 2/3 or (Class 0 AND Oordeel 1) = gray (not normal, not IMD)
 classification_scheme: confident_normals
 
 normal_classification: 0
