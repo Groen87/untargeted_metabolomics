@@ -152,6 +152,31 @@ tuning_severe_zmed_grid: [2.5, 3.0, 3.5, 4.0]
 tuning_signed_extreme_grid: [2.5, 3.0, 4.0]
 
 # ============================================================================
+# Enhanced statistics (optional)
+# ============================================================================
+# Enable enhanced pathway analysis with Stouffer's Z-score, multiple testing
+# correction, weighted decision scores, and comprehensive monitoring CSVs.
+# When enabled, generates:
+#   - enhanced_pathway_statistics.csv: all stats per (sample, pathway)
+#   - p_value_distribution.csv: p-value histogram data
+#   - enhanced_sample_decisions.csv: enhanced decision results
+use_enhanced_stats: false
+
+# Enhanced pathway flagging thresholds
+stouffer_z_threshold: 3.0        # |Z_stouffer| threshold for pathway flagging
+p_stouffer_threshold: 0.001     # uncorrected p-value threshold
+p_bonferroni_threshold: 0.05    # Bonferroni-corrected p-value threshold
+p_fdr_threshold: 0.05           # FDR-corrected p-value threshold (Benjamini-Hochberg)
+use_empirical_thresholds: true   # use pathway-specific empirical thresholds from normals
+
+# Weighted decision score
+weight_method: stouffer        # stouffer | zmed | p_value
+use_log_weights: true          # log-transform weights for better scale
+score_threshold: null          # flag if weighted_score > this (null = disabled)
+min_flagged_pathways: 3        # for count-based fallback rule
+min_weight: 2.0                # minimum mean weight for count-based rule
+
+# ============================================================================
 # Output
 # ============================================================================
 # Save the intermediate annotation tables (feature->HMDB, feature->pathway,

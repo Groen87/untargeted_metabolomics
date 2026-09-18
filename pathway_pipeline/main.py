@@ -53,6 +53,12 @@ from pathway_pipeline.pipeline.pathway_stats import (
     decide_samples,
     tune_decision_thresholds,
 )
+from pathway_pipeline.pipeline.pathway_stats_enhanced import (
+    compute_enhanced_pathway_statistics,
+    flag_pathways_enhanced,
+    compute_weighted_decision_score,
+    decide_samples_enhanced,
+)
 
 
 logging.basicConfig(
@@ -298,7 +304,70 @@ def run_pipeline(input_file: str,
     logger.info(f"Layer 1 (atomic metabolites): flagged {len(metabolite_flags)} "
                 f"(sample, metabolite) pairs at |z| > {override_thr}.")
 
-    # --- Layer 2: pathway statistics with severity tiers (primary detector) ---
+    # --- Check if enhanced statistics are enabled ---
+    use_enhanced = bool(config.get("use_enhanced_stats", False))
+
+    if use_enhanced:
+        _log_section("STEP 5: Enhanced pathway analysis & flagging")
+        logger.info("Running enhanced pipeline with Stouffer's Z, multiple testing "
+                    "correction, and weighted decision scores...")
+
+        # Enhanced pathway statistics
+        enhanced_stats = compute_enhanced_pathway_statistics(
+            zscores=zscores,
+            feature_to_pathway=feature_to_pathway,
+            normal_mask=normal_mask,
+            min_pathway_size=min_pathway_size,
+            output_dir=out,
+        )
+
+        # Enhanced pathway flagging
+        enhanced_flags = flag_pathways_enhanced(
+            enhanced_stats,
+            zmed_threshold=float(config.get("zmed_threshold", 2.0)),
+            stouffer_z_threshold=float(config.get("stouffer_z_threshold", 3.0)),
+            p_stouffer_threshold=float(config.get("p_stouffer_threshold", 0.001)),
+            p_bonferroni_threshold=float(config.get("p_bonferroni_threshold", 0.05)),
+            p_fdr_threshold=float(config.get("p_fdr_threshold", 0.05)),
+            use_empirical=bool(config.get("use_empirical_thresholds", True)),
+        )
+        enhanced_flags.to_csv(out / "enhanced_pathway_flags.csv", index=False)
+        logger.info(f"Enhanced Layer 2 (pathways): {int(enhanced_flags['flagged_two_stage'].sum())} "
+                    f"flagged via two-stage method.")
+
+        # Weighted decision scores
+        weighted_scores = compute_weighted_decision_score(
+            enhanced_flags,
+            weight_method=config.get("weight_method", "stouffer"),
+            use_log=bool(config.get("use_log_weights", True)),
+        )
+
+        # Enhanced decision rule
+        score_threshold = config.get_float("score_threshold", None)
+        min_flagged = int(config.get("min_flagged_pathways", 3))
+        min_w = float(config.get("min_weight", 2.0))
+
+        enhanced_decision = decide_samples_enhanced(
+            pathway_stats=enhanced_flags,
+            weighted_scores=weighted_scores,
+            metabolite_flags=metabolite_flags,
+            global_scores=None,
+            score_threshold=score_threshold,
+            min_flagged_pathways=min_flagged,
+            min_weight=min_w,
+            output_dir=out,
+        )
+        enhanced_decision.to_csv(out / "enhanced_sample_decisions.csv")
+        logger.info(f"Enhanced Layer 3 (decision rule): flagged "
+                    f"{int(enhanced_decision['flagged'].sum())} of "
+                    f"{len(enhanced_decision)} samples.")
+
+        results["enhanced_pathway_statistics"] = enhanced_stats
+        results["enhanced_pathway_flags"] = enhanced_flags
+        results["enhanced_weighted_scores"] = weighted_scores
+        results["enhanced_sample_decisions"] = enhanced_decision
+
+    # --- Original (or fallback) pipeline ---
     stats = compute_pathway_statistics(
         zscores=zscores,
         feature_to_pathway=feature_to_pathway,
