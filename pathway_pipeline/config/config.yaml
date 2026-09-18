@@ -1,0 +1,142 @@
+# Pathway Pipeline Configuration
+
+# ============================================================================
+# Input/Output
+# ============================================================================
+# Input feature matrix CSV (rows = samples, columns = features). Non-feature
+# columns (Oordeel targeted, Classification, ...) are read but excluded from
+# the metabolite matrix.
+input_file: "data/merged_data_with_classification.csv"
+output_dir: "outputs/pathway_pipeline"
+
+# ============================================================================
+# Data Configuration
+# ============================================================================
+# Patient IDs are the row index (not a named column) unless set here.
+patient_id_column: null
+
+# Columns that are NOT metabolite features. All other columns are treated as
+# features and matched against the HMDB name index.
+non_feature_columns:
+  - "Oordeel trageted"
+  - "Classification"
+
+# How to build the binary sample label from the raw Classification column.
+# Same options as the outlier-detection pipeline:
+#   default          : legacy Oordeel-based cleaning
+#   binary_simplified: Class 1 -> outlier, Class 2 -> dropped, Class 0/3 -> inlier
+#   oordeel          : label from Oordeel targeted (0 inlier, 1 outlier)
+#   confident_normals: train inliers = Class 0 AND Oordeel 0; all others outlier
+classification_scheme: confident_normals
+
+normal_classification: 0
+outlier_classifications:
+  - 1
+  - 2
+  - 3
+
+# ============================================================================
+# HMDB Database
+# ============================================================================
+# Path to the HMDB metabolite XML file used to build the name/synonym -> HMDB
+# accession index. The file is large (~hundreds of MB), so it is parsed with
+# xml.etree iterparse (streaming, one <metabolite> at a time) and the index is
+# cached to disk so subsequent runs skip re-parsing.
+hmdb_xml_file: "data/hmdb_metabolites.xml"
+
+# Cache the parsed name index on disk (keyed by the XML file's content hash +
+# the normalization version) so a multi-GB XML is only parsed once.
+use_hmdb_cache: true
+
+# Skip names shorter than this many characters when building the name index
+# (after normalization) to avoid short-token false-positive matches.
+min_name_length: 3
+
+# ============================================================================
+# Pathways
+# ============================================================================
+# Path to the SMPDB-derived pathways TSV with the structure:
+#   smp_id <TAB> pathway_name <TAB> n_compounds <TAB> hmdb_ids
+# where hmdb_ids is a ';'-separated list of HMDB accessions.
+pathways_file: "data/pathways.tsv"
+
+# Only keep pathways that map at least this many of the dataset's matched
+# features. Pathways with fewer matched features carry too little signal for
+# a robust per-pathway statistic.
+min_pathway_size: 3
+
+# ============================================================================
+# Layered statistics (the analysis & flagging engine)
+# ============================================================================
+# There is no outlier-detection model in this pipeline. The statistics stage
+# runs a layered z-based analysis: per-metabolite (atomic) flags -> pathway
+# statistics with severity tiers -> a sample decision rule -> an optional
+# global anomaly safety light. Set run_stats to false to stop after the
+# mapping outputs are written.
+run_stats: true
+
+# Age adjustment. When an age column is configured, each metabolite is age-
+# regressed over the NORMAL set before median/IQR scaling, so the z-scores are
+# age-adjusted (median_i / IQR_i estimated on the residuals, not the raw values).
+age_column: null          # name of the age metadata column (e.g. 'Age'); null = off
+iqr_scale: true           # scale by IQR (True) or std (False)
+
+# Per-metabolite empirical threshold for the flagged-fraction statistic
+# F(P) = (1/k) * sum 1[|z_i| > t_i]. t_i is the given percentile of |z_i| over
+# the NORMAL reference set (per-metabolite, because after IQR scaling features
+# have different tail behaviours). 99 = 99th percentile (the default).
+flag_percentile: 99
+
+# --- Layer 1: atomic per-metabolite flags (single-metabolite overrides) ---
+# A single metabolite with |z_i| > metabolite_override_threshold is flagged and
+# acts as a standalone override in the decision rule (a metabolite at z=+9 with
+# a known disease association is clinically meaningful even without pathway
+# support).
+metabolite_override_threshold: 6.0
+
+# --- Layer 2: pathway flags with severity tiers (the primary detector) ---
+# A pathway is flagged when ANY moderate condition holds; it is SEVERE when
+# any severe condition holds. The signed extremes Z_up / Z_down catch the
+# cancel-out case (upstream pileup + downstream depletion averaging to ~0).
+zmed_threshold: 2.0                  # moderate: |Z_med|
+flagged_fraction_threshold: 0.5      # moderate: F(P)
+signed_extreme_threshold: 2.5        # moderate: |Z_up| / |Z_down|
+severe_zmed_threshold: 3.0           # severe:   |Z_med|
+severe_flagged_fraction_threshold: 0.7  # severe: F(P)
+severe_signed_extreme_threshold: 4.0    # severe: |Z_up| / |Z_down|
+
+# --- Layer 3: the decision rule (the operating point) ---
+# A sample is flagged when: >=1 SEVERE pathway flag OR >=2 MODERATE (non-severe)
+# pathway flags OR any single-metabolite override OR (optional) the global
+# anomaly score exceeds global_threshold.
+min_severe_pathways: 1
+min_moderate_pathways: 2
+
+# --- Layer 4: optional global anomaly score (the "odd sample" safety light) ---
+# A parameter-light z-aggregate: the mean of the top-k |z| metabolites per
+# sample. Lights up for globally odd samples the pathway layers miss. Leave
+# global_threshold null to disable the layer (it is still reported as a column).
+global_anomaly_top_k: 10
+global_threshold: null
+
+# ============================================================================
+# Threshold tuning (inner IMD split)
+# ============================================================================
+# Sweep the operating point on the inner (normal vs IMD) split and write the
+# full sweep table sorted by the chosen metric, so the thresholds above can be
+# re-tuned without rerunning the mapping. Uses the binary label derived from
+# the Classification/Oordeel columns (1 = IMD). Disabled by default.
+run_threshold_tuning: false
+tuning_metric: f1                  # f1 | precision | detection | accuracy
+tuning_prevalence: 0.02           # deployment prevalence for the analytic metric
+tuning_override_grid: [4.0, 5.0, 6.0, 8.0, 10.0]
+tuning_moderate_zmed_grid: [1.5, 2.0, 2.5, 3.0]
+tuning_severe_zmed_grid: [2.5, 3.0, 3.5, 4.0]
+tuning_signed_extreme_grid: [2.5, 3.0, 4.0]
+
+# ============================================================================
+# Output
+# ============================================================================
+# Save the intermediate annotation tables (feature->HMDB, feature->pathway,
+# pathway coverage) even when run_stats is true.
+save_mapping_outputs: true
