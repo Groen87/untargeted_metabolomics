@@ -19,14 +19,15 @@ layer fails:
 
        Z_med(P, s)  = median(z_1 ... z_k)          (direction-aware median)
        F(P, s)      = (1/k) * sum 1[|z_i| > t_i]    (flagged-fraction breadth)
-       Z_up(P, s)   = median of the positive z_i   (signed-extreme guard)
-       Z_down(P, s) = median of the negative z_i   (signed-extreme guard)
+       Z_up(P, s)   = median of the positive z_i   (valid only if >=2 pos members)
+       Z_down(P, s) = median of the negative z_i   (valid only if >=2 neg members)
+       Z_split(P, s) = max(|Z_up|, |Z_down|) over the VALID sides
 
    ``t_i`` is the per-metabolite empirical threshold (the configured percentile
    of ``|z_i|`` over normals). ``flag_pathways`` assigns a **severity tier**
-   (moderate / severe) to each pathway flag. The signed extremes catch the
-   cancel-out problem (upstream pileup + downstream depletion averaging toward
-   a near-zero Z_med).
+   (moderate / severe) to each pathway flag, testing the signed-extreme guard
+   against ``Z_split``. The signed extremes catch the cancel-out problem
+   (upstream pileup + downstream depletion averaging toward a near-zero Z_med);
 
 3. **The decision rule** (``decide_samples``) -- the operating point. A sample
    is flagged when::
@@ -242,8 +243,11 @@ def compute_pathway_statistics(zscores: pd.DataFrame,
     Returns:
         Long DataFrame with one row per (sample, pathway) and columns
         ``sample_id``, ``smp_id``, ``pathway_name``, ``n_metabolites`` (k),
-        ``z_med``, ``flagged_fraction`` (F), ``z_up``, ``z_down``,
-        ``threshold_percentile``.
+        ``z_med``, ``flagged_fraction`` (F), ``z_up``, ``z_down``, ``z_split``,
+        ``threshold_percentile``. ``z_up`` / ``z_down`` are the medians of the
+        positive / negative z's, valid only when the side has >=2 members
+        (else NaN); ``z_split`` = max(|Z_up|, |Z_down|) over the valid sides
+        (NaN when neither side has >=2 members).
     """
     z_normals = zscores.loc[normal_mask]
     per_metabolite_threshold = z_normals.abs().quantile(flag_percentile / 100.0, axis=0)
@@ -267,7 +271,7 @@ def compute_pathway_statistics(zscores: pd.DataFrame,
         return pd.DataFrame(columns=["sample_id", "smp_id", "pathway_name",
                                       "n_metabolites", "z_med",
                                       "flagged_fraction", "z_up", "z_down",
-                                      "threshold_percentile"])
+                                      "z_split", "threshold_percentile"])
 
     rows: List[Dict] = []
     sample_ids = zscores.index
@@ -286,13 +290,25 @@ def compute_pathway_statistics(zscores: pd.DataFrame,
         k_valid = np.sum(~np.isnan(sub), axis=1)
         n_flagged = np.sum(flagged, axis=1)
         f = np.where(k_valid > 0, n_flagged / k_valid, np.nan)
+        # Signed-extreme medians, valid only when a side has >=2 members (a
+        # single positive or negative z is not a stable side median). Z_split
+        # = max(|Z_up|, |Z_down|) over the VALID sides (NaN when neither side
+        # has >=2 members).
         with np.errstate(invalid="ignore"):
             pos = np.where(sub > 0, sub, np.nan)
             neg = np.where(sub < 0, sub, np.nan)
-        z_up = np.nanmedian(pos, axis=1)
-        z_down = np.nanmedian(neg, axis=1)
-        z_up = np.where(np.all(np.isnan(pos), axis=1), np.nan, z_up)
-        z_down = np.where(np.all(np.isnan(neg), axis=1), np.nan, z_down)
+        n_pos = np.sum(~np.isnan(pos), axis=1)
+        n_neg = np.sum(~np.isnan(neg), axis=1)
+        z_up_raw = np.nanmedian(pos, axis=1)
+        z_down_raw = np.nanmedian(neg, axis=1)
+        z_up = np.where(n_pos >= 2, z_up_raw, np.nan)
+        z_down = np.where(n_neg >= 2, z_down_raw, np.nan)
+        # Z_split: largest side-median magnitude among the valid sides.
+        cand = np.stack([np.abs(z_up), np.abs(z_down)], axis=1)
+        all_invalid = np.all(np.isnan(cand), axis=1)
+        with np.errstate(invalid="ignore"):
+            z_split = np.nanmax(cand, axis=1)
+        z_split = np.where(all_invalid, np.nan, z_split)
 
         for i, sid in enumerate(sample_ids):
             rows.append({
@@ -304,6 +320,7 @@ def compute_pathway_statistics(zscores: pd.DataFrame,
                 "flagged_fraction": float(f[i]) if not np.isnan(f[i]) else float("nan"),
                 "z_up": float(z_up[i]) if not np.isnan(z_up[i]) else float("nan"),
                 "z_down": float(z_down[i]) if not np.isnan(z_down[i]) else float("nan"),
+                "z_split": float(z_split[i]) if not np.isnan(z_split[i]) else float("nan"),
                 "threshold_percentile": float(flag_percentile),
             })
 
@@ -317,7 +334,10 @@ def _pathway_severity(row: pd.Series, mod: dict, sev: dict) -> Tuple[str, List[s
     """Return (severity, reasons) for one (sample, pathway) stats row.
 
     ``mod`` / ``sev`` hold the moderate / severe threshold tuples
-    ``(zmed, flagged_fraction, signed_extreme)``. A row is flagged (moderate or
+    ``(zmed, flagged_fraction, signed_extreme)``. The signed-extreme element is
+    tested against ``z_split`` = max(|Z_up|, |Z_down|) over the VALID sides
+    (each side needs >=2 members to be valid), so a single outlier member on
+    one side cannot trip the guard on its own. A row is flagged (moderate or
     severe) when ANY moderate condition holds; it is SEVERE when any severe
     condition holds. Returns severity in {"none","moderate","severe"} and the
     list of human-readable triggering reasons.
@@ -325,7 +345,7 @@ def _pathway_severity(row: pd.Series, mod: dict, sev: dict) -> Tuple[str, List[s
     zmed = row.get("z_med")
     f = row.get("flagged_fraction")
     zup = row.get("z_up")
-    zdn = row.get("z_down")
+    zsplit = row.get("z_split")
 
     reasons: List[str] = []
     is_severe = False
@@ -338,11 +358,10 @@ def _pathway_severity(row: pd.Series, mod: dict, sev: dict) -> Tuple[str, List[s
         if pd.notna(f) and f > thr[1]:
             reasons.append(f"F={f:.2f}>{thr[1]:g}")
             is_severe = is_severe or severe
-        if pd.notna(zup) and abs(zup) > thr[2]:
-            reasons.append(f"Z_up={zup:.2f}")
-            is_severe = is_severe or severe
-        if pd.notna(zdn) and abs(zdn) > thr[2]:
-            reasons.append(f"Z_down={zdn:.2f}")
+        # Signed-extreme guard via Z_split (max valid side median magnitude).
+        if pd.notna(zsplit) and zsplit > thr[2]:
+            side = "Z_up" if (pd.notna(zup) and abs(zup) == zsplit) else "Z_down"
+            reasons.append(f"{side}={zsplit:.2f}")
             is_severe = is_severe or severe
 
     # Severe conditions take precedence; check them first so a row that
@@ -367,15 +386,17 @@ def flag_pathways(stats: pd.DataFrame,
 
     A pathway is **flagged** when any moderate condition holds::
 
-        |Z_med|  > zmed_threshold
-        F        > flagged_fraction_threshold
-        |Z_up|   > signed_extreme_threshold
-        |Z_down| > signed_extreme_threshold
+        |Z_med|   > zmed_threshold
+        F          > flagged_fraction_threshold
+        Z_split    > signed_extreme_threshold
 
-    It is **severe** when any of the stricter ``severe_*`` thresholds hold;
-    otherwise it is **moderate**. ``flagged`` is True for both tiers. The signed
-    extremes Z_up / Z_down catch the cancel-out case where upstream pileup and
-    downstream depletion average toward a near-zero Z_med.
+    where ``Z_split = max(|Z_up|, |Z_down|)`` over the VALID sides (a side is
+    valid only if it has >=2 members). It is **severe** when any of the stricter
+    ``severe_*`` thresholds hold; otherwise it is **moderate**. ``flagged`` is
+    True for both tiers. The signed extremes (via Z_split) catch the
+    cancel-out case where upstream pileup and downstream depletion average
+    toward a near-zero Z_med, and the >=2-member rule prevents a single outlier
+    member from tripping the guard on its own.
 
     Args:
         stats: output of :func:`compute_pathway_statistics`.

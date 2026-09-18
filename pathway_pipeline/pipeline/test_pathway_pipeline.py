@@ -209,17 +209,21 @@ def test_link_features_to_pathways_and_coverage(tmp_path):
 
 def _toy_zscores_and_mask():
     # 40 normals (small spread) + 1 abnormal with large signed deviations;
-    # 3 metabolites. The abnormal has a strong +z and a strong -z that cancel
-    # in Z_med (with Aspartate near 0 in the middle), exercising the
-    # signed-extreme guard.
+    # 4 metabolites (2 up, 2 down) so each signed side has >=2 members and the
+    # signed-extreme guard is valid. The abnormal raw values are built from the
+    # normal per-metabolite medians + a fixed z magnitude * each IQR, so after
+    # IQR scaling the abnormal z-scores are exactly +5,+5,-5,-5 and the two
+    # sides cancel in Z_med (~0), exercising the cancel-out guard via Z_split.
+    cols = ["Cortisol", "Fumarate", "Aspartate", "Glutamate"]
     n = pd.DataFrame(
-        np.random.RandomState(0).normal(0, 0.2, size=(40, 3)),
-        columns=["Cortisol", "Fumarate", "Aspartate"],
-        index=[f"N{i}" for i in range(40)],
+        np.random.RandomState(0).normal(0, 0.2, size=(40, 4)),
+        columns=cols, index=[f"N{i}" for i in range(40)],
     )
-    a = pd.DataFrame(
-        [[5.0, -5.0, 0.0]], columns=n.columns, index=["A1"],
-    )
+    med = n.median(axis=0)
+    iqr = n.apply(lambda s: np.nanpercentile(s, 75) - np.nanpercentile(s, 25), axis=0)
+    target_z = pd.Series([5.0, 5.0, -5.0, -5.0], index=cols)
+    a_vals = med + target_z * iqr
+    a = pd.DataFrame([a_vals.to_numpy()], columns=cols, index=["A1"])
     features = pd.concat([n, a])
     normal_mask = pd.Series([True] * 40 + [False], index=features.index)
     return features, normal_mask
@@ -230,49 +234,33 @@ def test_compute_metabolite_zscores_centers_normals():
     z = compute_metabolite_zscores(features, normal_mask, iqr_scale=True)
     # Normals should have near-zero median z.
     assert np.allclose(z.loc[normal_mask].median(), 0.0, atol=1e-7)
-    # The abnormal sample has positive z on Cortisol, negative on Fumarate.
+    # The abnormal sample has positive z on Cortisol/Fumarate, negative on
+    # Aspartate/Glutamate (two up, two down).
     assert z.loc["A1", "Cortisol"] > 0
-    assert z.loc["A1", "Fumarate"] < 0
+    assert z.loc["A1", "Fumarate"] > 0
+    assert z.loc["A1", "Aspartate"] < 0
+    assert z.loc["A1", "Glutamate"] < 0
 
 
 def test_pathway_statistics_zmed_and_signed_extremes_cancel_out():
-    features, normal_mask = _toy_zscores_and_mask()
-    z = compute_metabolite_zscores(features, normal_mask, iqr_scale=True)
-    f2p = pd.DataFrame([
-        {"feature": "Cortisol", "hmdb_id": "HMDB0000063", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-        {"feature": "Fumarate", "hmdb_id": "HMDB0000148", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-        {"feature": "Aspartate", "hmdb_id": "HMDB0000902", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-    ])
-    stats = compute_pathway_statistics(z, f2p, normal_mask, flag_percentile=99,
-                                       min_pathway_size=3)
+    stats = _toy_stats_one_pathway()
     a1 = stats[stats["sample_id"] == "A1"].iloc[0]
-    # The abnormal sample has +z and -z that cancel: Z_med ~ 0 (Aspartate=0
-    # middle), so |Z_med| should be small while Z_up is large positive and
-    # Z_down is large negative.
+    # The abnormal sample has two +z and two -z that cancel: Z_med ~ 0, so
+    # |Z_med| is small while Z_up (median of the 2 positives) is large positive
+    # and Z_down (median of the 2 negatives) is large negative.
     assert abs(a1["z_med"]) < 1.0
     assert a1["z_up"] > 2.0
     assert a1["z_down"] < -2.0
-    # The flagged fraction F counts metabolites exceeding t_i. With both
-    # extremes extreme, F >= 2/3 > 0.5.
+    # Z_split = max(|Z_up|, |Z_down|) over the valid sides (>=2 members each).
+    assert a1["z_split"] > 2.0
+    assert a1["z_split"] == pytest.approx(max(abs(a1["z_up"]), abs(a1["z_down"])))
+    # The flagged fraction F counts metabolites exceeding t_i. With all four
+    # extreme, F == 1.0 > 0.5.
     assert a1["flagged_fraction"] > 0.5
 
 
 def test_flag_pathways_catches_signed_extreme_with_zero_zmed():
-    features, normal_mask = _toy_zscores_and_mask()
-    z = compute_metabolite_zscores(features, normal_mask, iqr_scale=True)
-    f2p = pd.DataFrame([
-        {"feature": "Cortisol", "hmdb_id": "HMDB0000063", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-        {"feature": "Fumarate", "hmdb_id": "HMDB0000148", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-        {"feature": "Aspartate", "hmdb_id": "HMDB0000902", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-    ])
-    stats = compute_pathway_statistics(z, f2p, normal_mask, flag_percentile=99,
-                                       min_pathway_size=3)
+    stats = _toy_stats_one_pathway()
     flagged = flag_pathways(stats, zmed_threshold=2.0,
                             flagged_fraction_threshold=0.5,
                             signed_extreme_threshold=2.5)
@@ -283,18 +271,7 @@ def test_flag_pathways_catches_signed_extreme_with_zero_zmed():
 
 
 def test_normal_sample_not_flagged():
-    features, normal_mask = _toy_zscores_and_mask()
-    z = compute_metabolite_zscores(features, normal_mask, iqr_scale=True)
-    f2p = pd.DataFrame([
-        {"feature": "Cortisol", "hmdb_id": "HMDB0000063", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-        {"feature": "Fumarate", "hmdb_id": "HMDB0000148", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-        {"feature": "Aspartate", "hmdb_id": "HMDB0000902", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
-    ])
-    stats = compute_pathway_statistics(z, f2p, normal_mask, flag_percentile=99,
-                                       min_pathway_size=3)
+    stats = _toy_stats_one_pathway()
     flagged = flag_pathways(stats, zmed_threshold=2.0,
                             flagged_fraction_threshold=0.5,
                             signed_extreme_threshold=2.5)
@@ -356,11 +333,13 @@ def _toy_stats_one_pathway():
     z = compute_metabolite_zscores(features, normal_mask, iqr_scale=True)
     f2p = pd.DataFrame([
         {"feature": "Cortisol", "hmdb_id": "HMDB0000063", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
+         "pathway_name": "Pathway 1", "n_compounds": 4},
         {"feature": "Fumarate", "hmdb_id": "HMDB0000148", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
+         "pathway_name": "Pathway 1", "n_compounds": 4},
         {"feature": "Aspartate", "hmdb_id": "HMDB0000902", "smp_id": "SMP1",
-         "pathway_name": "Pathway 1", "n_compounds": 3},
+         "pathway_name": "Pathway 1", "n_compounds": 4},
+        {"feature": "Glutamate", "hmdb_id": "HMDB0000216", "smp_id": "SMP1",
+         "pathway_name": "Pathway 1", "n_compounds": 4},
     ])
     stats = compute_pathway_statistics(z, f2p, normal_mask, flag_percentile=99,
                                        min_pathway_size=3)
@@ -515,11 +494,13 @@ def test_tune_decision_thresholds_runs_and_ranks():
     z = compute_metabolite_zscores(features, normal_mask, iqr_scale=True)
     f2p = pd.DataFrame([
         {"feature": "Cortisol", "hmdb_id": "HMDB0000063", "smp_id": "SMP1",
-         "pathway_name": "P1", "n_compounds": 3},
+         "pathway_name": "P1", "n_compounds": 4},
         {"feature": "Fumarate", "hmdb_id": "HMDB0000148", "smp_id": "SMP1",
-         "pathway_name": "P1", "n_compounds": 3},
+         "pathway_name": "P1", "n_compounds": 4},
         {"feature": "Aspartate", "hmdb_id": "HMDB0000902", "smp_id": "SMP1",
-         "pathway_name": "P1", "n_compounds": 3},
+         "pathway_name": "P1", "n_compounds": 4},
+        {"feature": "Glutamate", "hmdb_id": "HMDB0000216", "smp_id": "SMP1",
+         "pathway_name": "P1", "n_compounds": 4},
     ])
     stats = compute_pathway_statistics(z, f2p, normal_mask, flag_percentile=99,
                                        min_pathway_size=3)
