@@ -383,6 +383,28 @@ def test_age_adjustment_unknown_method_falls_back_to_ols():
     assert np.allclose(z_unknown.to_numpy(), z_default.to_numpy(), equal_nan=True)
 
 
+def test_flag_metabolites_handles_duplicate_sample_ids():
+    # The real dataset carries duplicate sample IDs in the row index. Label-
+    # based access (``col_z.loc[sid]``) returns a Series for a duplicate label
+    # and used to crash the float() cast, so flag_metabolites must iterate by
+    # integer position and emit one flag per row that trips the override.
+    idx = ["S1", "S1", "S2", "S2", "S3"]
+    feat = pd.DataFrame({
+        "Cortisol": [1.0, 1.1, 50.0, 51.0, 2.0],
+        "Fumarate": [2.0, 2.1, 3.0, 3.1, 2.5],
+    }, index=idx)
+    feat.index.name = "sample"
+    normal_mask = pd.Series([True, True, False, False, True], index=idx)
+    z = compute_metabolite_zscores(feat, normal_mask, iqr_scale=True)
+    flags = flag_metabolites(z, normal_mask=normal_mask, override_threshold=4.0,
+                            flag_percentile=99)
+    # Both duplicate-S2 rows are extreme on Cortisol and each get its own flag.
+    s2 = flags[flags["sample_id"] == "S2"]
+    assert len(s2) == 2
+    assert set(s2["metabolite"]) == {"Cortisol"}
+    assert s2["z"].to_numpy().dtype == float
+
+
 def test_flag_metabolites_atomic_override():
     features, normal_mask = _toy_zscores_and_mask()
     z = compute_metabolite_zscores(features, normal_mask, iqr_scale=True)

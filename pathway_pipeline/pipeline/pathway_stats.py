@@ -264,14 +264,18 @@ def flag_metabolites(zscores: pd.DataFrame,
     per_met = z_normals.abs().quantile(flag_percentile / 100.0, axis=0)
 
     rows: List[Dict] = []
+    # Iterate by integer position (not label): the sample index may contain
+    # duplicate IDs, in which case ``col_z.loc[sid]`` would return a Series
+    # instead of a scalar and break the float() cast below.
+    sample_ids = zscores.index
     for col in zscores.columns:
         t_i = per_met.get(col, np.nan)
-        col_z = zscores[col]
-        flagged_mask = col_z.abs() > override_threshold
-        for sid in col_z.index[flagged_mask]:
-            z = float(col_z.loc[sid])
+        col_vals = zscores[col].to_numpy(dtype=float)
+        flagged_mask = np.abs(col_vals) > override_threshold
+        for pos in np.flatnonzero(flagged_mask):
+            z = float(col_vals[pos])
             rows.append({
-                "sample_id": sid,
+                "sample_id": sample_ids[pos],
                 "metabolite": col,
                 "z": z,
                 "abs_z": abs(z),
