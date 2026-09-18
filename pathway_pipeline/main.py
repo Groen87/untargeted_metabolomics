@@ -343,6 +343,8 @@ def run_pipeline(input_file: str,
         min_moderate=int(config.get("min_moderate_pathways", 2)),
         min_severe=int(config.get("min_severe_pathways", 1)),
         global_threshold=global_threshold,
+        min_severe_zmed=config.get_float("min_severe_zmed", None),
+        min_moderate_zmed=config.get_float("min_moderate_zmed", None),
     )
     decision.to_csv(out / "sample_decisions.csv")
     logger.info(f"Layer 3 (decision rule): flagged {int(decision['flagged'].sum())} "

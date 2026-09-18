@@ -119,11 +119,15 @@ severe_flagged_fraction_threshold: 0.7  # severe: F(P)
 severe_signed_extreme_threshold: 4.0    # severe: |Z_up| / |Z_down|
 
 # --- Layer 3: the decision rule (the operating point) ---
-# A sample is flagged when: >=1 SEVERE pathway flag OR >=2 MODERATE (non-severe)
-# pathway flags OR any single-metabolite override OR (optional) the global
-# anomaly score exceeds global_threshold.
-min_severe_pathways: 1
-min_moderate_pathways: 2
+# A sample is flagged when: >= min_severe_pathways SEVERE pathway flags
+# OR >= min_moderate_pathways MODERATE pathway flags OR any single-metabolite
+# override OR (optional) the global anomaly score exceeds global_threshold.
+# To filter out weak flags from noisy pathways, only count pathway flags where
+# |Z_med| exceeds the corresponding minimum magnitude threshold.
+min_severe_pathways: 3
+min_moderate_pathways: 8
+min_severe_zmed: 5.0      # minimum |Z_med| for a severe flag to count
+min_moderate_zmed: 3.5    # minimum |Z_med| for a moderate flag to count
 
 # --- Layer 4: optional global anomaly score (the "odd sample" safety light) ---
 # A parameter-light z-aggregate: the mean of the top-k |z| metabolites per

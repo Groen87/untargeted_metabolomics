@@ -547,6 +547,8 @@ def decide_samples(pathway_flags: pd.DataFrame,
                     min_moderate: int = 2,
                     min_severe: int = 1,
                     global_threshold: Optional[float] = None,
+                    min_severe_zmed: Optional[float] = None,
+                    min_moderate_zmed: Optional[float] = None,
                     ) -> pd.DataFrame:
     """Apply the sample-level decision rule (the operating point).
 
@@ -561,7 +563,7 @@ def decide_samples(pathway_flags: pd.DataFrame,
 
     Args:
         pathway_flags: output of :func:`flag_pathways` (one row per
-            sample, pathway with a ``severity`` column).
+            sample, pathway with a ``severity`` column and ``z_med`` values).
         metabolite_flags: output of :func:`flag_metabolites` (the single-
             metabolite overrides).
         global_scores: optional Series from
@@ -572,6 +574,10 @@ def decide_samples(pathway_flags: pd.DataFrame,
         min_severe: minimum SEVERE pathway flags to flag a sample.
         global_threshold: when not None, flag any sample whose global anomaly
             score exceeds it (the "odd sample" safety light).
+        min_severe_zmed: optional minimum |Z_med| for a severe pathway flag
+            to count toward min_severe. If None, all severe flags count.
+        min_moderate_zmed: optional minimum |Z_med| for a moderate pathway
+            flag to count toward min_moderate. If None, all moderate flags count.
 
     Returns:
         DataFrame indexed by sample_id with columns ``flagged`` (bool),
@@ -595,10 +601,16 @@ def decide_samples(pathway_flags: pd.DataFrame,
     # Build scalar lookups for counts. Use .to_dict() so duplicate sample IDs
     # in the Series are handled (keeps last, which is fine since duplicates
     # represent the same sample and should share the same counts/scores).
-    sev_counts = (pathway_flags[pathway_flags["severity"] == "severe"]
-                   .groupby("sample_id").size().to_dict())
-    mod_counts = (pathway_flags[pathway_flags["severity"] == "moderate"]
-                   .groupby("sample_id").size().to_dict())
+    # When min_severe_zmed or min_moderate_zmed are set, filter pathway flags
+    # by |Z_med| magnitude before counting.
+    def _count_filtered(flags_df, severity, min_zmed):
+        filtered = flags_df[flags_df["severity"] == severity].copy()
+        if min_zmed is not None:
+            filtered = filtered[filtered["z_med"].abs() >= min_zmed]
+        return filtered.groupby("sample_id").size().to_dict()
+
+    sev_counts = _count_filtered(pathway_flags, "severe", min_severe_zmed)
+    mod_counts = _count_filtered(pathway_flags, "moderate", min_moderate_zmed)
     met_counts = (metabolite_flags.groupby("sample_id").size().to_dict()
                   if not metabolite_flags.empty else {})
     gscores_dict = (global_scores.to_dict() if global_scores is not None else {})
@@ -610,9 +622,9 @@ def decide_samples(pathway_flags: pd.DataFrame,
         n_met = int(met_counts.get(sid, 0))
         reasons: List[str] = []
         if n_sev >= min_severe:
-            reasons.append(f"{n_sev} severe pathway flag(s)")
+            reasons.append(f"{n_sev} severe pathway flag(s) with |Z_med|>={min_severe_zmed or 0:.1f}")
         if n_mod >= min_moderate:
-            reasons.append(f"{n_mod} moderate pathway flag(s)")
+            reasons.append(f"{n_mod} moderate pathway flag(s) with |Z_med|>={min_moderate_zmed or 0:.1f}")
         if n_met > 0:
             reasons.append(f"{n_met} metabolite override(s)")
         gscore = gscores_dict.get(sid, float("nan"))
