@@ -725,19 +725,14 @@ def tune_decision_thresholds(pathway_stats: pd.DataFrame,
                     )
                     decision = decide_samples(flagged, met_flags,
                                               global_scores=None)
-                    # Reindex to zscores.index, filling missing rows with neutral values.
-                    # decision_reason is str dtype, so we need to handle it separately.
-                    for col in decision.columns:
-                        if col == "decision_reason":
-                            decision[col] = decision[col].reindex(
-                                zscores.index, fill_value="")
-                        elif col == "flagged":
-                            decision[col] = decision[col].reindex(
-                                zscores.index, fill_value=False)
-                        else:
-                            decision[col] = decision[col].reindex(
-                                zscores.index, fill_value=0)
-                    pred = decision["flagged"].astype(int).to_numpy()
+                    # Align decision with zscores.index. zscores.index may have duplicate
+                    # sample IDs, so we cannot use reindex directly. Instead, build a
+                    # flagged Series aligned to zscores.index using dict lookup.
+                    flagged_dict = decision["flagged"].to_dict()
+                    pred = pd.Series(
+                        [flagged_dict.get(sid, False) for sid in zscores.index],
+                        index=zscores.index
+                    ).astype(int).to_numpy()
                     tp = int(((pred == 1) & (y.to_numpy() == 1)).sum())
                     fp = int(((pred == 1) & (y.to_numpy() == 0)).sum())
                     detection = (tp / n_pos) if n_pos > 0 else float("nan")
