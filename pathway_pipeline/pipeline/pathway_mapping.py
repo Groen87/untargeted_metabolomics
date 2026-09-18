@@ -284,10 +284,13 @@ def pathway_coverage(feature_to_pathway: pd.DataFrame,
     )
     grouped = grouped.sort_values("n_matched_features", ascending=False)
     before = len(grouped)
+    dropped_rows = grouped[grouped["n_matched_features"] < min_pathway_size]
     grouped = grouped[grouped["n_matched_features"] >= min_pathway_size].reset_index(drop=True)
     dropped = before - len(grouped)
     if dropped:
+        dropped_names = sorted(dropped_rows["pathway_name"].unique())
         logger.info(f"Dropped {dropped} pathways with fewer than "
                     f"{min_pathway_size} matched features; {len(grouped)} remain.")
+        logger.info(f"Dropped pathways: {dropped_names}")
     return grouped[["smp_id", "pathway_name", "n_compounds",
                     "n_matched_features", "matched_features", "coverage"]]
