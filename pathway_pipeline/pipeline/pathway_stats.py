@@ -725,7 +725,7 @@ def tune_decision_thresholds(pathway_stats: pd.DataFrame,
                     )
                     decision = decide_samples(flagged, met_flags,
                                               global_scores=None)
-                    decision = decision.reindex(zscores.index, fill_value=False)
+                    decision = decision.reindex(zscores.index, fill_value=0)
                     pred = decision["flagged"].astype(int).to_numpy()
                     tp = int(((pred == 1) & (y.to_numpy() == 1)).sum())
                     fp = int(((pred == 1) & (y.to_numpy() == 0)).sum())
