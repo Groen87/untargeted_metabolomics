@@ -615,5 +615,65 @@ def test_tune_decision_thresholds_runs_and_ranks():
     assert sweep["score"].iloc[0] >= sweep["score"].iloc[1]
 
 
+# ---------------------------------------------------------------------------
+# HMDB parser tests
+# ---------------------------------------------------------------------------
+
+def test_hmdb_parser_handles_xml_namespace():
+    """HMDB XML declares xmlns="http://www.hmdb.ca", so tags appear as
+    {http://www.hmdb.ca}metabolite. The parser must strip the namespace
+    prefix to detect metabolite/accession/name/synonym tags.
+    """
+    import tempfile
+    xml_ns = '''<?xml version="1.0" encoding="UTF-8"?>
+<hmdb xmlns="http://www.hmdb.ca">
+  <metabolite>
+    <accession>HMDB0000001</accession>
+    <name>1-Methylhistidine</name>
+    <synonyms>
+      <synonym>1-METHYL-HISTIDINE</synonym>
+    </synonyms>
+  </metabolite>
+  <metabolite>
+    <accession>HMDB0000002</accession>
+    <name>1,3-Diaminopropane</name>
+  </metabolite>
+</hmdb>'''
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
+        f.write(xml_ns)
+        tmp = f.name
+    try:
+        idx = build_name_index(tmp, min_name_length=3, use_cache=False)
+        assert len(idx) >= 5
+        assert 'HMDB0000001' in idx
+        assert '1-METHYLHISTIDINE' in idx
+        assert '1-METHYL-HISTIDINE' in idx
+        assert 'HMDB0000002' in idx
+    finally:
+        Path(tmp).unlink()
+
+
+def test_hmdb_parser_handles_plain_xml():
+    """Plain XML without a namespace should still work (backward compat)."""
+    import tempfile
+    xml_plain = '''<?xml version="1.0"?>
+<hmdb>
+  <metabolite>
+    <accession>HMDB0000001</accession>
+    <name>1-Methylhistidine</name>
+  </metabolite>
+</hmdb>'''
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.xml', delete=False) as f:
+        f.write(xml_plain)
+        tmp = f.name
+    try:
+        idx = build_name_index(tmp, min_name_length=3, use_cache=False)
+        assert len(idx) == 2
+        assert 'HMDB0000001' in idx
+        assert '1-METHYLHISTIDINE' in idx
+    finally:
+        Path(tmp).unlink()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

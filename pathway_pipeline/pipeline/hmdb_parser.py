@@ -41,6 +41,21 @@ logger = logging.getLogger(__name__)
 _HMDB_ACCESSION_RE = re.compile(r"^HMDB\d+$", re.IGNORECASE)
 
 
+def _local_tag(elem: ET.Element) -> str:
+    """Return an element's tag without its XML namespace prefix.
+
+    The HMDB metabolites XML declares a default namespace
+    (``xmlns="http://www.hmdb.ca"``), so stdlib ElementTree reports tags as
+    ``{http://www.hmdb.ca}metabolite`` etc. The parser compares against bare
+    tag names, so the namespace must be stripped. Works for both namespaced
+    (``{ns}tag``) and plain (``tag``) elements.
+    """
+    tag = elem.tag
+    if isinstance(tag, str) and tag.startswith("{"):
+        return tag.rsplit("}", 1)[-1]
+    return tag
+
+
 def _cache_path(hmdb_xml_file: str, min_name_length: int) -> Path:
     """Return the on-disk cache path for a parsed HMDB name index.
 
@@ -79,14 +94,14 @@ def _extract_all_names(metabolite: ET.Element):
     primary_name = ""
     synonyms = []
     for child in metabolite:
-        tag = child.tag
+        tag = _local_tag(child)
         if tag == "accession" and child.text:
             accession = child.text.strip()
         elif tag == "name" and child.text:
             primary_name = child.text.strip()
         elif tag == "synonyms":
             for sub in child:
-                if sub.tag == "synonym" and sub.text:
+                if _local_tag(sub) == "synonym" and sub.text:
                     synonyms.append(sub.text.strip())
         elif tag == "synonym" and child.text:
             synonyms.append(child.text.strip())
@@ -136,7 +151,7 @@ def build_name_index(hmdb_xml_file: str, min_name_length: int = 3,
     n_names = 0
     context = ET.iterparse(str(xml_path), events=("end",))
     for event, elem in context:
-        if elem.tag != "metabolite":
+        if _local_tag(elem) != "metabolite":
             continue
         n_metabolites += 1
         for accession, raw_name in _extract_all_names(elem):
