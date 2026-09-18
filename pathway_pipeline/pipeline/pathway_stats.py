@@ -372,14 +372,17 @@ def compute_pathway_statistics(zscores: pd.DataFrame,
             neg = np.where(sub < 0, sub, np.nan)
         n_pos = np.sum(~np.isnan(pos), axis=1)
         n_neg = np.sum(~np.isnan(neg), axis=1)
-        z_up_raw = np.nanmedian(pos, axis=1)
-        z_down_raw = np.nanmedian(neg, axis=1)
+        # Suppress "All-NaN slice" warnings from nanmedian when a row has
+        # no positive/negative z-scores for a pathway.
+        with np.errstate(all="ignore"):
+            z_up_raw = np.nanmedian(pos, axis=1)
+            z_down_raw = np.nanmedian(neg, axis=1)
         z_up = np.where(n_pos >= 2, z_up_raw, np.nan)
         z_down = np.where(n_neg >= 2, z_down_raw, np.nan)
         # Z_split: largest side-median magnitude among the valid sides.
         cand = np.stack([np.abs(z_up), np.abs(z_down)], axis=1)
         all_invalid = np.all(np.isnan(cand), axis=1)
-        with np.errstate(invalid="ignore"):
+        with np.errstate(all="ignore"):
             z_split = np.nanmax(cand, axis=1)
         z_split = np.where(all_invalid, np.nan, z_split)
 
@@ -589,19 +592,16 @@ def decide_samples(pathway_flags: pd.DataFrame,
     if global_scores is not None:
         all_ids += [s for s in global_scores.index if s not in all_ids]
 
-    if not pathway_flags.empty:
-        sev_counts = (pathway_flags[pathway_flags["severity"] == "severe"]
-                       .groupby("sample_id").size())
-        mod_counts = (pathway_flags[pathway_flags["severity"] == "moderate"]
-                       .groupby("sample_id").size())
-    else:
-        sev_counts = pd.Series(dtype=int)
-        mod_counts = pd.Series(dtype=int)
-
-    if not metabolite_flags.empty:
-        met_counts = metabolite_flags.groupby("sample_id").size()
-    else:
-        met_counts = pd.Series(dtype=int)
+    # Build scalar lookups for counts. Use .to_dict() so duplicate sample IDs
+    # in the Series are handled (keeps last, which is fine since duplicates
+    # represent the same sample and should share the same counts/scores).
+    sev_counts = (pathway_flags[pathway_flags["severity"] == "severe"]
+                   .groupby("sample_id").size().to_dict())
+    mod_counts = (pathway_flags[pathway_flags["severity"] == "moderate"]
+                   .groupby("sample_id").size().to_dict())
+    met_counts = (metabolite_flags.groupby("sample_id").size().to_dict()
+                  if not metabolite_flags.empty else {})
+    gscores_dict = (global_scores.to_dict() if global_scores is not None else {})
 
     rows: List[Dict] = []
     for sid in all_ids:
@@ -615,12 +615,10 @@ def decide_samples(pathway_flags: pd.DataFrame,
             reasons.append(f"{n_mod} moderate pathway flag(s)")
         if n_met > 0:
             reasons.append(f"{n_met} metabolite override(s)")
-        gscore = float("nan")
-        if global_scores is not None and sid in global_scores.index:
-            gscore = float(global_scores.loc[sid])
-            if (global_threshold is not None and not np.isnan(gscore)
-                    and gscore > global_threshold):
-                reasons.append(f"global={gscore:.2f}>{global_threshold:g}")
+        gscore = gscores_dict.get(sid, float("nan"))
+        if (global_threshold is not None and not np.isnan(gscore)
+                and gscore > global_threshold):
+            reasons.append(f"global={gscore:.2f}>{global_threshold:g}")
         rows.append({
             "sample_id": sid,
             "flagged": bool(reasons),
