@@ -725,7 +725,18 @@ def tune_decision_thresholds(pathway_stats: pd.DataFrame,
                     )
                     decision = decide_samples(flagged, met_flags,
                                               global_scores=None)
-                    decision = decision.reindex(zscores.index, fill_value=0)
+                    # Reindex to zscores.index, filling missing rows with neutral values.
+                    # decision_reason is str dtype, so we need to handle it separately.
+                    for col in decision.columns:
+                        if col == "decision_reason":
+                            decision[col] = decision[col].reindex(
+                                zscores.index, fill_value="")
+                        elif col == "flagged":
+                            decision[col] = decision[col].reindex(
+                                zscores.index, fill_value=False)
+                        else:
+                            decision[col] = decision[col].reindex(
+                                zscores.index, fill_value=0)
                     pred = decision["flagged"].astype(int).to_numpy()
                     tp = int(((pred == 1) & (y.to_numpy() == 1)).sum())
                     fp = int(((pred == 1) & (y.to_numpy() == 0)).sum())
