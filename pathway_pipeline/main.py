@@ -274,6 +274,8 @@ def run_pipeline(input_file: str,
         sub_features, normal_mask=normal_mask,
         iqr_scale=bool(config.get("iqr_scale", True)),
         ages=ages,
+        age_adjustment_method=config.get("age_adjustment_method", "ols"),
+        age_loess_frac=float(config.get("age_loess_frac", 0.5)),
     )
     zscores.to_csv(out / "metabolite_zscores.csv")
 

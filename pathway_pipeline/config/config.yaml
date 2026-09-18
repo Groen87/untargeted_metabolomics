@@ -79,6 +79,17 @@ run_stats: true
 # regressed over the NORMAL set before median/IQR scaling, so the z-scores are
 # age-adjusted (median_i / IQR_i estimated on the residuals, not the raw values).
 age_column: null          # name of the age metadata column (e.g. 'Age'); null = off
+# Age-regression method to remove the age trend over normals:
+#   ols  : per-metabolite linear OLS fit x = a + b*age (default; fast, robust
+#          for monotonic linear age trends).
+#   loess: per-metabolite LOESS (locally linear) smoothing of x on age. More
+#          flexible for non-linear age trends (e.g. childhood growth curves,
+#          hormone decline) at the cost of a smoothing parameter. Uses
+#          statsmodels.nonparametric.lowess with frac = age_loess_frac.
+age_adjustment_method: ols  # ols | loess
+# LOESS smoothing fraction (bandwidth as a fraction of the normal set) used
+# only when age_adjustment_method is loess. Larger = smoother. For small normal
+# sets (<20) the fit automatically widens to >=0.5 to stay numerically stable.age_loess_frac: 0.5
 iqr_scale: true           # scale by IQR (True) or std (False)
 
 # Per-metabolite empirical threshold for the flagged-fraction statistic

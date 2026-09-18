@@ -64,22 +64,38 @@ def _iqr(values: np.ndarray) -> float:
 
 
 def _age_adjust(features: pd.DataFrame, ages: pd.Series,
-                normal_mask: pd.Series) -> pd.DataFrame:
+                normal_mask: pd.Series,
+                method: str = "ols",
+                loess_frac: float = 0.5) -> pd.DataFrame:
     """Regress each metabolite on age over normals; return the residuals.
 
-    Fits an OLS line ``x = a + b*age`` per metabolite using only the normal
-    reference samples, then returns ``x - (a + b*age)`` for ALL samples. This
-    removes the age trend (e.g. creatinine rising with muscle mass) so the
-    downstream median/IQR scaling is not confounded by age. Samples with a
-    missing age are imputed at the normal mean age (so they stay in the same
-    residual space as the rest of the data, keeping the per-metabolite
-    median/IQR consistent).
+    Removes the age trend (e.g. creatinine rising with muscle mass) so the
+    downstream median/IQR scaling is not confounded by age. Two regression
+    methods are supported, each fit per metabolite using only the normal
+    reference samples, then evaluated for ALL samples (``x - fitted(age)``):
+
+      * ``ols``  -- a linear OLS fit ``x = a + b*age`` (one closed-form solve
+        for all metabolites at once). The default; robust for monotonic
+        linear age trends.
+      * ``loess`` -- a per-metabolite LOESS (locally linear) smoothing of ``x``
+        on age via ``statsmodels.nonparametric.lowess``. More flexible for
+        non-linear age trends (childhood growth curves, hormone decline) at
+        the cost of the ``loess_frac`` smoothing parameter. The prediction for
+        a sample age outside the normal range is clamped to the nearest
+        fitted age (LOESS does not extrapolate).
+
+    Samples with a missing age are imputed at the normal mean age (so they
+    stay in the same residual space as the rest of the data, keeping the
+    per-metabolite median/IQR consistent).
 
     Args:
         features: metabolite matrix (rows=samples, cols=metabolites).
         ages: numeric age per sample, aligned to ``features.index``.
         normal_mask: boolean Series; True for the normal reference samples
             used to fit the age regression.
+        method: ``"ols"`` (default) or ``"loess"``.
+        loess_frac: LOESS smoothing fraction (bandwidth) used only when
+            ``method == "loess"``.
 
     Returns:
         DataFrame of residuals, same shape/index/columns as ``features``.
@@ -96,10 +112,54 @@ def _age_adjust(features: pd.DataFrame, ages: pd.Series,
     # Centre age so the intercept is the normal mean at the reference age.
     a_mean = a.mean()
     a_c = a - a_mean
-    X = np.column_stack([np.ones_like(a_c), a_c])
+    feat_norm = features.loc[norm_idx].to_numpy(dtype=float)
+
+    if method == "loess":
+        # Per-metabolite LOESS (no shared closed form). Predictions for ages
+        # outside the fitted normal range are clamped to the nearest fitted
+        # point, since LOESS does not extrapolate.
+        from statsmodels.nonparametric.smoothers_lowess import lowess
+
+        n_points = len(a_c)
+        if n_points < 20:
+            # Small normal set: widen the bandwidth for numerical stability.
+            frac = max(float(loess_frac), 0.5)
+        else:
+            frac = float(loess_frac)
+
+        # Fit each metabolite on the sorted normal ages.
+        order = np.argsort(a_c)
+        a_sorted = a_c[order]
+        # predictions at all (centred) sample ages, clamped to the fitted range.
+        age_filled = age_norm.fillna(a_mean)
+        all_a_c = (age_filled - a_mean).to_numpy(dtype=float)
+        lo_hi = (a_sorted.min(), a_sorted.max())
+
+        preds = np.empty((features.shape[0], features.shape[1]), dtype=float)
+        for j in range(feat_norm.shape[1]):
+            y_sorted = feat_norm[order, j]
+            # NaN-aware: statsmodels lowess cannot handle NaN y; if a column
+            # has any NaN among the normals, fall back to a constant fit at
+            # the normal mean for that metabolite (residuals = x - mean).
+            if np.isnan(y_sorted).any():
+                preds[:, j] = np.nanmean(y_sorted)
+                continue
+            try:
+                sm = lowess(y_sorted, a_sorted, frac=frac, return_sorted=True)
+            except (ValueError, IndexError):
+                preds[:, j] = np.nanmean(y_sorted)
+                continue
+            xs, ys = sm[:, 0], sm[:, 1]
+            # Clamp query ages to the fitted range (no extrapolation), then
+            # linearly interpolate the LOESS curve to each sample's age.
+            clamped = np.clip(all_a_c, lo_hi[0], lo_hi[1])
+            preds[:, j] = np.interp(clamped, xs, ys)
+        pred = pd.DataFrame(preds, index=features.index, columns=features.columns)
+        return features - pred
+
     # OLS fit per metabolite (one closed-form solve for all columns at once).
-    coef, *_ = np.linalg.lstsq(X, features.loc[norm_idx].to_numpy(dtype=float),
-                               rcond=None)
+    X = np.column_stack([np.ones_like(a_c), a_c])
+    coef, *_ = np.linalg.lstsq(X, feat_norm, rcond=None)
     intercept, slope = coef[0], coef[1]
 
     # Impute missing ages with the normal mean age (centred = 0) so the
@@ -115,6 +175,8 @@ def compute_metabolite_zscores(features: pd.DataFrame,
                                 normal_mask: pd.Series,
                                 iqr_scale: bool = True,
                                 ages: Optional[pd.Series] = None,
+                                age_adjustment_method: str = "ols",
+                                age_loess_frac: float = 0.5,
                                 ) -> pd.DataFrame:
     """Compute per-metabolite, per-sample (age-adjusted) robust z-scores.
 
@@ -139,6 +201,11 @@ def compute_metabolite_zscores(features: pd.DataFrame,
         ages: optional numeric age Series aligned to ``features.index``. When
             provided, each metabolite is age-regressed over the normals first
             (see :func:`_age_adjust`) so the z-scores are age-adjusted.
+        age_adjustment_method: age-regression method passed to
+            :func:`_age_adjust` when ``ages`` is given: ``"ols"`` (default,
+            linear) or ``"loess"`` (locally linear, non-linear age trends).
+        age_loess_frac: LOESS smoothing fraction, used only when
+            ``age_adjustment_method == "loess"``.
 
     Returns:
         DataFrame of the same shape as ``features`` holding z-scores. Cells
@@ -146,7 +213,9 @@ def compute_metabolite_zscores(features: pd.DataFrame,
     """
     base = features
     if ages is not None:
-        base = _age_adjust(features, ages, normal_mask)
+        base = _age_adjust(features, ages, normal_mask,
+                          method=age_adjustment_method,
+                          loess_frac=age_loess_frac)
 
     normals = base.loc[normal_mask]
     medians = normals.median(axis=0)
@@ -158,7 +227,7 @@ def compute_metabolite_zscores(features: pd.DataFrame,
     z = (base - medians) / safe_scales
     logger.info(f"Computed {z.shape[1]} metabolite z-scores over "
                 f"{int(normal_mask.sum())} normals"
-                f"{' (age-adjusted)' if ages is not None else ''}; "
+                f"{(' (age-adjusted, ' + age_adjustment_method + ')') if ages is not None else ''}; "
                 f"{int((safe_scales.isna() | (safe_scales <= 1e-10)).sum())} "
                 f"metabolites dropped (zero scale).")
     return z

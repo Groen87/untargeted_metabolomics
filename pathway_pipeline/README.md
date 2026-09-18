@@ -79,7 +79,10 @@ the simpler layers miss:
 1. **Per-metabolite z-scores (age-adjusted, robustly scaled)** -- the atomic
    evidence. For each metabolite `z_i(s) = (x_i(s) - median_i(age)) / IQR_i`,
    with the reference estimated over the **normal set only** (optionally
-   age-regressed). A single metabolite at z = +9 with a known disease
+   age-regressed). The age-regression method is toggleable in the config:
+   `age_adjustment_method: ols` (default, linear) or `loess` (locally-linear
+   smoothing via `statsmodels.lowess`, with bandwidth `age_loess_frac`) for
+   non-linear age trends. A single metabolite at z = +9 with a known disease
    association is clinically meaningful even without pathway support, so
    `flag_metabolites` flags `|z_i| > metabolite_override_threshold` and these
    act as single-metabolite overrides in the decision rule.

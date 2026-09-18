@@ -31,6 +31,7 @@ from pathway_pipeline.pipeline.pathway_stats import (
     compute_global_anomaly_score,
     decide_samples,
     tune_decision_thresholds,
+    _age_adjust,
 )
 
 
@@ -308,6 +309,78 @@ def test_age_adjustment_removes_age_trend():
     assert abs(z_age.loc["A1", "C"]) < 0.5
     # The normal-set z-scores stay centred at 0 after adjustment.
     assert np.allclose(z_age.loc[normal_mask].median(), 0.0, atol=1e-7)
+
+
+def test_age_adjustment_loess_removes_nonlinear_trend():
+    # Metabolite follows a non-linear (concave-down quadratic) age trend over
+    # normals. LOESS removes the curvature so the normal-set residuals are
+    # far tighter than under the linear OLS fit, which mis-attributes the
+    # curvature to the residuals. A sample sitting exactly on the curve stays
+    # near zero under LOESS. This is the real benefit of the toggle on
+    # non-linear age trends.
+    ages = pd.Series(np.linspace(1, 80, 80), index=[f"N{i}" for i in range(80)],
+                     name="age")
+    a = ages.to_numpy()
+    trend = 4.0 * a - 0.05 * a ** 2  # concave-down: peaks in middle age.
+    rng = np.random.RandomState(7)
+    feat = pd.DataFrame({
+        "C": trend + 0.05 * rng.randn(80),
+    }, index=ages.index)
+    feat.index.name = "sample"
+    normal_mask = pd.Series([True] * 80, index=feat.index)
+
+    res_ols = _age_adjust(feat, ages, normal_mask, method="ols")
+    res_loess = _age_adjust(feat, ages, normal_mask, method="loess",
+                           loess_frac=0.4)
+    # The quadratic curvature stays in the OLS residuals (large spread) but
+    # is removed by LOESS (tight residual spread around the noise floor).
+    assert res_loess["C"].std() < res_ols["C"].std() / 5
+    # LOESS removes the curvature far more than OLS: the residual IQR is also
+    # far smaller under LOESS.
+    loess_iqr = float(np.diff(np.nanpercentile(res_loess["C"], [25, 75]))[0])
+    ols_iqr = float(np.diff(np.nanpercentile(res_ols["C"], [25, 75]))[0])
+    assert loess_iqr < ols_iqr / 5
+
+    # A sample sitting exactly on the (non-linear) curve at an interior age
+    # stays near zero under LOESS; the linear OLS fit leaves a curvature-driven
+    # residual at that age.
+    a_ab = 60.0
+    on_curve = 4.0 * a_ab - 0.05 * a_ab ** 2
+    abnormal = pd.DataFrame({"C": [on_curve]}, index=["A1"])
+    features = pd.concat([feat, abnormal])
+    ages_full = pd.concat([ages, pd.Series([a_ab], index=["A1"], name="age")])
+    nm = pd.Series([True] * 80 + [False], index=features.index)
+    r_loess = _age_adjust(features, ages_full, nm, method="loess",
+                          loess_frac=0.4)
+    r_ols = _age_adjust(features, ages_full, nm, method="ols")
+    assert abs(r_loess.loc["A1", "C"]) < abs(r_ols.loc["A1", "C"])
+    assert abs(r_loess.loc["A1", "C"]) < 5.0
+
+
+def test_age_adjustment_unknown_method_falls_back_to_ols():
+    # An unrecognised method name is treated the same as the default OLS path
+    # (linear regression), so a typo in the config degrades gracefully rather
+    # than raising.
+    ages = pd.Series(np.linspace(1, 80, 40), index=[f"N{i}" for i in range(40)],
+                     name="age")
+    feat = pd.DataFrame({
+        "C": ages.to_numpy() * 2.0 + 0.1 * np.random.RandomState(3).randn(40),
+    }, index=ages.index)
+    feat.index.name = "sample"
+    abnormal = pd.DataFrame({"C": [2.0]}, index=["A1"])
+    features = pd.concat([feat, abnormal])
+    features.index.name = "sample"
+    ages_full = pd.concat([ages, pd.Series([1.0], index=["A1"], name="age")])
+    normal_mask = pd.Series([True] * 40 + [False], index=features.index)
+    z_default = compute_metabolite_zscores(
+        features, normal_mask, iqr_scale=True,
+        ages=ages_full.reindex(features.index))
+    z_unknown = compute_metabolite_zscores(
+        features, normal_mask, iqr_scale=True,
+        ages=ages_full.reindex(features.index),
+        age_adjustment_method="not-a-real-method")
+    # The unknown method path is the linear OLS branch, matching the default.
+    assert np.allclose(z_unknown.to_numpy(), z_default.to_numpy(), equal_nan=True)
 
 
 def test_flag_metabolites_atomic_override():
