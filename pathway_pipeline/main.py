@@ -507,6 +507,77 @@ def run_pipeline(input_file: str,
     pathway_stats.to_csv(out / "pathway_statistics.csv", index=False)
     decisions.reset_index().to_csv(out / "sample_decisions.csv", index=False)
     
+    # ------------------------------------------------------------------
+    # NEW: Anomaly Detection on pathway features
+    # ------------------------------------------------------------------
+    use_anomaly_detection = bool(config.get("use_anomaly_detection", True))
+    
+    if use_anomaly_detection and len(analysis_sample_ids) > 0:
+        from pathway_pipeline.pipeline.pathway_analysis_clean import run_anomaly_detection
+        
+        _log_section("STEP 6: Anomaly Detection on Pathway Features")
+        
+        # Get all samples (including gray) for anomaly detection
+        # But train ONLY on normals
+        all_sample_ids_full = metadata.index.tolist()
+        
+        # Get gray samples from original metadata
+        gray_mask_full = ~normal_mask & ~imd_mask
+        gray_sample_ids_full = metadata.index[gray_mask_full].tolist()
+        
+        # Recompute pathway stats for ALL samples (normals + IMDs + gray)
+        feature_to_pathway_all = feature_to_pathway[
+            feature_to_pathway['feature'].isin(zscores.columns)
+        ]
+        
+        # Compute pathway stats for all samples
+        pathway_stats_all = compute_pathway_stouffers_z(
+            features_filtered,
+            feature_to_pathway_all,
+            min_pathway_size=min_pathway_size
+        )
+        
+        logger.info(f"Computed pathway Stouffer's Z for all {pathway_stats_all['sample_id'].nunique()} samples")
+        
+        # Run anomaly detection
+        ad_results = run_anomaly_detection(
+            pathway_stats=pathway_stats_all,
+            normal_sample_ids=normal_sample_ids,
+            imd_sample_ids=imd_sample_ids,
+            gray_sample_ids=gray_sample_ids_full,
+            scorer_name=config.get("anomaly_scorer", "lof"),
+            contamination=float(config.get("anomaly_contamination", 0.02)),
+            n_neighbors=int(config.get("anomaly_n_neighbors", 20)),
+            n_estimators=int(config.get("anomaly_n_estimators", 100)),
+            percentile=float(config.get("anomaly_percentile", 95.0)),
+        )
+        
+        # Save anomaly detection results
+        ad_results['results'].to_csv(out / "anomaly_scores.csv", index=False)
+        
+        ad_validation_df = pd.DataFrame([{
+            'scorer': ad_results['scorer'],
+            'method': ad_results['method'],
+            'threshold': ad_results['threshold'],
+            'percentile': ad_results['percentile'],
+            'n_normals': ad_results['n_normals'],
+            'n_imds': ad_results['n_imds'],
+            'n_grays': ad_results['n_grays'],
+            'normals_flagged': ad_results['normals_flagged'],
+            'imds_flagged': ad_results['imds_flagged'],
+            'grays_flagged': ad_results['grays_flagged'],
+            'detection_rate': ad_results['detection_rate'],
+            'contamination_rate': ad_results['contamination_rate'],
+            'gray_flag_rate': ad_results['gray_flag_rate'],
+            'flagged_normal_ids': ','.join(ad_results['flagged_normal_ids']),
+            'flagged_imd_ids': ','.join(ad_results['flagged_imd_ids']),
+        }])
+        ad_validation_df.to_csv(out / "anomaly_validation.csv", index=False)
+        
+        results["anomaly_detection"] = ad_results
+        
+        logger.info(f"\nWrote anomaly_scores.csv, anomaly_validation.csv to {out}")
+    
     results["pathway_stats"] = pathway_stats
     results["decisions"] = decisions
     results["threshold_info"] = threshold_info

@@ -53,6 +53,25 @@ min_flagged_pathways: 1      # IMDs typically have 1-2 extreme pathways
 n_thresholds: 20              # Number of percentiles to test for optimal threshold
 
 # ============================================================================
+# Anomaly Detection (NEW)
+# ============================================================================
+# Train anomaly detector on NORMAL samples only, test on ALL samples
+# This is the correct approach for low prevalence (2% IMDs in production)
+use_anomaly_detection: true
+
+# Anomaly detection method: 'lof', 'iforest', or 'mahalanobis'
+# - lof: Local Outlier Factor (good for heterogeneous IMDs affecting different pathways)
+# - iforest: Isolation Forest (fast, good general performance)
+# - mahalanobis: Mahalanobis distance (parametric, assumes Gaussian distribution)
+anomaly_scorer: lof
+
+# Anomaly detection parameters
+anomaly_contamination: 0.02    # Expected IMD rate in production (2%)
+anomaly_n_neighbors: 20         # For LOF: number of neighbors
+anomaly_n_estimators: 100       # For IForest: number of trees
+anomaly_percentile: 95.0              # Number of percentiles to test for optimal threshold
+
+# ============================================================================
 # Legacy parameters (kept for compatibility, not used in clean pipeline)
 # ============================================================================
 normal_classification: 0

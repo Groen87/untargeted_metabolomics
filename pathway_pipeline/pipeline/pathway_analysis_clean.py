@@ -6,6 +6,7 @@ This module implements a streamlined pathway analysis that:
 3. Combines Z-scores into compound scores per pathway using absolute Stouffer's Z
 4. Finds optimal cutoffs empirically from the normal distribution
 5. Flags samples based on extreme pathway deviations
+6. (NEW) Uses anomaly detection (LOF, IForest, Mahalanobis) trained on normals only
 
 Key design decisions:
 - Uses absolute Stouffer's Z to detect both same-direction and opposite-direction disturbances
@@ -13,6 +14,7 @@ Key design decisions:
 - Uses empirical thresholds computed from the actual normal distribution
 - Filters to only normals + IMDs (Class 1 AND Oordeel 1) for analysis
 - Removes all features that don't map to pathways
+- For anomaly detection: train on NORMAL samples only, test on ALL samples
 
 This is a COMPLETELY SEPARATE implementation from the existing pathway_stats_enhanced.py
 which has too many bugs and complexity.
@@ -476,4 +478,157 @@ def run_clean_pathway_analysis(
         'decisions': decisions,
         'threshold_info': threshold_info,
         'validation': validation
+    }
+
+
+def run_anomaly_detection(
+    pathway_stats: pd.DataFrame,
+    normal_sample_ids: List,
+    imd_sample_ids: List,
+    gray_sample_ids: List,
+    scorer_name: str = "lof",
+    contamination: float = 0.02,
+    n_neighbors: int = 20,
+    n_estimators: int = 100,
+    random_state: int = 42,
+    percentile: float = 95.0,
+) -> Dict:
+    """Run anomaly detection on pathway Stouffer's Z scores.
+    
+    Trains on NORMAL samples only, then scores ALL samples (normals + IMDs + gray).
+    This is the correct approach for low prevalence scenarios.
+    
+    Args:
+        pathway_stats: DataFrame with columns: sample_id, pathway_name, z_stouffer_abs
+        normal_sample_ids: List of normal sample IDs (for training)
+        imd_sample_ids: List of IMD sample IDs (for validation)
+        gray_sample_ids: List of gray sample IDs (for testing)
+        scorer_name: Which anomaly detector to use ('lof', 'iforest', 'mahalanobis')
+        contamination: Expected contamination rate for thresholding
+        n_neighbors: Number of neighbors for LOF
+        n_estimators: Number of trees for IForest
+        random_state: Random seed
+        percentile: Percentile for thresholding (higher = more strict)
+        
+    Returns:
+        Dict with anomaly scores, decisions, and validation metrics
+    """
+    # Pivot to samples x pathways matrix
+    pivot = pathway_stats.pivot(index='sample_id', columns='pathway_name', values='z_stouffer_abs')
+    pivot = pivot.fillna(0)  # Fill missing with 0 (no deviation)
+    
+    # Get all sample IDs in order
+    all_sample_ids = pivot.index.tolist()
+    
+    # Split into train (normals) and test (all)
+    X_train = pivot.loc[normal_sample_ids].values
+    X_test = pivot.values
+    
+    logger.info(f"Training anomaly detector on {len(normal_sample_ids)} normal samples")
+    logger.info(f"Scoring {len(all_sample_ids)} total samples")
+    logger.info(f"Using {pivot.shape[1]} pathway features")
+    
+    # Train anomaly detector
+    if scorer_name == "lof":
+        from sklearn.neighbors import LocalOutlierFactor
+        
+        # Use novelty=True to allow scoring new samples
+        lof = LocalOutlierFactor(
+            n_neighbors=n_neighbors,
+            novelty=True,
+            contamination='auto',
+            n_jobs=-1
+        )
+        lof.fit(X_train)
+        
+        # Score all samples
+        scores = -lof.negative_outlier_factor(X_test)  # Higher = more anomalous
+        method_name = "Local Outlier Factor"
+        
+    elif scorer_name == "iforest":
+        from sklearn.ensemble import IsolationForest
+        
+        iforest = IsolationForest(
+            n_estimators=n_estimators,
+            contamination=contamination,
+            random_state=random_state,
+            n_jobs=-1
+        )
+        iforest.fit(X_train)
+        
+        # Score all samples (higher = more anomalous for IF)
+        scores = -iforest.score_samples(X_test)  # Negate to make higher = more anomalous
+        method_name = "Isolation Forest"
+        
+    elif scorer_name == "mahalanobis":
+        from sklearn.covariance import MinCovDet
+        
+        # Fit robust covariance on normals
+        mcd = MinCovDet(random_state=random_state)
+        mcd.fit(X_train)
+        
+        # Compute Mahalanobis distance for all samples
+        distances = mcd.mahalanobis(X_test)
+        scores = distances  # Higher = more anomalous
+        method_name = "Mahalanobis Distance"
+        
+    else:
+        raise ValueError(f"Unknown scorer: {scorer_name}. Use 'lof', 'iforest', or 'mahalanobis'")
+    
+    # Create results DataFrame
+    results = pd.DataFrame({
+        'sample_id': all_sample_ids,
+        'anomaly_score': scores
+    })
+    
+    # Compute threshold from normal distribution
+    normal_scores = results[results['sample_id'].isin(normal_sample_ids)]['anomaly_score']
+    threshold = float(np.percentile(normal_scores, percentile))
+    
+    # Flag samples above threshold
+    results['flagged'] = results['anomaly_score'] > threshold
+    
+    # Compute validation metrics
+    all_test_samples = imd_sample_ids + gray_sample_ids
+    
+    # Count flagged in each category
+    normals_flagged = int(results[results['sample_id'].isin(normal_sample_ids) & results['flagged']].shape[0])
+    imds_flagged = int(results[results['sample_id'].isin(imd_sample_ids) & results['flagged']].shape[0])
+    grays_flagged = int(results[results['sample_id'].isin(gray_sample_ids) & results['flagged']].shape[0])
+    
+    n_normals = len(normal_sample_ids)
+    n_imds = len(imd_sample_ids)
+    n_grays = len(gray_sample_ids)
+    
+    detection_rate = imds_flagged / n_imds if n_imds > 0 else 0.0
+    contamination_rate = normals_flagged / n_normals if n_normals > 0 else 0.0
+    gray_flag_rate = grays_flagged / n_grays if n_grays > 0 else 0.0
+    
+    # Get flagged sample IDs
+    flagged_normal_ids = results[results['sample_id'].isin(normal_sample_ids) & results['flagged']]['sample_id'].tolist()
+    flagged_imd_ids = results[results['sample_id'].isin(imd_sample_ids) & results['flagged']]['sample_id'].tolist()
+    
+    logger.info(f"\n{method_name} Results:")
+    logger.info(f"  Threshold: {threshold:.4f} (percentile {percentile})")
+    logger.info(f"  Normals flagged: {normals_flagged} / {n_normals} ({contamination_rate*100:.1f}%)")
+    logger.info(f"  IMDs flagged: {imds_flagged} / {n_imds} ({detection_rate*100:.1f}%)")
+    logger.info(f"  Gray flagged: {grays_flagged} / {n_grays} ({gray_flag_rate*100:.1f}%)")
+    
+    return {
+        'scorer': scorer_name,
+        'method': method_name,
+        'results': results,
+        'threshold': threshold,
+        'percentile': percentile,
+        'n_normals': n_normals,
+        'n_imds': n_imds,
+        'n_grays': n_grays,
+        'normals_flagged': normals_flagged,
+        'imds_flagged': imds_flagged,
+        'grays_flagged': grays_flagged,
+        'detection_rate': detection_rate,
+        'contamination_rate': contamination_rate,
+        'gray_flag_rate': gray_flag_rate,
+        'flagged_normal_ids': flagged_normal_ids,
+        'flagged_imd_ids': flagged_imd_ids,
     }
