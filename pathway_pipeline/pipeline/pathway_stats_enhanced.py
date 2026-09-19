@@ -614,9 +614,15 @@ def validate_no_normal_contamination(
 
     # Align decisions with metadata
     # reindex and fill missing flagged values with False
-    decisions_aligned = decisions.reindex(idx)
-    decisions_aligned["flagged"] = decisions_aligned["flagged"].fillna(False)
-    flagged = decisions_aligned["flagged"]
+    # Handle potential duplicate index in decisions by aggregating with any()
+    if decisions.index.duplicated().any():
+        # Aggregate duplicate decisions using any() - if any duplicate is flagged, the sample is flagged
+        decisions_no_dup = decisions.groupby(decisions.index)["flagged"].any()
+        decisions_aligned = decisions_no_dup.reindex(idx)
+    else:
+        decisions_aligned = decisions["flagged"].reindex(idx)
+    decisions_aligned = decisions_aligned.fillna(False)
+    flagged = decisions_aligned
 
     # Count flagged in each category
     normals_flagged = int((flagged & normal_mask).sum())
