@@ -368,7 +368,9 @@ def run_pipeline(input_file: str,
     logger.info(f"  Gray: {len(gray_sample_ids)}")
     
     # Filter to only normals + IMDs (exclude gray)
-    analysis_sample_ids = normal_sample_ids + imd_sample_ids
+    # Use boolean indexing to avoid duplicate sample IDs
+    analysis_mask = normal_mask | imd_mask
+    analysis_sample_ids = metadata.index[analysis_mask].unique().tolist()
     
     if len(analysis_sample_ids) != 317:
         logger.warning(f"Expected 317 samples but found {len(analysis_sample_ids)}")
@@ -384,16 +386,21 @@ def run_pipeline(input_file: str,
     # Get only features that are in the feature_to_pathway mapping
     features_filtered = features[pathway_features]
     
+    # Filter features and metadata to analysis samples
+    features_filtered = features_filtered.loc[analysis_mask]
+    metadata_filtered = metadata.loc[analysis_mask]
+    normal_mask_filtered = normal_mask.loc[analysis_mask]
+    
     logger.info(f"Using {len(pathway_features)} features that map to pathways")
     logger.info(f"Analyzing {len(analysis_sample_ids)} samples "
                 f"({len(normal_sample_ids)} normals + {len(imd_sample_ids)} IMDs)")
     
     # Compute z-scores using normals as reference
     zscores = compute_metabolite_zscores(
-        features_filtered.loc[analysis_sample_ids],
-        normal_mask=pd.Series(normal_mask.loc[analysis_sample_ids], index=analysis_sample_ids),
+        features_filtered,
+        normal_mask=normal_mask_filtered,
         iqr_scale=bool(config.get("iqr_scale", True)),
-        ages=ages.loc[analysis_sample_ids] if ages is not None else None,
+        ages=ages.loc[analysis_mask] if ages is not None else None,
         age_adjustment_method=config.get("age_adjustment_method", "ols"),
         age_loess_frac=float(config.get("age_loess_frac", 0.5)),
     )
@@ -426,11 +433,15 @@ def run_pipeline(input_file: str,
     logger.info(f"Computed Stouffer's Z for {pathway_stats['pathway_name'].nunique()} pathways "
                 f"across {pathway_stats['sample_id'].nunique()} samples")
     
+    # Get sample IDs from the filtered zscores (which has unique index)
+    normal_sample_ids_filtered = metadata_filtered.index[normal_mask_filtered].tolist()
+    imd_sample_ids_filtered = metadata_filtered.index[~normal_mask_filtered].tolist()
+    
     # Find optimal threshold
     threshold_info = find_optimal_threshold(
         pathway_stats,
-        normal_sample_ids,
-        imd_sample_ids,
+        normal_sample_ids_filtered,
+        imd_sample_ids_filtered,
         min_detection=float(config.get("min_detection", 0.80)),
         max_contamination=float(config.get("max_contamination", 0.05)),
         min_flagged_pathways=int(config.get("min_flagged_pathways", 1)),
@@ -454,8 +465,8 @@ def run_pipeline(input_file: str,
     # Validate
     validation = validate_flagging(
         decisions,
-        normal_sample_ids,
-        imd_sample_ids
+        normal_sample_ids_filtered,
+        imd_sample_ids_filtered
     )
     
     logger.info(f"\nValidation results:")
