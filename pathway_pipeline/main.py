@@ -411,8 +411,28 @@ def run_pipeline(input_file: str,
         results["enhanced_pathway_flags"] = enhanced_flags
         results["enhanced_weighted_scores"] = weighted_scores
         results["enhanced_sample_decisions"] = enhanced_decision
+        
+        # Skip original pipeline when enhanced is used to avoid duplicate/conflicting results
+        # The enhanced pipeline is the primary analysis when enabled
+        # Write enhanced outputs as the main outputs
+        enhanced_flags.to_csv(out / "pathway_statistics.csv", index=False)
+        enhanced_decision.to_csv(out / "sample_decisions.csv")
+        zscores_filtered.to_csv(out / "metabolite_zscores.csv")
+        metabolite_flags_filtered.to_csv(out / "metabolite_flags.csv", index=False)
+        
+        results["pathway_statistics"] = enhanced_flags
+        results["sample_decisions"] = enhanced_decision
+        results["metabolite_zscores"] = zscores_filtered
+        results["metabolite_flags"] = metabolite_flags_filtered
+        return results
 
     # --- Original (or fallback) pipeline ---
+    # Compute global anomaly scores on filtered zscores
+    global_scores = compute_global_anomaly_score(
+        zscores, top_k=int(config.get("global_anomaly_top_k", 10))
+    )
+    global_scores.to_csv(out / "global_anomaly_scores.csv")
+    
     stats = compute_pathway_statistics(
         zscores=zscores,
         feature_to_pathway=feature_to_pathway,
@@ -440,11 +460,6 @@ def run_pipeline(input_file: str,
                 f"({int((pathway_flags['severity'] == 'severe').sum())} severe, "
                 f"{int((pathway_flags['severity'] == 'moderate').sum())} moderate).")
 
-    # --- Layer 4: optional global anomaly score (safety light) ---
-    global_scores = compute_global_anomaly_score(
-        zscores, top_k=int(config.get("global_anomaly_top_k", 10))
-    )
-    global_scores.to_csv(out / "global_anomaly_scores.csv")
     global_threshold = config.get("global_threshold", None)
     if global_threshold is not None:
         global_threshold = float(global_threshold)
