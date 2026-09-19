@@ -351,21 +351,25 @@ def run_pipeline(input_file: str,
 
         # Enhanced pathway flagging - extreme mode only
         # First, add sample_type to stats for empirical threshold computation
-        # Create a mapping from sample_id to sample_type
+        # enhanced_stats has one row per (sample, pathway), so sample_id has duplicates
+        # We need to create sample_type based on the sample_id column
+        
+        # Build a clean mapping: sample_id -> sample_type
         cls_col = pd.to_numeric(metadata_filtered["Classification"], errors="coerce")
         oor_col = pd.to_numeric(metadata_filtered["Oordeel targeted"], errors="coerce")
         
-        # Build sample_type for each sample in metadata_filtered
-        sample_types = pd.Series("gray", index=metadata_filtered.index)
-        sample_types.loc[(cls_col == 0) & (oor_col == 0)] = "normal"
-        sample_types.loc[(cls_col == 1) & (oor_col == 1)] = "imd"
+        sample_type_map = pd.Series("gray", index=metadata_filtered.index)
+        sample_type_map.loc[(cls_col == 0) & (oor_col == 0)] = "normal"
+        sample_type_map.loc[(cls_col == 1) & (oor_col == 1)] = "imd"
         
-        # Map to enhanced_stats using sample_id
-        if "sample_id" in enhanced_stats.columns:
-            enhanced_stats["sample_type"] = enhanced_stats["sample_id"].map(sample_types)
-        else:
-            # enhanced_stats index should match metadata_filtered index
-            enhanced_stats["sample_type"] = sample_types.reindex(enhanced_stats.index).values
+        # Create a DataFrame for merging (handles duplicate sample_ids in enhanced_stats)
+        type_df = pd.DataFrame({
+            "sample_id": metadata_filtered.index,
+            "sample_type": sample_type_map.values
+        })
+        
+        # Merge with enhanced_stats on sample_id
+        enhanced_stats = enhanced_stats.merge(type_df, on="sample_id", how="left")
         
         enhanced_flags = flag_pathways_enhanced(
             enhanced_stats,
