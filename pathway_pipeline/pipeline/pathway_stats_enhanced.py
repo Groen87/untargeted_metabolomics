@@ -640,7 +640,9 @@ def validate_no_normal_contamination(
     n_gray = int(gray_mask.sum())
 
     # Align decisions with metadata
-    decisions_aligned = decisions.reindex(idx, fill_value={"flagged": False})
+    # reindex and fill missing flagged values with False
+    decisions_aligned = decisions.reindex(idx)
+    decisions_aligned["flagged"] = decisions_aligned["flagged"].fillna(False)
     flagged = decisions_aligned["flagged"]
 
     # Count flagged in each category
