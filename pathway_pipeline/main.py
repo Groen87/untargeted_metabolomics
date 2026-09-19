@@ -349,17 +349,10 @@ def run_pipeline(input_file: str,
             output_dir=out,
         )
 
-        # Enhanced pathway flagging
+        # Enhanced pathway flagging - extreme mode only
         enhanced_flags = flag_pathways_enhanced(
             enhanced_stats,
-            zmed_threshold=float(config.get("zmed_threshold", 2.0)),
-            stouffer_z_threshold=float(config.get("stouffer_z_threshold", 3.0)),
-            p_stouffer_threshold=float(config.get("p_stouffer_threshold", 0.001)),
-            p_bonferroni_threshold=float(config.get("p_bonferroni_threshold", 0.05)),
-            p_fdr_threshold=float(config.get("p_fdr_threshold", 0.05)),
-            use_empirical=bool(config.get("use_empirical_thresholds", True)),
-            extreme_mode=bool(config.get("extreme_mode", True)),
-            extreme_z_threshold=float(config.get("extreme_z_threshold", 10.0)),
+            extreme_z_threshold=float(config.get("extreme_z_threshold", 15.0)),
         )
         enhanced_flags.to_csv(out / "enhanced_pathway_flags.csv", index=False)
         logger.info(f"Enhanced Layer 2 (pathways): {int(enhanced_flags['flagged_two_stage'].sum())} "

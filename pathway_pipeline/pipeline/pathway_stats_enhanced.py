@@ -320,105 +320,33 @@ def compute_enhanced_pathway_statistics(
 
 def flag_pathways_enhanced(
     stats: pd.DataFrame,
-    zmed_threshold: float = 2.0,
-    stouffer_z_threshold: float = 3.0,
-    p_stouffer_threshold: float = 0.001,
-    p_bonferroni_threshold: float = 0.05,
-    p_fdr_threshold: float = 0.05,
-    use_empirical: bool = False,
-    empirical_alpha: float = 0.05,
-    extreme_mode: bool = False,
-    extreme_z_threshold: float = 10.0,
+    extreme_z_threshold: float = 15.0,
 ) -> pd.DataFrame:
-    """Flag pathways using enhanced statistics with multiple methods.
+    """Flag pathways using extreme mode only.
 
-    A pathway can be flagged by any of these methods:
-    - Traditional Z_med threshold
-    - Stouffer's Z threshold
-    - Uncorrected p-value threshold
-    - Bonferroni-corrected p-value threshold
-    - FDR-corrected p-value threshold
-    - Empirical threshold (pathway-specific from normals)
-    - Extreme mode: only flag pathways with extremely high |Z_stouffer| (for IMD detection)
+    Only flags pathways with |Z_stouffer| > extreme_z_threshold.
+    This is designed for IMD detection where only 1-2 pathways are 
+    extremely disturbed, while normals have no such extreme deviations.
 
     Args:
         stats: output of compute_enhanced_pathway_statistics.
-        zmed_threshold: traditional |Z_med| threshold.
-        stouffer_z_threshold: |Z_stouffer| threshold.
-        p_stouffer_threshold: uncorrected p-value threshold.
-        p_bonferroni_threshold: Bonferroni-corrected p-value threshold.
-        p_fdr_threshold: FDR-corrected p-value threshold.
-        use_empirical: if True, use empirical pathway thresholds.
-        empirical_alpha: significance level for empirical thresholds.
-        extreme_mode: if True, use extreme Z threshold only (ignore p-values).
-        extreme_z_threshold: |Z_stouffer| threshold for extreme mode.
+        extreme_z_threshold: |Z_stouffer| threshold for flagging.
 
     Returns:
-        stats with added flag columns for each method and combined flag.
+        stats with added flag_extreme and flagged_two_stage columns.
     """
     if stats.empty:
         return stats
 
     # Extreme mode: only flag pathways with very high |Z_stouffer|
-    # This is for IMD detection where only 1-2 pathways are extremely disturbed
-    if extreme_mode:
-        stats["flag_extreme"] = stats["z_stouffer"].abs() > extreme_z_threshold
-        # Override all other flags with extreme-only logic
-        flag_cols = ["flag_extreme"]
-        stats["flag_zmed"] = False
-        stats["flag_stouffer_z"] = stats["flag_extreme"]
-        stats["flag_p_stouffer"] = False
-        stats["flag_p_bonferroni"] = False
-        stats["flag_p_fdr"] = False
-        stats["flag_empirical"] = False
-        stats["flagged_any"] = stats["flag_extreme"]
-        stats["flagged_two_stage"] = stats["flag_extreme"]
-        stats["n_methods_flagged"] = stats["flag_extreme"].astype(int)
-    else:
-        # Traditional Z_med flag
-        stats["flag_zmed"] = stats["z_med"].abs() > zmed_threshold
-
-        # Stouffer's Z flag
-        stats["flag_stouffer_z"] = stats["z_stouffer"].abs() > stouffer_z_threshold
-
-        # p-value flags
-        stats["flag_p_stouffer"] = stats["p_stouffer"] < p_stouffer_threshold
-        stats["flag_p_bonferroni"] = stats["p_bonferroni"] < p_bonferroni_threshold
-        stats["flag_p_fdr"] = stats["p_fdr"] < p_fdr_threshold
-
-        # Empirical threshold flag
-        if use_empirical:
-            stats["flag_empirical"] = stats["z_med"].abs() > stats["empirical_p_threshold"]
-        else:
-            stats["flag_empirical"] = False
-
-        # Combined flag: any method triggers
-        flag_cols = ["flag_zmed", "flag_stouffer_z", "flag_p_stouffer",
-                     "flag_p_bonferroni", "flag_p_fdr", "flag_empirical"]
-        stats["flagged_any"] = stats[flag_cols].any(axis=1)
-
-        # Two-stage flag: require Stouffer's Z OR corrected p-value
-        stats["flagged_two_stage"] = (
-            stats["flag_stouffer_z"] |
-            stats["flag_p_bonferroni"] |
-            stats["flag_p_fdr"]
-        )
-
-        # Count how many methods flag each (sample, pathway)
-        stats["n_methods_flagged"] = stats[flag_cols].sum(axis=1)
-
-    extra_info = ""
-    if extreme_mode:
-        extra_info = f", extreme={stats.get('flag_extreme', pd.Series(dtype=bool)).sum()}"
+    stats["flag_extreme"] = stats["z_stouffer"].abs() > extreme_z_threshold
+    stats["flagged_two_stage"] = stats["flag_extreme"]
+    
     logger.info(
-        f"Pathway flags (enhanced): "
-        f"Z_med={stats['flag_zmed'].sum()}, "
-        f"Stouffer_Z={stats['flag_stouffer_z'].sum()}, "
-        f"p_stouffer={stats['flag_p_stouffer'].sum()}, "
-        f"p_bonferroni={stats['flag_p_bonferroni'].sum()}, "
-        f"p_fdr={stats['flag_p_fdr'].sum()}, "
-        f"empirical={stats['flag_empirical'].sum()}, "
-        f"any={stats['flagged_any'].sum()}, "
+        f"Pathway flags (extreme mode): "
+        f"extreme={stats['flag_extreme'].sum()}, "
+        f"flagged_two_stage={stats['flagged_two_stage'].sum()}"
+    )        f"any={stats['flagged_any'].sum()}, "
         f"two_stage={stats['flagged_two_stage'].sum()}{extra_info}"
     )
 
