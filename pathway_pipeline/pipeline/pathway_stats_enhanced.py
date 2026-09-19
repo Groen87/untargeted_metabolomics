@@ -296,9 +296,7 @@ def compute_enhanced_pathway_statistics(
         p_df["p_fdr"] = np.minimum(p_df["p_fdr"], 1.0)
 
         # Merge back to stats_df
-        p_df = p_df[[
-            "sample_id", "pathway_name", "p_value", "p_fdr"
-        ]].rename(columns={"p_value": "p_stouffer", "p_fdr": "p_fdr"})
+        p_df = p_df[["sample_id", "pathway_name", "p_fdr"]]
         stats_df = stats_df.merge(p_df, on=["sample_id", "pathway_name"], how="left")
 
     # Save monitoring CSVs
