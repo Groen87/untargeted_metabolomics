@@ -327,6 +327,8 @@ def flag_pathways_enhanced(
     p_fdr_threshold: float = 0.05,
     use_empirical: bool = False,
     empirical_alpha: float = 0.05,
+    extreme_mode: bool = False,
+    extreme_z_threshold: float = 10.0,
 ) -> pd.DataFrame:
     """Flag pathways using enhanced statistics with multiple methods.
 
@@ -337,6 +339,7 @@ def flag_pathways_enhanced(
     - Bonferroni-corrected p-value threshold
     - FDR-corrected p-value threshold
     - Empirical threshold (pathway-specific from normals)
+    - Extreme mode: only flag pathways with extremely high |Z_stouffer| (for IMD detection)
 
     Args:
         stats: output of compute_enhanced_pathway_statistics.
@@ -347,6 +350,8 @@ def flag_pathways_enhanced(
         p_fdr_threshold: FDR-corrected p-value threshold.
         use_empirical: if True, use empirical pathway thresholds.
         empirical_alpha: significance level for empirical thresholds.
+        extreme_mode: if True, use extreme Z threshold only (ignore p-values).
+        extreme_z_threshold: |Z_stouffer| threshold for extreme mode.
 
     Returns:
         stats with added flag columns for each method and combined flag.
@@ -354,38 +359,57 @@ def flag_pathways_enhanced(
     if stats.empty:
         return stats
 
-    # Traditional Z_med flag
-    stats["flag_zmed"] = stats["z_med"].abs() > zmed_threshold
-
-    # Stouffer's Z flag
-    stats["flag_stouffer_z"] = stats["z_stouffer"].abs() > stouffer_z_threshold
-
-    # p-value flags
-    stats["flag_p_stouffer"] = stats["p_stouffer"] < p_stouffer_threshold
-    stats["flag_p_bonferroni"] = stats["p_bonferroni"] < p_bonferroni_threshold
-    stats["flag_p_fdr"] = stats["p_fdr"] < p_fdr_threshold
-
-    # Empirical threshold flag
-    if use_empirical:
-        stats["flag_empirical"] = stats["z_med"].abs() > stats["empirical_p_threshold"]
-    else:
+    # Extreme mode: only flag pathways with very high |Z_stouffer|
+    # This is for IMD detection where only 1-2 pathways are extremely disturbed
+    if extreme_mode:
+        stats["flag_extreme"] = stats["z_stouffer"].abs() > extreme_z_threshold
+        # Override all other flags with extreme-only logic
+        flag_cols = ["flag_extreme"]
+        stats["flag_zmed"] = False
+        stats["flag_stouffer_z"] = stats["flag_extreme"]
+        stats["flag_p_stouffer"] = False
+        stats["flag_p_bonferroni"] = False
+        stats["flag_p_fdr"] = False
         stats["flag_empirical"] = False
+        stats["flagged_any"] = stats["flag_extreme"]
+        stats["flagged_two_stage"] = stats["flag_extreme"]
+        stats["n_methods_flagged"] = stats["flag_extreme"].astype(int)
+    else:
+        # Traditional Z_med flag
+        stats["flag_zmed"] = stats["z_med"].abs() > zmed_threshold
 
-    # Combined flag: any method triggers
-    flag_cols = ["flag_zmed", "flag_stouffer_z", "flag_p_stouffer",
-                 "flag_p_bonferroni", "flag_p_fdr", "flag_empirical"]
-    stats["flagged_any"] = stats[flag_cols].any(axis=1)
+        # Stouffer's Z flag
+        stats["flag_stouffer_z"] = stats["z_stouffer"].abs() > stouffer_z_threshold
 
-    # Two-stage flag: require Stouffer's Z OR corrected p-value
-    stats["flagged_two_stage"] = (
-        stats["flag_stouffer_z"] |
-        stats["flag_p_bonferroni"] |
-        stats["flag_p_fdr"]
-    )
+        # p-value flags
+        stats["flag_p_stouffer"] = stats["p_stouffer"] < p_stouffer_threshold
+        stats["flag_p_bonferroni"] = stats["p_bonferroni"] < p_bonferroni_threshold
+        stats["flag_p_fdr"] = stats["p_fdr"] < p_fdr_threshold
 
-    # Count how many methods flag each (sample, pathway)
-    stats["n_methods_flagged"] = stats[flag_cols].sum(axis=1)
+        # Empirical threshold flag
+        if use_empirical:
+            stats["flag_empirical"] = stats["z_med"].abs() > stats["empirical_p_threshold"]
+        else:
+            stats["flag_empirical"] = False
 
+        # Combined flag: any method triggers
+        flag_cols = ["flag_zmed", "flag_stouffer_z", "flag_p_stouffer",
+                     "flag_p_bonferroni", "flag_p_fdr", "flag_empirical"]
+        stats["flagged_any"] = stats[flag_cols].any(axis=1)
+
+        # Two-stage flag: require Stouffer's Z OR corrected p-value
+        stats["flagged_two_stage"] = (
+            stats["flag_stouffer_z"] |
+            stats["flag_p_bonferroni"] |
+            stats["flag_p_fdr"]
+        )
+
+        # Count how many methods flag each (sample, pathway)
+        stats["n_methods_flagged"] = stats[flag_cols].sum(axis=1)
+
+    extra_info = ""
+    if extreme_mode:
+        extra_info = f", extreme={stats.get('flag_extreme', pd.Series(dtype=bool)).sum()}"
     logger.info(
         f"Pathway flags (enhanced): "
         f"Z_med={stats['flag_zmed'].sum()}, "
@@ -395,7 +419,7 @@ def flag_pathways_enhanced(
         f"p_fdr={stats['flag_p_fdr'].sum()}, "
         f"empirical={stats['flag_empirical'].sum()}, "
         f"any={stats['flagged_any'].sum()}, "
-        f"two_stage={stats['flagged_two_stage'].sum()}"
+        f"two_stage={stats['flagged_two_stage'].sum()}{extra_info}"
     )
 
     return stats
@@ -853,16 +877,13 @@ def _generate_imd_pathway_visualizations(
     imd_mask = (cls == 1) & (oor == 1)
     imd_samples = metadata.index[imd_mask]
 
-    # Get flagged IMD samples - ensure imd_mask aligns with decisions.index
-    # Handle potential duplicate index by using values directly
-    if hasattr(decisions.index, 'has_duplicates') and decisions.index.has_duplicates:
-        # Use array-based masking to handle duplicates
-        flagged_values = decisions["flagged"].values
-        imd_values = imd_mask.reindex(decisions.index, fill_value=False).values
-        flagged_imd = decisions.index[flagged_values & imd_values].unique()
-    else:
-        imd_mask_aligned = imd_mask.reindex(decisions.index, fill_value=False)
-        flagged_imd = decisions.index[decisions["flagged"] & imd_mask_aligned]
+    # Get flagged IMD samples - handle potential duplicate index in decisions
+    # Use direct boolean masking without reindex to avoid duplicate index issues
+    flagged_bool = decisions["flagged"].values
+    imd_bool = imd_mask.values
+    # Only keep indices where both arrays align
+    valid_idx = decisions.index[flagged_bool & imd_bool]
+    flagged_imd = valid_idx.unique()
 
     if len(flagged_imd) == 0:
         logger.info("No flagged IMD samples to visualize.")
@@ -872,13 +893,9 @@ def _generate_imd_pathway_visualizations(
 
     # Get normal reference statistics for comparison
     normal_mask = _get_normal_mask_from_metadata(metadata, "class1_imd")
-    # Handle potential duplicate index in pathway_stats
-    if hasattr(pathway_stats.index, 'has_duplicates') and pathway_stats.index.has_duplicates:
-        normal_values = normal_mask.reindex(pathway_stats.index, fill_value=False).values
-        normal_stats = pathway_stats[normal_values]
-    else:
-        normal_mask_aligned = normal_mask.reindex(pathway_stats.index, fill_value=False)
-        normal_stats = pathway_stats[normal_mask_aligned]
+    # Use sample_id column for filtering instead of index to avoid duplicate issues
+    normal_samples = metadata.index[normal_mask]
+    normal_stats = pathway_stats[pathway_stats["sample_id"].isin(normal_samples)]
 
     # Compute mean and std of Z_med for normals per pathway
     normal_means = normal_stats.groupby("pathway_name")["z_med"].agg([
