@@ -152,6 +152,15 @@ tuning_severe_zmed_grid: [2.5, 3.0, 3.5, 4.0]
 tuning_signed_extreme_grid: [2.5, 3.0, 4.0]
 
 # ============================================================================
+# Warnings and verbosity
+# ============================================================================
+# Suppress harmless numpy RuntimeWarnings (All-NaN slice, invalid value, etc.)
+# during pathway statistics computation. These warnings are expected when
+# pathways have all positive or all negative z-scores (a valid IMD signal).
+# Set to true for cleaner logs, false to see all warnings (useful for debugging).
+suppress_numpy_warnings: true
+
+# ============================================================================
 # Enhanced statistics (optional)
 # ============================================================================
 # Enable enhanced pathway analysis with Stouffer's Z-score, multiple testing
