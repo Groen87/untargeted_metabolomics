@@ -140,8 +140,8 @@ def _normal_reference_mask(metadata: pd.DataFrame, scheme: str) -> pd.Series:
             return pd.Series(cls.isin([0, 3]), index=idx)
         if scheme == "class1_imd":
             # Normals = Class 0 AND Oordeel 0.
-            # Class 1 = IMD (regardless of Oordeel).
-            # Class 2/3 or (Class 0 AND Oordeel 1) = gray (not normal, not IMD).
+            # IMD = Class 1 AND Oordeel 1.
+            # Everything else = gray (Class 2/3, Class 0 AND Oordeel 1, Class 1 AND Oordeel 0).
             return pd.Series((cls == 0) & (oor == 0), index=idx)
         # default: Class 0 (after the pipeline's Oordeel reconciliation)
         return pd.Series(cls == 0, index=idx)
@@ -174,14 +174,16 @@ def _imd_labels(metadata: pd.DataFrame, scheme: str) -> pd.Series:
         # Confident normal = (Class 0 AND Oordeel 0); everything else is IMD-ish.
         return pd.Series(np.where((cls == 0) & (oor == 0), 0, 1), index=idx)
     if scheme == "class1_imd":
-        # Class 1 = IMD (regardless of Oordeel). Everything else = 0.
-        return pd.Series(np.where(cls == 1, 1, 0), index=idx)
+        # IMD = Class 1 AND Oordeel 1. Everything else = 0.
+        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+        return pd.Series(np.where((cls == 1) & (oor == 1), 1, 0), index=idx)
     if scheme == "oordeel" and "Oordeel targeted" in metadata.columns:
         oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
         return pd.Series(np.where(oor == 1, 1, 0), index=idx)
     if scheme == "binary_simplified":
         return pd.Series(np.where(cls == 1, 1, 0), index=idx)
-    return pd.Series(np.where(cls == 1, 1, 0), index=idx)
+    # Default fallback
+    return pd.Series(np.where(cls == 0, 0, 1), index=idx)
 
 
 def run_pipeline(input_file: str,

@@ -624,10 +624,10 @@ def validate_no_normal_contamination(
     # Classify samples
     if classification_scheme == "class1_imd":
         # Normals = Class 0 AND Oordeel 0
-        # IMD = Class 1 (regardless of Oordeel)
-        # Gray = Class 2/3 OR (Class 0 AND Oordeel 1)
+        # IMD = Class 1 AND Oordeel 1
+        # Gray = Everything else (Class 2/3, Class 0 AND Oordeel 1, Class 1 AND Oordeel 0)
         normal_mask = (cls == 0) & (oor == 0)
-        imd_mask = (cls == 1)
+        imd_mask = (cls == 1) & (oor == 1)
         gray_mask = ~normal_mask & ~imd_mask
     else:
         # Default: use confident_normals scheme
@@ -847,9 +847,10 @@ def _generate_imd_pathway_visualizations(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Identify IMD samples
+    # Identify IMD samples (Class 1 AND Oordeel 1)
     cls = pd.to_numeric(metadata["Classification"], errors="coerce")
-    imd_mask = (cls == 1)
+    oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+    imd_mask = (cls == 1) & (oor == 1)
     imd_samples = metadata.index[imd_mask]
 
     # Get flagged IMD samples
