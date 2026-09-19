@@ -196,7 +196,7 @@ def run_pipeline(input_file: str,
     # Suppress numpy RuntimeWarnings if configured
     if bool(config.get("suppress_numpy_warnings", True)):
         import warnings
-        warnings.filterwarnings('ignore', category=np.RuntimeWarning)
+        warnings.filterwarnings('ignore', category=RuntimeWarning)
 
     _log_section("PATHWAY PIPELINE")
     logger.info(f"Input: {input_file}\nOutput: {out}")
