@@ -533,23 +533,24 @@ def decide_samples_enhanced(
 
     # Build flagged pathway counts per sample
     flagged_pathways = pathway_stats[pathway_stats["flagged_two_stage"]]
-    pathway_counts = flagged_pathways.groupby("sample_id").agg({
-        "n_flagged": ("n_flagged_pathways", "count"),
-        "mean_weight": ("z_stouffer", lambda x: np.mean(np.abs(x))),
-    })["n_flagged_pathways"]
+    pathway_counts = flagged_pathways.groupby("sample_id")["z_stouffer"].agg([
+        ("n_flagged_pathways", "count"),
+        ("mean_weight", lambda x: np.mean(np.abs(x))),
+    ])
 
     rows: List[Dict] = []
     for sid in all_samples:
-        score = weighted_scores.loc.get(sid, {"total_score": 0, "mean_weight": 0})
-        n_flagged = pathway_counts.get(sid, 0)
-        mean_weight = weighted_scores.loc.get(sid, {"mean_weight": 0})["mean_weight"]
+        score_row = weighted_scores.loc[sid] if sid in weighted_scores.index else pd.Series({"total_score": 0, "mean_weight": 0})
+        n_flagged_row = pathway_counts.loc[sid] if sid in pathway_counts.index else pd.Series({"n_flagged_pathways": 0, "mean_weight": 0})
+        n_flagged = n_flagged_row["n_flagged_pathways"]
+        mean_weight = n_flagged_row["mean_weight"]
         n_met = len(metabolite_flags[metabolite_flags["sample_id"] == sid]) if not metabolite_flags.empty else 0
         gscore = global_scores.get(sid, float("nan")) if global_scores is not None else float("nan")
 
         reasons: List[str] = []
 
-        if score_threshold is not None and score.get("total_score", 0) > score_threshold:
-            reasons.append(f"weighted_score={score['total_score']:.2f}>{score_threshold}")
+        if score_threshold is not None and score_row.get("total_score", 0) > score_threshold:
+            reasons.append(f"weighted_score={score_row['total_score']:.2f}>{score_threshold}")
 
         if n_flagged >= min_flagged_pathways and mean_weight >= min_weight:
             reasons.append(f"{n_flagged} pathways with mean_weight={mean_weight:.2f}>{min_weight}")
@@ -563,7 +564,7 @@ def decide_samples_enhanced(
         rows.append({
             "sample_id": sid,
             "flagged": bool(reasons),
-            "weighted_score": score.get("total_score", 0),
+            "weighted_score": score_row.get("total_score", 0),
             "n_flagged_pathways": n_flagged,
             "mean_pathway_weight": mean_weight,
             "n_metabolite_overrides": n_met,
