@@ -163,27 +163,24 @@ suppress_numpy_warnings: true
 # ============================================================================
 # Enhanced statistics (optional)
 # ============================================================================
-# Enable enhanced pathway analysis with Stouffer's Z-score, multiple testing
-# correction, weighted decision scores, and comprehensive monitoring CSVs.
+# Enable enhanced pathway analysis with Stouffer's Z-score and extreme mode.
 # When enabled, generates:
 #   - enhanced_pathway_statistics.csv: all stats per (sample, pathway)
-#   - p_value_distribution.csv: p-value histogram data
+#   - enhanced_pathway_flags.csv: extreme pathway flags
 #   - enhanced_sample_decisions.csv: enhanced decision results
-use_enhanced_stats: false
+use_enhanced_stats: true
 
-# Enhanced pathway flagging thresholds
-stouffer_z_threshold: 3.0        # |Z_stouffer| threshold for pathway flagging
-p_stouffer_threshold: 0.001     # uncorrected p-value threshold
-p_bonferroni_threshold: 0.05    # Bonferroni-corrected p-value threshold
-p_fdr_threshold: 0.05           # FDR-corrected p-value threshold (Benjamini-Hochberg)
-use_empirical_thresholds: true   # use pathway-specific empirical thresholds from normals
+# Extreme mode: only flag pathways with |Z_stouffer| > threshold
+# This is for IMD detection where only 1-2 pathways are extremely disturbed.
+# P-value thresholds were removed as they caused 72% normal contamination.
+extreme_z_threshold: 20.0    # Only flag pathways with |Z_stouffer| > 20.0
 
-# Weighted decision score
+# Weighted decision score (used for sample-level decision)
 weight_method: stouffer        # stouffer | zmed | p_value
 use_log_weights: true          # log-transform weights for better scale
 score_threshold: null          # flag if weighted_score > this (null = disabled)
-min_flagged_pathways: 3        # for count-based fallback rule
-min_weight: 2.0                # minimum mean weight for count-based rule
+min_flagged_pathways: 1        # Minimum flagged pathways to flag a sample
+min_weight: 5.0                # minimum mean weight for count-based rule
 
 # ============================================================================
 # Visualization (optional)
