@@ -296,10 +296,8 @@ def compute_enhanced_pathway_statistics(
         # Merge back to stats_df
         p_df = p_df[[
             "sample_id", "pathway_name", "p_value", "p_fdr"
-        ]].rename(columns={"p_value": "p_stouffer_orig"})
-        stats_df = stats_df.merge(p_df, on=["sample_id", "pathway_name"], how="left")
-        stats_df = stats_df.rename(columns={"p_stouffer": "p_stouffer_orig"})
-        stats_df["p_stouffer"] = stats_df["p_stouffer_orig"]
+        ]].rename(columns={"p_value": "p_stouffer_fdr"})
+        # Rename the FDR column to p_fdr
         stats_df = stats_df.drop(columns=["p_stouffer_orig"])
 
     # Save monitoring CSVs
