@@ -268,6 +268,11 @@ def compute_enhanced_pathway_statistics(
         # Keep signed for monitoring/compatibility
         z_stouffer = z_stouffer_abs
         p_stouffer = p_stouffer_abs
+        
+        # Compute Bonferroni-corrected p-values (for monitoring, not flagging)
+        n_pathways = len(pathway_features)
+        p_bonferroni = p_stouffer * n_pathways
+        
         # For FDR, we need all p-values across all pathways
         all_p_values.extend(p_stouffer.tolist())
         all_pathway_names.extend([pathway_name] * n_samples)
