@@ -371,6 +371,17 @@ def run_pipeline(input_file: str,
         )
         results["enhanced_validation_report"] = validation_report
 
+        # Generate visualizations for IMD samples if requested
+        if bool(config.get("generate_imd_visualizations", False)):
+            try:
+                _generate_imd_pathway_visualizations(
+                    enhanced_stats, enhanced_flags, enhanced_decision,
+                    metadata, out
+                )
+            except ImportError:
+                logger.warning("Seaborn/matplotlib not available for visualizations. "
+                               "Install with: pip install seaborn matplotlib")
+
         results["enhanced_pathway_statistics"] = enhanced_stats
         results["enhanced_pathway_flags"] = enhanced_flags
         results["enhanced_weighted_scores"] = weighted_scores

@@ -177,6 +177,21 @@ min_flagged_pathways: 3        # for count-based fallback rule
 min_weight: 2.0                # minimum mean weight for count-based rule
 
 # ============================================================================
+# Visualization (optional)
+# ============================================================================
+# Generate Seaborn visualizations for each flagged IMD sample showing which
+# pathways are deviated from normal. Creates per-sample subdirectories in
+# imd_visualizations/ with 4 plots each:
+#   - top_pathways_stouffer.png: Top N pathways by |Z_stouffer|
+#   - top_pathways_zmed.png: Top N pathways by |Z_med|
+#   - all_pathways_heatmap.png: Heatmap of all pathway Z_med values
+#   - pathway_vs_normal.png: Sample pathway values vs normal distribution
+# Requires seaborn and matplotlib: pip install seaborn matplotlib
+generate_imd_visualizations: false
+visualization_top_n: 15        # Number of top pathways to show in bar plots
+visualization_dpi: 150          # DPI for saved figures
+
+# ============================================================================
 # Output
 # ============================================================================
 # Save the intermediate annotation tables (feature->HMDB, feature->pathway,

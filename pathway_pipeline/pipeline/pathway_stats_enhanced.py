@@ -36,6 +36,17 @@ from scipy import stats as scipy_stats
 
 logger = logging.getLogger(__name__)
 
+try:
+    import seaborn as sns
+    import matplotlib
+    matplotlib.use('Agg')  # Non-interactive backend for saving figures
+    import matplotlib.pyplot as plt
+    HAS_SEABORN = True
+except ImportError:
+    HAS_SEABORN = False
+    logger.warning("Seaborn/matplotlib not available; pathway visualizations "
+                   "will be skipped. Install with: pip install seaborn matplotlib")
+
 
 def _compute_stouffers_z(per_metabolite_zscores: np.ndarray,
                          two_tailed: bool = True) -> Tuple[float, float]:
@@ -794,4 +805,230 @@ def run_enhanced_pipeline(
         output_dir=output_dir,
     )
 
+    # Step 5: Generate visualizations for IMD samples
+    if HAS_SEABORN:
+        logger.info("Generating pathway visualization for IMD samples...")
+        _generate_imd_pathway_visualizations(
+            stats, flagged, decisions, metadata, output_dir
+        )
+    else:
+        logger.info("Skipping pathway visualizations (seaborn not available)")
+
     return stats, flagged, decisions
+
+
+def _generate_imd_pathway_visualizations(
+    pathway_stats: pd.DataFrame,
+    flagged_pathways: pd.DataFrame,
+    decisions: pd.DataFrame,
+    metadata: pd.DataFrame,
+    output_dir: Path,
+    figsize: Tuple[int, int] = (12, 8),
+    top_n_pathways: int = 15,
+    dpi: int = 150,
+) -> None:
+    """Generate Seaborn visualizations for each IMD sample.
+
+    Creates the following plots for each flagged IMD sample:
+    1. Bar plot of top N most deviated pathways (by |Z_stouffer|)
+    2. Bar plot of pathway Z_med values (traditional metric)
+    3. Heatmap of all pathway Z_med values for the sample
+
+    Args:
+        pathway_stats: DataFrame with all pathway statistics.
+        flagged_pathways: DataFrame with flagged pathways.
+        decisions: DataFrame with sample decisions.
+        metadata: DataFrame with Classification and Oordeel columns.
+        output_dir: Directory to save plots.
+        figsize: Figure size for each plot.
+        top_n_pathways: Number of top pathways to show in bar plots.
+        dpi: DPI for saved figures.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Identify IMD samples
+    cls = pd.to_numeric(metadata["Classification"], errors="coerce")
+    imd_mask = (cls == 1)
+    imd_samples = metadata.index[imd_mask]
+
+    # Get flagged IMD samples
+    flagged_imd = decisions.index[decisions["flagged"] & imd_mask]
+
+    if len(flagged_imd) == 0:
+        logger.info("No flagged IMD samples to visualize.")
+        return
+
+    logger.info(f"Generating visualizations for {len(flagged_imd)} flagged IMD samples")
+
+    # Get normal reference statistics for comparison
+    normal_mask = _get_normal_mask_from_metadata(metadata, "class1_imd")
+    normal_stats = pathway_stats[normal_mask]
+
+    # Compute mean and std of Z_med for normals per pathway
+    normal_means = normal_stats.groupby("pathway_name")["z_med"].agg([
+        ("mean", "mean"),
+        ("std", "std"),
+    ])
+
+    for sample_id in flagged_imd:
+        # Filter to this sample
+        sample_stats = pathway_stats[pathway_stats["sample_id"] == sample_id]
+        sample_flagged = flagged_pathways[flagged_pathways["sample_id"] == sample_id]
+
+        if sample_stats.empty:
+            continue
+
+        # Create output subdirectory for this sample
+        sample_dir = output_dir / f"imd_visualizations" / str(sample_id)
+        sample_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get pathway names and values
+        pathways = sample_stats["pathway_name"].tolist()
+        z_med = sample_stats["z_med"].tolist()
+        z_stouffer = sample_stats["z_stouffer"].abs().tolist()
+        flagged = sample_stats["flagged_two_stage"].tolist()
+
+        # Merge with normal stats for z-score relative to normals
+        sample_df = sample_stats.copy()
+        sample_df = sample_df.set_index("pathway_name")
+        sample_df = sample_df.join(normal_means, how="left")
+        sample_df["z_med_normalized"] = (
+            (sample_df["z_med"] - sample_df[("mean", "z_med")]) /
+            sample_df[("std", "z_med")].replace(0, np.nan)
+        )
+
+        # Sort by |Z_stouffer| for ranking
+        sample_df = sample_df.sort_values("z_stouffer", key=abs, ascending=False)
+
+        # ===== Plot 1: Top N pathways by |Z_stouffer| =====
+        plt.figure(figsize=figsize)
+        top_n = sample_df.head(top_n_pathways)
+        colors = ["red" if f else "lightcoral" for f in top_n["flagged_two_stage"]]
+        ax = sns.barplot(
+            data=top_n,
+            x="z_stouffer",
+            y="pathway_name",
+            palette=colors,
+            order=top_n.index.tolist()
+        )
+        ax.set_xlabel(f"|Z_stouffer| (Stouffer's combined Z-score)")
+        ax.set_ylabel("Pathway")
+        ax.set_title(f"Sample {sample_id}: Top {top_n_pathways} Pathways by |Z_stouffer|\n"
+                     f"(Red = flagged by two-stage method)")
+        plt.tight_layout()
+        plt.savefig(sample_dir / "top_pathways_stouffer.png", dpi=dpi, bbox_inches="tight")
+        plt.close()
+
+        # ===== Plot 2: Top N pathways by |Z_med| =====
+        plt.figure(figsize=figsize)
+        top_n_zmed = sample_df.sort_values("z_med", key=abs, ascending=False).head(top_n_pathways)
+        colors = ["red" if f else "lightcoral" for f in top_n_zmed["flagged_two_stage"]]
+        ax = sns.barplot(
+            data=top_n_zmed,
+            x="z_med",
+            y="pathway_name",
+            palette=colors,
+            order=top_n_zmed.index.tolist()
+        )
+        ax.set_xlabel(f"Z_med (Median z-score)")
+        ax.set_ylabel("Pathway")
+        ax.set_title(f"Sample {sample_id}: Top {top_n_pathways} Pathways by |Z_med|\n"
+                     f"(Red = flagged by two-stage method)")
+        plt.tight_layout()
+        plt.savefig(sample_dir / "top_pathways_zmed.png", dpi=dpi, bbox_inches="tight")
+        plt.close()
+
+        # ===== Plot 3: Heatmap of all pathways =====
+        plt.figure(figsize=(14, max(6, len(pathways) * 0.2)))
+        # Create a matrix for the heatmap
+        heatmap_data = sample_df["z_med_normalized"].unstack()
+        if isinstance(heatmap_data, pd.Series):
+            heatmap_data = heatmap_data.to_frame().T
+        
+        # Add flagged annotation
+        flagged_series = sample_df["flagged_two_stage"].astype(int)
+
+        ax = sns.heatmap(
+            heatmap_data.T,
+            cmap="RdBu_r",
+            center=0,
+            vmin=-3,
+            vmax=3,
+            cbar_kws={"label": "Z_med (normalized to normal mean/std)"},
+            annot=flagged_series.to_dict(),
+            fmt="d",
+            annot_kws={"size": 8},
+        )
+        ax.set_xlabel("Pathway")
+        ax.set_ylabel("Sample")
+        ax.set_title(f"Sample {sample_id}: All Pathway Z_med Values\n"
+                     f"(Normalized to normal distribution; annotations = flagged)")
+        plt.tight_layout()
+        plt.savefig(sample_dir / "all_pathways_heatmap.png", dpi=dpi, bbox_inches="tight")
+        plt.close()
+
+        # ===== Plot 4: Comparison with normal distribution =====
+        plt.figure(figsize=figsize)
+        # Get normal distribution for each pathway
+        normal_dist_data = []
+        for pathway in pathways:
+            normal_pathway_zmed = normal_stats[normal_stats["pathway_name"] == pathway]["z_med"]
+            if len(normal_pathway_zmed) > 0:
+                normal_dist_data.append({
+                    "pathway": pathway,
+                    "value": "normal",
+                    "z_med": float(normal_pathway_zmed.mean())
+                })
+        
+        sample_data = [{"pathway": p, "value": "sample", "z_med": z}
+                      for p, z in zip(pathways, z_med)]
+        
+        combined = pd.DataFrame(normal_dist_data + sample_data)
+        
+        ax = sns.boxplot(
+            data=combined,
+            x="pathway",
+            y="z_med",
+            hue="value",
+            order=pathways[:top_n_pathways],  # Limit to top pathways
+            palette={"normal": "lightblue", "sample": "red"},
+            showfliers=False,
+        )
+        ax.set_xlabel("Pathway")
+        ax.set_ylabel("Z_med")
+        ax.set_title(f"Sample {sample_id}: Pathway Z_med vs Normal Distribution\n"
+                     f"(Top {top_n_pathways} pathways; Red dot = sample, Blue box = normals)")
+        ax.legend(title="")
+        plt.xticks(rotation=90)
+        plt.tight_layout()
+        plt.savefig(sample_dir / "pathway_vs_normal.png", dpi=dpi, bbox_inches="tight")
+        plt.close()
+
+        logger.info(f"Generated 4 visualizations for IMD sample {sample_id} in {sample_dir}")
+
+
+def _get_normal_mask_from_metadata(metadata: pd.DataFrame, scheme: str) -> pd.Series:
+    """Helper to get normal mask from metadata (duplicated from main.py)."""
+    idx = metadata.index
+    if metadata.empty:
+        return pd.Series(np.ones(len(idx), dtype=bool), index=idx)
+
+    if "Classification" in metadata.columns and "Oordeel targeted" in metadata.columns:
+        cls = pd.to_numeric(metadata["Classification"], errors="coerce")
+        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+        if scheme == "class1_imd":
+            return pd.Series((cls == 0) & (oor == 0), index=idx)
+        if scheme == "confident_normals":
+            return pd.Series((cls == 0) & (oor == 0), index=idx)
+        if scheme == "oordeel":
+            return pd.Series(oor == 0, index=idx)
+        if scheme == "binary_simplified":
+            return pd.Series(cls.isin([0, 3]), index=idx)
+    if "Classification" in metadata.columns:
+        cls = pd.to_numeric(metadata["Classification"], errors="coerce")
+        return pd.Series(cls == 0, index=idx)
+    if "Oordeel targeted" in metadata.columns:
+        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+        return pd.Series(oor == 0, index=idx)
+    return pd.Series(np.ones(len(idx), dtype=bool), index=idx
