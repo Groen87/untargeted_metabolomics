@@ -49,37 +49,50 @@ except ImportError:
 
 
 def _compute_stouffers_z(per_metabolite_zscores: np.ndarray,
-                         two_tailed: bool = True) -> Tuple[float, float]:
+                         two_tailed: bool = True) -> Tuple[float, float, float, float]:
     """Compute Stouffer's combined Z-score and p-value for a set of z-scores.
 
-    Stouffer's method: Z_combined = sum(z_i) / sqrt(n)
-    This properly combines evidence across metabolites, accounting for
-    directionality and sample size.
+    Computes BOTH signed and absolute versions:
+    - Signed: Z_combined = sum(z_i) / sqrt(n) - detects coordinated direction
+    - Absolute: Z_abs = sum(|z_i|) / sqrt(n) - detects any disturbance
+
+    The absolute version is critical for IMD detection where metabolites
+    may move in opposite directions (e.g., block in pathway causing some
+    metabolites to accumulate and others to deplete).
 
     Args:
         per_metabolite_zscores: 1-D array of z-scores for metabolites in a pathway.
         two_tailed: if True, compute two-tailed p-value; else one-tailed.
 
     Returns:
-        Tuple of (Z_stouffer, p_value). NaN for both if all inputs are NaN.
+        Tuple of (Z_stouffer_signed, p_value_signed, Z_stouffer_abs, p_value_abs).
+        NaN for all if all inputs are NaN.
     """
     # Filter out NaN values
     valid = per_metabolite_zscores[~np.isnan(per_metabolite_zscores)]
     if len(valid) == 0:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan")
 
     n = len(valid)
-    z_sum = np.sum(valid)
-    z_combined = z_sum / np.sqrt(n)
+    
+    # Signed Stouffer's Z (original) - detects coordinated direction
+    z_sum_signed = np.sum(valid)
+    z_combined_signed = z_sum_signed / np.sqrt(n)
+    
+    # Absolute Stouffer's Z - detects ANY disturbance regardless of direction
+    z_sum_abs = np.sum(np.abs(valid))
+    z_combined_abs = z_sum_abs / np.sqrt(n)
 
     if two_tailed:
-        # Two-tailed p-value for combined Z
-        p = 2 * (1 - scipy_stats.norm.cdf(abs(z_combined)))
+        # Two-tailed p-values
+        p_signed = 2 * (1 - scipy_stats.norm.cdf(abs(z_combined_signed)))
+        p_abs = 2 * (1 - scipy_stats.norm.cdf(abs(z_combined_abs)))
     else:
         # One-tailed (directional)
-        p = 1 - scipy_stats.norm.cdf(z_combined)
+        p_signed = 1 - scipy_stats.norm.cdf(z_combined_signed)
+        p_abs = 1 - scipy_stats.norm.cdf(z_combined_abs)
 
-    return float(z_combined), float(p)
+    return float(z_combined_signed), float(p_signed), float(z_combined_abs), float(p_abs)
 
 
 def _compute_per_metabolite_pvalues(zscores: np.ndarray,
@@ -172,7 +185,7 @@ def compute_enhanced_pathway_statistics(
         return pd.DataFrame(columns=[
             "sample_id", "smp_id", "pathway_name", "n_metabolites",
             "z_med", "flagged_fraction", "z_up", "z_down", "z_split",
-            "z_stouffer", "p_stouffer", "p_bonferroni", "p_fdr",
+            "z_stouffer", "z_stouffer_signed", "p_stouffer", "p_stouffer_signed", "p_bonferroni",
             "empirical_p_threshold", "n_normals_used"
         ])
 
@@ -243,15 +256,18 @@ def compute_enhanced_pathway_statistics(
             z_split = np.nanmax(cand, axis=1)
         z_split = np.where(all_invalid, np.nan, z_split)
 
-        # Enhanced: Stouffer's Z-score
-        z_stouffer = np.zeros(n_samples)
-        p_stouffer = np.zeros(n_samples)
+        # Enhanced: Stouffer's Z-score (both signed and absolute)
+        z_stouffer_signed = np.zeros(n_samples)
+        p_stouffer_signed = np.zeros(n_samples)
+        z_stouffer_abs = np.zeros(n_samples)
+        p_stouffer_abs = np.zeros(n_samples)
         for i in range(n_samples):
-            z_stouffer[i], p_stouffer[i] = _compute_stouffers_z(sub[i, :])
+            z_stouffer_signed[i], p_stouffer_signed[i], z_stouffer_abs[i], p_stouffer_abs[i] = _compute_stouffers_z(sub[i, :])
 
-        # Multiple testing correction
-        # Bonferroni: p_bonferroni = p * n_pathways
-        p_bonferroni = p_stouffer * n_pathways
+        # Use absolute Stouffer's Z for flagging (detects opposite-direction disturbances)
+        # Keep signed for monitoring/compatibility
+        z_stouffer = z_stouffer_abs
+        p_stouffer = p_stouffer_abs
         # For FDR, we need all p-values across all pathways
         all_p_values.extend(p_stouffer.tolist())
         all_pathway_names.extend([pathway_name] * n_samples)
@@ -269,9 +285,11 @@ def compute_enhanced_pathway_statistics(
                 "z_up": float(z_up[i]) if not np.isnan(z_up[i]) else float("nan"),
                 "z_down": float(z_down[i]) if not np.isnan(z_down[i]) else float("nan"),
                 "z_split": float(z_split[i]) if not np.isnan(z_split[i]) else float("nan"),
-                # Enhanced
+                # Enhanced (using absolute Stouffer's Z)
                 "z_stouffer": float(z_stouffer[i]) if not np.isnan(z_stouffer[i]) else float("nan"),
+                "z_stouffer_signed": float(z_stouffer_signed[i]) if not np.isnan(z_stouffer_signed[i]) else float("nan"),
                 "p_stouffer": float(p_stouffer[i]) if not np.isnan(p_stouffer[i]) else float("nan"),
+                "p_stouffer_signed": float(p_stouffer_signed[i]) if not np.isnan(p_stouffer_signed[i]) else float("nan"),
                 "p_bonferroni": float(p_bonferroni[i]) if not np.isnan(p_bonferroni[i]) else float("nan"),
                 # Empirical threshold
                 "empirical_p_threshold": float(empirical_thresh) if not np.isnan(empirical_thresh) else float("nan"),
