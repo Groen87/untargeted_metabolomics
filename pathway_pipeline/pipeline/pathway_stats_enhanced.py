@@ -364,8 +364,6 @@ def flag_pathways_enhanced(
         f"Pathway flags (extreme mode): "
         f"extreme={stats['flag_extreme'].sum()}, "
         f"flagged_two_stage={stats['flagged_two_stage'].sum()}"
-    )        f"any={stats['flagged_any'].sum()}, "
-        f"two_stage={stats['flagged_two_stage'].sum()}{extra_info}"
     )
 
     return stats
