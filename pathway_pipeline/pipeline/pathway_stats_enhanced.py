@@ -1031,4 +1031,4 @@ def _get_normal_mask_from_metadata(metadata: pd.DataFrame, scheme: str) -> pd.Se
     if "Oordeel targeted" in metadata.columns:
         oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
         return pd.Series(oor == 0, index=idx)
-    return pd.Series(np.ones(len(idx), dtype=bool), index=idx
+    return pd.Series(np.ones(len(idx), dtype=bool), index=idx)
