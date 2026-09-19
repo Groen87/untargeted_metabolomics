@@ -184,8 +184,9 @@ def compute_enhanced_pathway_statistics(
         feat_cols = info["features"]
         null_z = z_null[feat_cols].to_numpy(dtype=float)
         # Compute Z_med for each null sample for this pathway
-        z_med_null = np.nanmedian(null_z, axis=1)
-        # Use 95th percentile of |Z_med| over null samples as empirical threshold
+        with np.errstate(all="ignore"):
+            z_med_null = np.nanmedian(null_z, axis=1)
+                # Use 95th percentile of |Z_med| over null samples as empirical threshold
         empirical_thresholds[smp_id] = float(
             np.nanpercentile(np.abs(z_med_null), 95)
         )
@@ -213,7 +214,8 @@ def compute_enhanced_pathway_statistics(
         empirical_thresh = empirical_thresholds.get(smp_id, np.nan)
 
         # Traditional statistics
-        z_med = np.nanmedian(sub, axis=1)
+        with np.errstate(all="ignore"):
+            z_med = np.nanmedian(sub, axis=1)
         # Per-metabolite thresholds (99th percentile of |z| over normals)
         per_met_thresh = z_normals[info["features"]].abs().quantile(0.99, axis=0).to_numpy()
         # Handle NaN and zero thresholds - replace with inf so comparisons work
