@@ -214,10 +214,10 @@ def compute_enhanced_pathway_statistics(
 
         # Traditional statistics
         z_med = np.nanmedian(sub, axis=1)
-
         # Per-metabolite thresholds (99th percentile of |z| over normals)
         per_met_thresh = z_normals[info["features"]].abs().quantile(0.99, axis=0).to_numpy()
-        per_met_thresh = per_met_thresh.where(per_met_thresh.notna() & (per_met_thresh > 0), np.inf)
+        # Handle NaN and zero thresholds - replace with inf so comparisons work
+        per_met_thresh = np.where((np.isnan(per_met_thresh) | (per_met_thresh <= 0)), np.inf, per_met_thresh)
 
         flagged = (np.abs(sub) > per_met_thresh) & ~np.isnan(sub)
         k_valid = np.sum(~np.isnan(sub), axis=1)
