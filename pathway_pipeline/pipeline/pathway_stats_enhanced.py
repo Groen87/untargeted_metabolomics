@@ -854,8 +854,15 @@ def _generate_imd_pathway_visualizations(
     imd_samples = metadata.index[imd_mask]
 
     # Get flagged IMD samples - ensure imd_mask aligns with decisions.index
-    imd_mask_aligned = imd_mask.reindex(decisions.index, fill_value=False)
-    flagged_imd = decisions.index[decisions["flagged"] & imd_mask_aligned]
+    # Handle potential duplicate index by using values directly
+    if hasattr(decisions.index, 'has_duplicates') and decisions.index.has_duplicates:
+        # Use array-based masking to handle duplicates
+        flagged_values = decisions["flagged"].values
+        imd_values = imd_mask.reindex(decisions.index, fill_value=False).values
+        flagged_imd = decisions.index[flagged_values & imd_values].unique()
+    else:
+        imd_mask_aligned = imd_mask.reindex(decisions.index, fill_value=False)
+        flagged_imd = decisions.index[decisions["flagged"] & imd_mask_aligned]
 
     if len(flagged_imd) == 0:
         logger.info("No flagged IMD samples to visualize.")
@@ -865,8 +872,13 @@ def _generate_imd_pathway_visualizations(
 
     # Get normal reference statistics for comparison
     normal_mask = _get_normal_mask_from_metadata(metadata, "class1_imd")
-    normal_mask_aligned = normal_mask.reindex(pathway_stats.index, fill_value=False)
-    normal_stats = pathway_stats[normal_mask_aligned]
+    # Handle potential duplicate index in pathway_stats
+    if hasattr(pathway_stats.index, 'has_duplicates') and pathway_stats.index.has_duplicates:
+        normal_values = normal_mask.reindex(pathway_stats.index, fill_value=False).values
+        normal_stats = pathway_stats[normal_values]
+    else:
+        normal_mask_aligned = normal_mask.reindex(pathway_stats.index, fill_value=False)
+        normal_stats = pathway_stats[normal_mask_aligned]
 
     # Compute mean and std of Z_med for normals per pathway
     normal_means = normal_stats.groupby("pathway_name")["z_med"].agg([
