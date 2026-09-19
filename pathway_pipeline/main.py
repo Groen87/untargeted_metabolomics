@@ -59,6 +59,7 @@ from pathway_pipeline.pipeline.pathway_stats_enhanced import (
     compute_weighted_decision_score,
     decide_samples_enhanced,
     validate_no_normal_contamination,
+    _generate_imd_pathway_visualizations,
 )
 
 
@@ -320,11 +321,30 @@ def run_pipeline(input_file: str,
         logger.info("Running enhanced pipeline with Stouffer's Z, multiple testing "
                     "correction, and weighted decision scores...")
 
+        # Filter zscores to only include normals and IMDs (exclude gray samples)
+        # For class1_imd: normals = Class 0 AND Oordeel 0, IMD = Class 1 AND Oordeel 1
+        if "Classification" in metadata.columns and "Oordeel targeted" in metadata.columns:
+            cls = pd.to_numeric(metadata["Classification"], errors="coerce")
+            oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+            is_normal = (cls == 0) & (oor == 0)
+            is_imd = (cls == 1) & (oor == 1)
+            analysis_mask = is_normal | is_imd
+            n_analysis = int(analysis_mask.sum())
+            zscores_filtered = zscores.loc[analysis_mask]
+            normal_mask_filtered = normal_mask.loc[analysis_mask]
+            metadata_filtered = metadata.loc[analysis_mask]
+            logger.info(f"Enhanced pipeline: filtering to {n_analysis} samples "
+                       f"({int(is_normal.sum())} normals + {int(is_imd.sum())} IMDs)")
+        else:
+            zscores_filtered = zscores
+            normal_mask_filtered = normal_mask
+            metadata_filtered = metadata
+
         # Enhanced pathway statistics
         enhanced_stats = compute_enhanced_pathway_statistics(
-            zscores=zscores,
+            zscores=zscores_filtered,
             feature_to_pathway=feature_to_pathway,
-            normal_mask=normal_mask,
+            normal_mask=normal_mask_filtered,
             min_pathway_size=min_pathway_size,
             output_dir=out,
         )
@@ -355,10 +375,13 @@ def run_pipeline(input_file: str,
         min_flagged = int(config.get("min_flagged_pathways", 3))
         min_w = float(config.get("min_weight", 2.0))
 
+        # Filter metabolite_flags to match filtered samples
+        metabolite_flags_filtered = metabolite_flags[metabolite_flags["sample_id"].isin(zscores_filtered.index)]
+
         enhanced_decision = decide_samples_enhanced(
             pathway_stats=enhanced_flags,
             weighted_scores=weighted_scores,
-            metabolite_flags=metabolite_flags,
+            metabolite_flags=metabolite_flags_filtered,
             global_scores=None,
             score_threshold=score_threshold,
             min_flagged_pathways=min_flagged,
@@ -372,7 +395,7 @@ def run_pipeline(input_file: str,
 
         # Validate that no normals are flagged
         validation_report = validate_no_normal_contamination(
-            enhanced_decision, metadata,
+            enhanced_decision, metadata_filtered,
             classification_scheme=config.get("classification_scheme", "class1_imd"),
             output_dir=out,
         )
