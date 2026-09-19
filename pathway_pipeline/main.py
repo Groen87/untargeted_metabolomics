@@ -58,6 +58,7 @@ from pathway_pipeline.pipeline.pathway_stats_enhanced import (
     flag_pathways_enhanced,
     compute_weighted_decision_score,
     decide_samples_enhanced,
+    validate_no_normal_contamination,
 )
 
 
@@ -361,6 +362,14 @@ def run_pipeline(input_file: str,
         logger.info(f"Enhanced Layer 3 (decision rule): flagged "
                     f"{int(enhanced_decision['flagged'].sum())} of "
                     f"{len(enhanced_decision)} samples.")
+
+        # Validate that no normals are flagged
+        validation_report = validate_no_normal_contamination(
+            enhanced_decision, metadata,
+            classification_scheme=config.get("classification_scheme", "class1_imd"),
+            output_dir=out,
+        )
+        results["enhanced_validation_report"] = validation_report
 
         results["enhanced_pathway_statistics"] = enhanced_stats
         results["enhanced_pathway_flags"] = enhanced_flags

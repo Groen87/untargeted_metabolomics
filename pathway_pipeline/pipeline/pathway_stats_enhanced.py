@@ -94,6 +94,7 @@ def compute_enhanced_pathway_statistics(
     normal_mask: pd.Series,
     min_pathway_size: int = 3,
     output_dir: Optional[Path] = None,
+    gray_mask: Optional[pd.Series] = None,
 ) -> pd.DataFrame:
     """Compute enhanced pathway statistics with Stouffer's Z and monitoring.
 
@@ -110,6 +111,10 @@ def compute_enhanced_pathway_statistics(
         normal_mask: boolean Series aligned to zscores.index.
         min_pathway_size: minimum number of matched features for a pathway.
         output_dir: directory to save monitoring CSVs. If None, no files written.
+        gray_mask: optional boolean Series marking gray-zone samples.
+            If provided, gray samples are excluded from p-value computation
+            (only normals + IMD used) and flagging is evaluated separately
+            for normals vs non-normals.
 
     Returns:
         Long DataFrame with one row per (sample, pathway) with all statistics.
@@ -121,6 +126,25 @@ def compute_enhanced_pathway_statistics(
     # Get normal z-scores for empirical threshold computation
     z_normals = zscores.loc[normal_mask]
     normal_sample_ids = z_normals.index
+
+    # Determine which samples to use for null distribution (p-value computation)
+    # If gray_mask is provided, use only normals (exclude gray from null)
+    # Otherwise use all non-IMD samples (normals + gray as null)
+    if gray_mask is not None:
+        # Null samples = normals only (gray samples are not part of null)
+        null_mask = normal_mask.copy()
+        null_sample_ids = normal_sample_ids
+        logger.info(f"Using {len(null_sample_ids)} normal samples for null "
+                    f"distribution (gray samples excluded from p-value computation)")
+    else:
+        # Default: use normals + gray as null (traditional behavior)
+        null_mask = normal_mask
+        null_sample_ids = normal_sample_ids
+        if gray_mask is not None:
+            null_mask = null_mask | gray_mask
+            null_sample_ids = zscores.loc[null_mask].index
+            logger.info(f"Using {len(null_sample_ids)} null samples "
+                        f"(normals + gray) for p-value computation")
 
     # Build pathway feature mapping
     available = set(zscores.columns)
@@ -142,15 +166,17 @@ def compute_enhanced_pathway_statistics(
         ])
 
     # Pre-compute per-pathway empirical thresholds from normals
+    # Use null samples (normals only, or normals + gray) for threshold computation
+    z_null = zscores.loc[null_mask]
     empirical_thresholds: Dict[str, float] = {}
     for smp_id, info in pathway_features.items():
         feat_cols = info["features"]
-        normal_z = z_normals[feat_cols].to_numpy(dtype=float)
-        # Compute Z_med for each normal sample for this pathway
-        z_med_normals = np.nanmedian(normal_z, axis=1)
-        # Use 95th percentile of |Z_med| over normals as empirical threshold
+        null_z = z_null[feat_cols].to_numpy(dtype=float)
+        # Compute Z_med for each null sample for this pathway
+        z_med_null = np.nanmedian(null_z, axis=1)
+        # Use 95th percentile of |Z_med| over null samples as empirical threshold
         empirical_thresholds[smp_id] = float(
-            np.nanpercentile(np.abs(z_med_normals), 95)
+            np.nanpercentile(np.abs(z_med_null), 95)
         )
 
     # Compute statistics for all samples
@@ -551,6 +577,144 @@ def decide_samples_enhanced(
         logger.info(f"Wrote enhanced_sample_decisions.csv")
 
     return out
+
+
+def validate_no_normal_contamination(
+    decisions: pd.DataFrame,
+    metadata: pd.DataFrame,
+    classification_scheme: str = "class1_imd",
+    output_dir: Optional[Path] = None,
+) -> pd.DataFrame:
+    """Validate that NO normal samples are flagged.
+
+    This is the critical validation: normals should NEVER be flagged.
+    Gray samples CAN be flagged (they have real disturbances).
+    IMD samples SHOULD be flagged.
+
+    Args:
+        decisions: DataFrame from decide_samples or decide_samples_enhanced.
+            Must have 'flagged' column indexed by sample_id.
+        metadata: DataFrame with Classification and Oordeel targeted columns.
+        classification_scheme: scheme to determine normal/IMD/gray labels.
+        output_dir: directory to save validation report.
+
+    Returns:
+        DataFrame with validation metrics:
+        - n_normals, n_imd, n_gray
+        - normals_flagged, imd_flagged, gray_flagged
+        - normal_contamination_rate (should be 0%)
+        - imd_detection_rate (should be high)
+        - gray_flagging_rate (informational)
+        - flagged_normals_list: list of normal sample IDs that were flagged
+    """
+    # Determine labels for each sample
+    idx = metadata.index
+    cls = pd.to_numeric(metadata["Classification"], errors="coerce")
+    oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+
+    # Classify samples
+    if classification_scheme == "class1_imd":
+        # Normals = Class 0 AND Oordeel 0
+        # IMD = Class 1 (regardless of Oordeel)
+        # Gray = Class 2/3 OR (Class 0 AND Oordeel 1)
+        normal_mask = (cls == 0) & (oor == 0)
+        imd_mask = (cls == 1)
+        gray_mask = ~normal_mask & ~imd_mask
+    else:
+        # Default: use confident_normals scheme
+        normal_mask = (cls == 0) & (oor == 0)
+        imd_mask = ~normal_mask
+        gray_mask = pd.Series(False, index=idx)
+
+    n_normals = int(normal_mask.sum())
+    n_imd = int(imd_mask.sum())
+    n_gray = int(gray_mask.sum())
+
+    # Align decisions with metadata
+    decisions_aligned = decisions.reindex(idx, fill_value=False)
+    flagged = decisions_aligned["flagged"]
+
+    # Count flagged in each category
+    normals_flagged = int((flagged & normal_mask).sum())
+    imd_flagged = int((flagged & imd_mask).sum())
+    gray_flagged = int((flagged & gray_mask).sum())
+
+    # Compute rates
+    normal_contamination_rate = (normals_flagged / n_normals * 100) if n_normals > 0 else 0.0
+    imd_detection_rate = (imd_flagged / n_imd * 100) if n_imd > 0 else 0.0
+    gray_flagging_rate = (gray_flagged / n_gray * 100) if n_gray > 0 else 0.0
+
+    # Get list of flagged normals (for debugging)
+    flagged_normal_ids = list(idx[flagged & normal_mask])
+
+    # Build validation report
+    report = pd.DataFrame({
+        "metric": [
+            "n_normals", "n_imd", "n_gray",
+            "normals_flagged", "imd_flagged", "gray_flagged",
+            "normal_contamination_rate", "imd_detection_rate", "gray_flagging_rate",
+        ],
+        "value": [
+            n_normals, n_imd, n_gray,
+            normals_flagged, imd_flagged, gray_flagged,
+            round(normal_contamination_rate, 2),
+            round(imd_detection_rate, 2),
+            round(gray_flagging_rate, 2),
+        ],
+        "unit": [
+            "samples", "samples", "samples",
+            "samples", "samples", "samples",
+            "%", "%", "%",
+        ]
+    })
+
+    # Log results
+    logger.info("\n" + "=" * 60)
+    logger.info("VALIDATION: Normal Contamination Check")
+    logger.info("=" * 60)
+    logger.info(f"Normals: {n_normals} samples, {normals_flagged} flagged "
+                f"({normal_contamination_rate:.1f}%)")
+    logger.info(f"IMD: {n_imd} samples, {imd_flagged} flagged "
+                f"({imd_detection_rate:.1f}%)")
+    logger.info(f"Gray: {n_gray} samples, {gray_flagged} flagged "
+                f"({gray_flagging_rate:.1f}%)")
+
+    if normals_flagged > 0:
+        logger.warning(f"CRITICAL: {normals_flagged} normal samples were flagged! "
+                       f"Thresholds are too loose. Flagged normals: {flagged_normal_ids}")
+    else:
+        logger.info("PASS: No normal samples flagged.")
+
+    if imd_detection_rate < 50:
+        logger.warning(f"WARNING: Only {imd_detection_rate:.1f}% of IMD samples "
+                       f"were flagged. Thresholds may be too strict.")
+    else:
+        logger.info(f"IMD detection rate: {imd_detection_rate:.1f}%")
+
+    logger.info("=" * 60)
+
+    # Save report
+    if output_dir is not None:
+        output_dir = Path(output_dir)
+        report.to_csv(output_dir / "validation_report.csv", index=False)
+        logger.info(f"Wrote validation_report.csv")
+
+        # Also save per-sample validation
+        per_sample = pd.DataFrame({
+            "sample_id": idx,
+            "classification": cls,
+            "oordeel": oor,
+            "sample_type": [
+                "normal" if nm else ("imd" if im else "gray")
+                for nm, im in zip(normal_mask, imd_mask)
+            ],
+            "flagged": flagged,
+            "is_contamination": flagged & normal_mask,
+        })
+        per_sample.to_csv(output_dir / "per_sample_validation.csv", index=False)
+        logger.info(f"Wrote per_sample_validation.csv")
+
+    return report
 
 
 def run_enhanced_pipeline(
