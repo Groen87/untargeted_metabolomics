@@ -350,9 +350,18 @@ def run_pipeline(input_file: str,
         )
 
         # Enhanced pathway flagging - extreme mode only
+        # First, add sample_type to stats for empirical threshold computation
+        cls_col = pd.to_numeric(metadata_filtered["Classification"], errors="coerce")
+        oor_col = pd.to_numeric(metadata_filtered["Oordeel targeted"], errors="coerce")
+        enhanced_stats["sample_type"] = "normal"
+        enhanced_stats.loc[(cls_col == 1) & (oor_col == 1), "sample_type"] = "imd"
+        enhanced_stats.loc[~((cls_col == 0) & (oor_col == 0)) & ~((cls_col == 1) & (oor_col == 1)), "sample_type"] = "gray"
+        
         enhanced_flags = flag_pathways_enhanced(
             enhanced_stats,
-            extreme_z_threshold=float(config.get("extreme_z_threshold", 15.0)),
+            extreme_z_threshold=float(config.get("extreme_z_threshold", 25.0)),
+            use_empirical_threshold=bool(config.get("use_empirical_threshold", True)),
+            empirical_percentile=float(config.get("empirical_percentile", 99.999)),
         )
         enhanced_flags.to_csv(out / "enhanced_pathway_flags.csv", index=False)
         logger.info(f"Enhanced Layer 2 (pathways): {int(enhanced_flags['flagged_two_stage'].sum())} "

@@ -174,7 +174,13 @@ use_enhanced_stats: true
 # This is for IMD detection where only 1-2 pathways are extremely disturbed.
 # Uses absolute Stouffer's Z to detect both same-direction and opposite-direction disturbances.
 # P-value thresholds were removed as they caused 72% normal contamination with 70K tests.
-extreme_z_threshold: 25.0    # Only flag pathways with |Z_stouffer| > 25.0 (absolute value)
+extreme_z_threshold: 25.0    # Fixed threshold (used as fallback if empirical not available)
+
+# Empirical threshold from normal distribution (RECOMMENDED)
+# Computes the threshold from the actual normal |Z_stouffer| distribution
+# This automatically adjusts to the data's natural variation
+use_empirical_threshold: true
+empirical_percentile: 99.999  # 99.999th percentile of normal |Z_stouffer| distribution
 
 # Weighted decision score (used for sample-level decision)
 # A sample is flagged if it has at least min_flagged_pathways with mean |Z_stouffer| > min_weight

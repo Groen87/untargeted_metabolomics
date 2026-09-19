@@ -344,16 +344,20 @@ def compute_enhanced_pathway_statistics(
 def flag_pathways_enhanced(
     stats: pd.DataFrame,
     extreme_z_threshold: float = 15.0,
+    use_empirical_threshold: bool = True,
+    empirical_percentile: float = 99.999,
 ) -> pd.DataFrame:
     """Flag pathways using extreme mode only.
 
-    Only flags pathways with |Z_stouffer| > extreme_z_threshold.
+    Only flags pathways with |Z_stouffer| > threshold.
     This is designed for IMD detection where only 1-2 pathways are 
     extremely disturbed, while normals have no such extreme deviations.
 
     Args:
         stats: output of compute_enhanced_pathway_statistics.
-        extreme_z_threshold: |Z_stouffer| threshold for flagging.
+        extreme_z_threshold: |Z_stouffer| threshold for flagging (used if use_empirical_threshold=False).
+        use_empirical_threshold: If True, compute threshold from normal distribution.
+        empirical_percentile: Percentile of normal |Z_stouffer| distribution to use as threshold.
 
     Returns:
         stats with added flag_extreme and flagged_two_stage columns.
@@ -361,14 +365,37 @@ def flag_pathways_enhanced(
     if stats.empty:
         return stats
 
+    # Determine threshold
+    if use_empirical_threshold and "sample_type" in stats.columns:
+        # Compute empirical threshold from normal samples only
+        normal_stats = stats[stats["sample_type"] == "normal"]
+        if not normal_stats.empty and len(normal_stats) > 10:
+            # Use percentile of |Z_stouffer| from normals
+            threshold = float(np.percentile(normal_stats["z_stouffer"].abs().dropna(), empirical_percentile))
+            logger.info(f"Using empirical |Z_stouffer| threshold: {threshold:.2f} "
+                       f"(from {len(normal_stats)} normal samples at {empirical_percentile}th percentile)")
+        else:
+            # Fallback to fixed threshold
+            threshold = extreme_z_threshold
+            logger.warning(f"Not enough normal samples for empirical threshold, "
+                          f"using fixed threshold: {threshold}")
+    elif use_empirical_threshold:
+        # If sample_type not in stats, we can't separate normals
+        # Try to infer from the data - but this is risky
+        threshold = extreme_z_threshold
+        logger.warning(f"sample_type not in stats, using fixed threshold: {threshold}")
+    else:
+        threshold = extreme_z_threshold
+
     # Extreme mode: only flag pathways with very high |Z_stouffer|
-    stats["flag_extreme"] = stats["z_stouffer"].abs() > extreme_z_threshold
+    stats["flag_extreme"] = stats["z_stouffer"].abs() > threshold
     stats["flagged_two_stage"] = stats["flag_extreme"]
     
     logger.info(
         f"Pathway flags (extreme mode): "
         f"extreme={stats['flag_extreme'].sum()}, "
-        f"flagged_two_stage={stats['flagged_two_stage'].sum()}"
+        f"flagged_two_stage={stats['flagged_two_stage'].sum()}, "
+        f"threshold={threshold:.2f}"
     )
 
     return stats
