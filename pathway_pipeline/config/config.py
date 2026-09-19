@@ -78,3 +78,13 @@ class Config:
     def to_dict(self) -> Dict[str, Any]:
         """Return the full configuration as a dictionary."""
         return self._config
+
+    def get_float(self, key: str, default: Optional[float] = None) -> Optional[float]:
+        """Get a configuration value as a float."""
+        value = self.get(key, default)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
