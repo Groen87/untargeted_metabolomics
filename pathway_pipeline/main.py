@@ -351,14 +351,21 @@ def run_pipeline(input_file: str,
 
         # Enhanced pathway flagging - extreme mode only
         # First, add sample_type to stats for empirical threshold computation
+        # Create a mapping from sample_id to sample_type
         cls_col = pd.to_numeric(metadata_filtered["Classification"], errors="coerce")
         oor_col = pd.to_numeric(metadata_filtered["Oordeel targeted"], errors="coerce")
         
-        # Create sample_type series aligned to enhanced_stats index
-        sample_type_map = pd.Series("gray", index=enhanced_stats.index)
-        sample_type_map.loc[(cls_col == 0) & (oor_col == 0)] = "normal"
-        sample_type_map.loc[(cls_col == 1) & (oor_col == 1)] = "imd"
-        enhanced_stats["sample_type"] = sample_type_map.values
+        # Build sample_type for each sample in metadata_filtered
+        sample_types = pd.Series("gray", index=metadata_filtered.index)
+        sample_types.loc[(cls_col == 0) & (oor_col == 0)] = "normal"
+        sample_types.loc[(cls_col == 1) & (oor_col == 1)] = "imd"
+        
+        # Map to enhanced_stats using sample_id
+        if "sample_id" in enhanced_stats.columns:
+            enhanced_stats["sample_type"] = enhanced_stats["sample_id"].map(sample_types)
+        else:
+            # enhanced_stats index should match metadata_filtered index
+            enhanced_stats["sample_type"] = sample_types.reindex(enhanced_stats.index).values
         
         enhanced_flags = flag_pathways_enhanced(
             enhanced_stats,
