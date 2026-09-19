@@ -186,7 +186,7 @@ def compute_enhanced_pathway_statistics(
         # Compute Z_med for each null sample for this pathway
         with np.errstate(all="ignore"):
             z_med_null = np.nanmedian(null_z, axis=1)
-                # Use 95th percentile of |Z_med| over null samples as empirical threshold
+        # Use 95th percentile of |Z_med| over null samples as empirical threshold
         empirical_thresholds[smp_id] = float(
             np.nanpercentile(np.abs(z_med_null), 95)
         )
