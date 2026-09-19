@@ -353,9 +353,12 @@ def run_pipeline(input_file: str,
         # First, add sample_type to stats for empirical threshold computation
         cls_col = pd.to_numeric(metadata_filtered["Classification"], errors="coerce")
         oor_col = pd.to_numeric(metadata_filtered["Oordeel targeted"], errors="coerce")
-        enhanced_stats["sample_type"] = "normal"
-        enhanced_stats.loc[(cls_col == 1) & (oor_col == 1), "sample_type"] = "imd"
-        enhanced_stats.loc[~((cls_col == 0) & (oor_col == 0)) & ~((cls_col == 1) & (oor_col == 1)), "sample_type"] = "gray"
+        
+        # Create sample_type series aligned to enhanced_stats index
+        sample_type_map = pd.Series("gray", index=enhanced_stats.index)
+        sample_type_map.loc[(cls_col == 0) & (oor_col == 0)] = "normal"
+        sample_type_map.loc[(cls_col == 1) & (oor_col == 1)] = "imd"
+        enhanced_stats["sample_type"] = sample_type_map.values
         
         enhanced_flags = flag_pathways_enhanced(
             enhanced_stats,
