@@ -390,16 +390,20 @@ def run_pipeline(input_file: str,
 
         # Enhanced decision rule
         score_threshold = config.get_float("score_threshold", None)
-        min_flagged = int(config.get("min_flagged_pathways", 3))
-        min_w = float(config.get("min_weight", 2.0))
+        min_flagged = int(config.get("min_flagged_pathways", 1))  # Changed from 3 to 1 for extreme mode
+        min_w = float(config.get("min_weight", 20.0))  # Changed from 2.0 to 20.0 for extreme mode
 
         # Filter metabolite_flags to match filtered samples
         metabolite_flags_filtered = metabolite_flags[metabolite_flags["sample_id"].isin(zscores_filtered.index)]
 
+        # For extreme mode, we should NOT use metabolite overrides from the original pipeline
+        # because they were computed on all samples, not just normals+IMDs
+        # Either recompute metabolite_flags on filtered zscores, or disable them for enhanced pipeline
+        # For now, pass empty DataFrame to disable metabolite override flagging in enhanced mode
         enhanced_decision = decide_samples_enhanced(
             pathway_stats=enhanced_flags,
             weighted_scores=weighted_scores,
-            metabolite_flags=metabolite_flags_filtered,
+            metabolite_flags=pd.DataFrame(columns=["sample_id", "metabolite", "z"]),  # Empty - disable metabolite overrides
             global_scores=None,
             score_threshold=score_threshold,
             min_flagged_pathways=min_flagged,
