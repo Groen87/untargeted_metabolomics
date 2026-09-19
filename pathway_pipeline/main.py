@@ -1,30 +1,23 @@
 #!/usr/bin/env python3
 """Main entry point for the pathway pipeline.
 
-There is NO outlier-detection model here. The pipeline runs a layered z-based
-analysis, escalating in statistical complexity only where the simpler layer
-fails:
+This is a COMPLETELY REWRITTEN pipeline that implements a clean, simple approach:
 
-  Layer 1: per-metabolite z-scores (age-adjusted, robustly scaled) + atomic
-           single-metabolite overrides.
-  Layer 2: pathway Z_med / F / Z_up / Z_down statistics with moderate/severe
-           severity tiers (the primary detector).
-  Layer 3: the sample decision rule (>=1 severe OR >=2 moderate pathway flags,
-           plus single-metabolite overrides).
-  Layer 4: optional global anomaly score (the "odd sample" safety light).
+1. Map features to pathways, removing unmapped features
+2. Calculate Z-scores for all samples using normals as reference
+3. Combine Z-scores into compound scores per pathway using absolute Stouffer's Z
+4. Find optimal cutoffs empirically from the normal distribution
+5. Flag samples based on extreme pathway deviations
 
-Stage 1 (preprocessing): match every feature column to an HMDB accession from
-the HMDB XML file, then link those accessions to pathways via the SMPDB-derived
-pathways TSV. Writes the feature->HMDB, feature->pathway, and pathway-coverage
-tables.
+Key design decisions:
+- Uses absolute Stouffer's Z to detect ANY disturbance regardless of direction
+  (critical for IMD detection where a block can cause both accumulation and depletion)
+- Only flags samples with 1-2 extremely deviated pathways (IMD pattern)
+- Uses empirical thresholds computed from the actual normal distribution
+- Filters to only normals + IMDs (Class 1 AND Oordeel 1) for analysis
+- Removes all features that don't map to pathways
 
-Stage 2 (statistics, optional): the four layered analysis & flagging steps
-above, plus an optional threshold-tuning sweep on the inner IMD split.
-
-Usage:
-    python -m pathway_pipeline.main
-    python -m pathway_pipeline.main --input data/my_data.csv --output outputs/pathway
-    python -m pathway_pipeline.main --config my_config.yaml
+This replaces the buggy enhanced pipeline completely.
 """
 
 import argparse
@@ -43,23 +36,6 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     match_features_to_hmdb,
     link_features_to_pathways,
     pathway_coverage,
-)
-from pathway_pipeline.pipeline.pathway_stats import (
-    compute_metabolite_zscores,
-    compute_pathway_statistics,
-    flag_pathways,
-    flag_metabolites,
-    compute_global_anomaly_score,
-    decide_samples,
-    tune_decision_thresholds,
-)
-from pathway_pipeline.pipeline.pathway_stats_enhanced import (
-    compute_enhanced_pathway_statistics,
-    flag_pathways_enhanced,
-    compute_weighted_decision_score,
-    decide_samples_enhanced,
-    validate_no_normal_contamination,
-    _generate_imd_pathway_visualizations,
 )
 
 
@@ -91,11 +67,8 @@ def load_feature_matrix(input_file: str,
                          ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     """Load the input CSV and split it into (features, metadata, ages).
 
-    Keeps every configured non-feature column in a separate ``metadata`` frame
-    (for the normal-reference definition) and, when ``age_column`` is set and
-    present, returns a numeric ``ages`` Series for age-adjusted z-scores. The
-    age column is NOT included in the feature matrix even if it is not listed
-    in ``non_feature_columns``.
+    Keeps every configured non-feature column in a separate metadata frame
+    and, when age_column is set and present, returns a numeric ages Series.
     """
     df = pd.read_csv(input_file, index_col=0 if patient_id_column is None else None)
     if patient_id_column is not None:
@@ -119,78 +92,179 @@ def load_feature_matrix(input_file: str,
     return features, metadata, ages
 
 
-def _normal_reference_mask(metadata: pd.DataFrame, scheme: str) -> pd.Series:
-    """Boolean Series over the sample index: True = normal reference set.
-
-    The normal reference defines the per-metabolite median/IQR and the
-    per-metabolite empirical threshold for the flagged fraction. Mirrors the
-    outlier-detection pipeline's label schemes but only needs the normal mask.
+def compute_metabolite_zscores(
+    features: pd.DataFrame,
+    normal_mask: pd.Series,
+    iqr_scale: bool = True,
+    ages: pd.Series = None,
+    age_adjustment_method: str = "ols",
+    age_loess_frac: float = 0.5,
+) -> pd.DataFrame:
+    """Compute robust z-scores for metabolites.
+    
+    Uses median/IQR scaling on the normal reference set.
+    If ages are provided, performs age adjustment first.
+    
+    Args:
+        features: DataFrame with samples as rows, features as columns.
+        normal_mask: Boolean Series indicating normal samples.
+        iqr_scale: If True, scale by IQR; otherwise by std.
+        ages: Optional Series of ages for age adjustment.
+        age_adjustment_method: 'ols' or 'loess'
+        age_loess_frac: LOESS bandwidth fraction (only used if method='loess')
+        
+    Returns:
+        DataFrame of z-scores with same shape as features.
     """
-    idx = metadata.index
-    if metadata.empty:
-        return pd.Series(np.ones(len(idx), dtype=bool), index=idx)
-
-    if "Classification" in metadata.columns and "Oordeel targeted" in metadata.columns:
-        cls = pd.to_numeric(metadata["Classification"], errors="coerce")
-        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
-        if scheme == "confident_normals":
-            return pd.Series((cls == 0) & (oor == 0), index=idx)
-        if scheme == "oordeel":
-            return pd.Series(oor == 0, index=idx)
-        if scheme == "binary_simplified":
-            return pd.Series(cls.isin([0, 3]), index=idx)
-        if scheme == "class1_imd":
-            # Normals = Class 0 AND Oordeel 0.
-            # IMD = Class 1 AND Oordeel 1.
-            # Everything else = gray (Class 2/3, Class 0 AND Oordeel 1, Class 1 AND Oordeel 0).
-            return pd.Series((cls == 0) & (oor == 0), index=idx)
-        # default: Class 0 (after the pipeline's Oordeel reconciliation)
-        return pd.Series(cls == 0, index=idx)
-    if "Classification" in metadata.columns:
-        cls = pd.to_numeric(metadata["Classification"], errors="coerce")
-        return pd.Series(cls == 0, index=idx)
-    if "Oordeel targeted" in metadata.columns:
-        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
-        return pd.Series(oor == 0, index=idx)
-    # No metadata to define normals: use all samples as the reference.
-    logger.warning("No Classification/Oordeel columns found; using all samples "
-                   "as the normal reference.")
-    return pd.Series(np.ones(len(idx), dtype=bool), index=idx)
-
-
-def _imd_labels(metadata: pd.DataFrame, scheme: str) -> pd.Series:
-    """Binary 0/1 IMD label per sample aligned to ``metadata.index``.
-
-    Used only by the threshold-tuning step (inner IMD split). Mirrors the
-    outlier-detection pipeline's label schemes: 1 = IMD (the class the
-    decision rule is tuned to detect), 0 = normal reference. Samples with an
-    undefined role get 0.
-    """
-    idx = metadata.index
-    if metadata.empty or "Classification" not in metadata.columns:
-        return pd.Series(np.zeros(len(idx), dtype=int), index=idx)
-    cls = pd.to_numeric(metadata["Classification"], errors="coerce")
-    if "Oordeel targeted" in metadata.columns and scheme == "confident_normals":
-        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
-        # Confident normal = (Class 0 AND Oordeel 0); everything else is IMD-ish.
-        return pd.Series(np.where((cls == 0) & (oor == 0), 0, 1), index=idx)
-    if scheme == "class1_imd":
-        # IMD = Class 1 AND Oordeel 1. Everything else = 0.
-        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
-        return pd.Series(np.where((cls == 1) & (oor == 1), 1, 0), index=idx)
-    if scheme == "oordeel" and "Oordeel targeted" in metadata.columns:
-        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
-        return pd.Series(np.where(oor == 1, 1, 0), index=idx)
-    if scheme == "binary_simplified":
-        return pd.Series(np.where(cls == 1, 1, 0), index=idx)
-    # Default fallback
-    return pd.Series(np.where(cls == 0, 0, 1), index=idx)
+    if features.empty:
+        return pd.DataFrame()
+    
+    zscores = features.copy()
+    
+    # Age adjustment if ages are provided
+    if ages is not None and age_adjustment_method is not None:
+        normal_ages = ages[normal_mask]
+        normal_features = features.loc[normal_mask]
+        
+        if age_adjustment_method == "ols":
+            # Per-metabolite linear regression on age
+            for col in features.columns:
+                y = normal_features[col].to_numpy(dtype=float)
+                x = normal_ages.to_numpy(dtype=float)
+                
+                # Remove NaN pairs
+                valid = ~(np.isnan(x) | np.isnan(y))
+                if valid.sum() < 2:
+                    continue
+                    
+                x_valid = x[valid]
+                y_valid = y[valid]
+                
+                # Fit OLS: y = a + b*x
+                A = np.vstack([np.ones(len(x_valid)), x_valid]).T
+                b, a = np.linalg.lstsq(A, y_valid, rcond=None)[0]
+                
+                # Get residuals for all samples with valid ages
+                mask_valid_ages = ~ages.isna()
+                x_all = ages[mask_valid_ages].to_numpy(dtype=float)
+                y_all = features.loc[mask_valid_ages, col].to_numpy(dtype=float)
+                residuals = y_all - (a + b * x_all)
+                
+                # For samples without age, use original values
+                if (~mask_valid_ages).any():
+                    y_no_age = features.loc[~mask_valid_ages, col].to_numpy(dtype=float)
+                    residuals_full = np.concatenate([residuals, y_no_age])
+                else:
+                    residuals_full = residuals
+                
+                zscores[col] = residuals_full
+        elif age_adjustment_method == "loess":
+            try:
+                import statsmodels.api as sm
+                for col in features.columns:
+                    y = normal_features[col].to_numpy(dtype=float)
+                    x = normal_ages.to_numpy(dtype=float)
+                    
+                    valid = ~(np.isnan(x) | np.isnan(y))
+                    if valid.sum() < 2:
+                        continue
+                        
+                    x_valid = x[valid]
+                    y_valid = y[valid]
+                    
+                    # LOESS smoothing
+                    lowess = sm.nonparametric.lowess(y_valid, x_valid, frac=age_loess_frac)
+                    
+                    # Interpolate to get fitted values
+                    if len(lowess) > 1:
+                        import scipy.interpolate
+                        interp = scipy.interpolate.interp1d(
+                            lowess[:, 0], lowess[:, 1],
+                            bounds_error=False, fill_value="extrapolate"
+                        )
+                        fitted = interp(x_valid)
+                        residuals = y_valid - fitted
+                    else:
+                        residuals = y_valid - y_valid.mean()
+                    
+                    # Apply to all samples
+                    mask_valid_ages = ~ages.isna()
+                    x_all = ages[mask_valid_ages].to_numpy(dtype=float)
+                    y_all = features.loc[mask_valid_ages, col].to_numpy(dtype=float)
+                    
+                    if len(lowess) > 1:
+                        fitted_all = interp(x_all)
+                        residuals_all = y_all - fitted_all
+                    else:
+                        residuals_all = y_all - y_all.mean()
+                    
+                    # For samples without age
+                    if (~mask_valid_ages).any():
+                        y_no_age = features.loc[~mask_valid_ages, col].to_numpy(dtype=float)
+                        residuals_full = np.concatenate([residuals_all, y_no_age])
+                    else:
+                        residuals_full = residuals_all
+                    
+                    zscores[col] = residuals_full
+            except ImportError:
+                logger.warning("statsmodels not available for LOESS; using raw values")
+    
+    # Robust scaling (median/IQR) on normal reference
+    normal_values = zscores.loc[normal_mask]
+    
+    for col in zscores.columns:
+        norm_col = normal_values[col].dropna()
+        if len(norm_col) < 1:
+            # Not enough normal data; use all data
+            all_col = zscores[col].dropna()
+            if len(all_col) < 1:
+                zscores[col] = 0.0
+                continue
+            median = np.median(all_col)
+            if iqr_scale:
+                iqr = np.percentile(all_col, 75) - np.percentile(all_col, 25)
+                if iqr == 0:
+                    zscores[col] = 0.0
+                else:
+                    zscores[col] = (zscores[col] - median) / iqr
+            else:
+                std = np.std(all_col)
+                if std == 0:
+                    zscores[col] = 0.0
+                else:
+                    zscores[col] = (zscores[col] - median) / std
+        else:
+            median = np.median(norm_col)
+            if iqr_scale:
+                iqr = np.percentile(norm_col, 75) - np.percentile(norm_col, 25)
+                if iqr == 0:
+                    zscores[col] = 0.0
+                else:
+                    zscores[col] = (zscores[col] - median) / iqr
+            else:
+                std = np.std(norm_col)
+                if std == 0:
+                    zscores[col] = 0.0
+                else:
+                    zscores[col] = (zscores[col] - median) / std
+    
+    # Drop features with zero scale
+    dropped = []
+    for col in zscores.columns:
+        if (zscores[col] == 0.0).all():
+            dropped.append(col)
+    
+    if dropped:
+        logger.info(f"Dropped {len(dropped)} metabolites with zero scale")
+        zscores = zscores.drop(columns=dropped)
+    
+    return zscores
 
 
 def run_pipeline(input_file: str,
                   output_dir: str = "outputs/pathway_pipeline",
                   config_path: str = None) -> dict:
-    """Run the pathway pipeline (preprocessing + optional statistics)."""
+    """Run the clean pathway pipeline."""
     config = Config(config_path) if config_path else Config()
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -201,7 +275,7 @@ def run_pipeline(input_file: str,
         import warnings
         warnings.filterwarnings('ignore', category=RuntimeWarning)
 
-    _log_section("PATHWAY PIPELINE")
+    _log_section("CLEAN PATHWAY PIPELINE")
     logger.info(f"Input: {input_file}\nOutput: {out}")
 
     # ------------------------------------------------------------------
@@ -212,7 +286,7 @@ def run_pipeline(input_file: str,
     features, metadata, ages = load_feature_matrix(
         input_file,
         non_feature_columns=config.get_list(
-            "non_feature_columns", ["Oordeel trageted", "Classification"]
+            "non_feature_columns", ["Oordeel targeted", "Classification"]
         ),
         patient_id_column=config.get("patient_id_column", None),
         age_column=age_column,
@@ -261,292 +335,182 @@ def run_pipeline(input_file: str,
     }
 
     # ------------------------------------------------------------------
-    # Stage 2: layered analysis & flagging (no outlier-detection model)
-    #   Layer 1: per-metabolite (age-adjusted, robust) z-scores + atomic flags
-    #   Layer 2: pathway Z_med / F / Z_up / Z_down statistics + severity tiers
-    #   Layer 3: sample decision rule (>=1 severe OR >=2 moderate + overrides)
-    #   Layer 4: optional global anomaly score (the "odd sample" safety light)
+    # Stage 2: Clean pathway analysis
     # ------------------------------------------------------------------
     if not bool(config.get("run_stats", True)):
         logger.info("run_stats is false; stopping after the mapping outputs.")
         return results
 
-    _log_section("STEP 5: Layered z-score analysis & flagging")
-    normal_mask = _normal_reference_mask(
-        metadata, config.get("classification_scheme", "confident_normals")
-    )
-    n_normal = int(normal_mask.sum())
-    logger.info(f"Normal reference set: {n_normal} of {len(normal_mask)} samples")
-    if n_normal < 2:
-        logger.warning("Fewer than 2 normal reference samples; cannot compute "
-                       "robust median/IQR. Skipping statistics.")
+    _log_section("STEP 5: Clean pathway analysis")
+    
+    # Classify samples
+    if "Classification" in metadata.columns and "Oordeel targeted" in metadata.columns:
+        cls = pd.to_numeric(metadata["Classification"], errors="coerce")
+        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+        
+        # Normals = Class 0 AND Oordeel 0
+        # IMD = Class 1 AND Oordeel 1
+        # Gray = Everything else
+        normal_mask = (cls == 0) & (oor == 0)
+        imd_mask = (cls == 1) & (oor == 1)
+        gray_mask = ~normal_mask & ~imd_mask
+    else:
+        logger.error("Classification and Oordeel targeted columns are required")
         return results
-
-    # Restrict the feature matrix to features that participate in at least one
-    # pathway (with >= min_pathway_size members) so the z-score matrix and the
-    # pathway-feature map are aligned and the statistics are not wasted on
-    # unmatched metabolites.
+    
+    normal_sample_ids = metadata.index[normal_mask].tolist()
+    imd_sample_ids = metadata.index[imd_mask].tolist()
+    gray_sample_ids = metadata.index[gray_mask].tolist()
+    
+    logger.info(f"Sample classification:")
+    logger.info(f"  Normals: {len(normal_sample_ids)}")
+    logger.info(f"  IMDs: {len(imd_sample_ids)}")
+    logger.info(f"  Gray: {len(gray_sample_ids)}")
+    
+    # Filter to only normals + IMDs (exclude gray)
+    analysis_sample_ids = normal_sample_ids + imd_sample_ids
+    
+    if len(analysis_sample_ids) != 317:
+        logger.warning(f"Expected 317 samples but found {len(analysis_sample_ids)}")
+    
+    # Filter features to only those that map to pathways
     pathway_features = sorted(set(coverage.get("matched_features", pd.Series(dtype=str))
                                   .str.split(";").explode().dropna()))
+    
     if not pathway_features:
-        logger.warning("No matched pathway features; cannot compute pathway "
-                       "statistics.")
+        logger.warning("No matched pathway features; cannot compute pathway statistics.")
         return results
-    sub_features = features[pathway_features]
+    
+    # Get only features that are in the feature_to_pathway mapping
+    features_filtered = features[pathway_features]
+    
+    logger.info(f"Using {len(pathway_features)} features that map to pathways")
+    logger.info(f"Analyzing {len(analysis_sample_ids)} samples "
+                f"({len(normal_sample_ids)} normals + {len(imd_sample_ids)} IMDs)")
+    
+    # Compute z-scores using normals as reference
     zscores = compute_metabolite_zscores(
-        sub_features, normal_mask=normal_mask,
+        features_filtered.loc[analysis_sample_ids],
+        normal_mask=pd.Series(normal_mask.loc[analysis_sample_ids], index=analysis_sample_ids),
         iqr_scale=bool(config.get("iqr_scale", True)),
-        ages=ages,
+        ages=ages.loc[analysis_sample_ids] if ages is not None else None,
         age_adjustment_method=config.get("age_adjustment_method", "ols"),
         age_loess_frac=float(config.get("age_loess_frac", 0.5)),
     )
-    zscores.to_csv(out / "metabolite_zscores.csv")
-
-    flag_percentile = float(config.get("flag_percentile", 99))
-
-    # --- Layer 1: atomic per-metabolite flags (single-metabolite overrides) ---
-    override_thr = float(config.get("metabolite_override_threshold", 6.0))
-    metabolite_flags = flag_metabolites(zscores, normal_mask=normal_mask,
-                                        override_threshold=override_thr,
-                                        flag_percentile=flag_percentile)
-    metabolite_flags.to_csv(out / "metabolite_flags.csv", index=False)
-    logger.info(f"Layer 1 (atomic metabolites): flagged {len(metabolite_flags)} "
-                f"(sample, metabolite) pairs at |z| > {override_thr}.")
-
-    # --- Check if enhanced statistics are enabled ---
-    use_enhanced = bool(config.get("use_enhanced_stats", False))
-
-    if use_enhanced:
-        _log_section("STEP 5: Enhanced pathway analysis & flagging")
-        logger.info("Running enhanced pipeline with Stouffer's Z, multiple testing "
-                    "correction, and weighted decision scores...")
-
-        # Filter zscores to only include normals and IMDs (exclude gray samples)
-        # For class1_imd: normals = Class 0 AND Oordeel 0, IMD = Class 1 AND Oordeel 1
-        if "Classification" in metadata.columns and "Oordeel targeted" in metadata.columns:
-            cls = pd.to_numeric(metadata["Classification"], errors="coerce")
-            oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
-            is_normal = (cls == 0) & (oor == 0)
-            is_imd = (cls == 1) & (oor == 1)
-            analysis_mask = is_normal | is_imd
-            n_analysis = int(analysis_mask.sum())
-            zscores_filtered = zscores.loc[analysis_mask]
-            normal_mask_filtered = normal_mask.loc[analysis_mask]
-            metadata_filtered = metadata.loc[analysis_mask]
-            logger.info(f"Enhanced pipeline: filtering to {n_analysis} samples "
-                       f"({int(is_normal.sum())} normals + {int(is_imd.sum())} IMDs)")
-        else:
-            zscores_filtered = zscores
-            normal_mask_filtered = normal_mask
-            metadata_filtered = metadata
-
-        # Enhanced pathway statistics
-        enhanced_stats = compute_enhanced_pathway_statistics(
-            zscores=zscores_filtered,
-            feature_to_pathway=feature_to_pathway,
-            normal_mask=normal_mask_filtered,
-            min_pathway_size=min_pathway_size,
-            output_dir=out,
-        )
-
-        # Enhanced pathway flagging - extreme mode only
-        # First, add sample_type to stats for empirical threshold computation
-        # enhanced_stats has one row per (sample, pathway), so sample_id has duplicates
-        # We need to create sample_type based on the sample_id column
-        
-        # Build a clean mapping: sample_id -> sample_type
-        cls_col = pd.to_numeric(metadata_filtered["Classification"], errors="coerce")
-        oor_col = pd.to_numeric(metadata_filtered["Oordeel targeted"], errors="coerce")
-        
-        sample_type_map = pd.Series("gray", index=metadata_filtered.index)
-        sample_type_map.loc[(cls_col == 0) & (oor_col == 0)] = "normal"
-        sample_type_map.loc[(cls_col == 1) & (oor_col == 1)] = "imd"
-        
-        # Create a DataFrame for merging (handles duplicate sample_ids in enhanced_stats)
-        type_df = pd.DataFrame({
-            "sample_id": metadata_filtered.index,
-            "sample_type": sample_type_map.values
-        })
-        
-        # Merge with enhanced_stats on sample_id
-        enhanced_stats = enhanced_stats.merge(type_df, on="sample_id", how="left")
-        
-        enhanced_flags = flag_pathways_enhanced(
-            enhanced_stats,
-            extreme_z_threshold=float(config.get("extreme_z_threshold", 25.0)),
-            use_empirical_threshold=bool(config.get("use_empirical_threshold", True)),
-            empirical_percentile=float(config.get("empirical_percentile", 99.999)),
-        )
-        enhanced_flags.to_csv(out / "enhanced_pathway_flags.csv", index=False)
-        logger.info(f"Enhanced Layer 2 (pathways): {int(enhanced_flags['flagged_two_stage'].sum())} "
-                    f"flagged via two-stage method.")
-
-        # Weighted decision scores
-        weighted_scores = compute_weighted_decision_score(
-            enhanced_flags,
-            weight_method=config.get("weight_method", "stouffer"),
-            use_log=bool(config.get("use_log_weights", True)),
-        )
-
-        # Enhanced decision rule
-        score_threshold = config.get_float("score_threshold", None)
-        min_flagged = int(config.get("min_flagged_pathways", 1))  # Changed from 3 to 1 for extreme mode
-        min_w = float(config.get("min_weight", 20.0))  # Changed from 2.0 to 20.0 for extreme mode
-
-        # Filter metabolite_flags to match filtered samples
-        metabolite_flags_filtered = metabolite_flags[metabolite_flags["sample_id"].isin(zscores_filtered.index)]
-
-        # For extreme mode, we should NOT use metabolite overrides from the original pipeline
-        # because they were computed on all samples, not just normals+IMDs
-        # Either recompute metabolite_flags on filtered zscores, or disable them for enhanced pipeline
-        # For now, pass empty DataFrame to disable metabolite override flagging in enhanced mode
-        enhanced_decision = decide_samples_enhanced(
-            pathway_stats=enhanced_flags,
-            weighted_scores=weighted_scores,
-            metabolite_flags=pd.DataFrame(columns=["sample_id", "metabolite", "z"]),  # Empty - disable metabolite overrides
-            global_scores=None,
-            score_threshold=score_threshold,
-            min_flagged_pathways=min_flagged,
-            min_weight=min_w,
-            output_dir=out,
-        )
-        enhanced_decision.to_csv(out / "enhanced_sample_decisions.csv")
-        logger.info(f"Enhanced Layer 3 (decision rule): flagged "
-                    f"{int(enhanced_decision['flagged'].sum())} of "
-                    f"{len(enhanced_decision)} samples.")
-
-        # Validate that no normals are flagged
-        validation_report = validate_no_normal_contamination(
-            enhanced_decision, metadata_filtered,
-            classification_scheme=config.get("classification_scheme", "class1_imd"),
-            output_dir=out,
-        )
-        results["enhanced_validation_report"] = validation_report
-
-        # Generate visualizations for IMD samples if requested
-        if bool(config.get("generate_imd_visualizations", False)):
-            try:
-                _generate_imd_pathway_visualizations(
-                    enhanced_stats, enhanced_flags, enhanced_decision,
-                    metadata, out
-                )
-            except ImportError:
-                logger.warning("Seaborn/matplotlib not available for visualizations. "
-                               "Install with: pip install seaborn matplotlib")
-
-        results["enhanced_pathway_statistics"] = enhanced_stats
-        results["enhanced_pathway_flags"] = enhanced_flags
-        results["enhanced_weighted_scores"] = weighted_scores
-        results["enhanced_sample_decisions"] = enhanced_decision
-        
-        # Skip original pipeline when enhanced is used to avoid duplicate/conflicting results
-        # The enhanced pipeline is the primary analysis when enabled
-        # Write enhanced outputs as the main outputs
-        enhanced_flags.to_csv(out / "pathway_statistics.csv", index=False)
-        enhanced_decision.to_csv(out / "sample_decisions.csv")
-        zscores_filtered.to_csv(out / "metabolite_zscores.csv")
-        metabolite_flags_filtered.to_csv(out / "metabolite_flags.csv", index=False)
-        
-        results["pathway_statistics"] = enhanced_flags
-        results["sample_decisions"] = enhanced_decision
-        results["metabolite_zscores"] = zscores_filtered
-        results["metabolite_flags"] = metabolite_flags_filtered
-        return results
-
-    # --- Original (or fallback) pipeline ---
-    # Compute global anomaly scores on filtered zscores
-    global_scores = compute_global_anomaly_score(
-        zscores, top_k=int(config.get("global_anomaly_top_k", 10))
-    )
-    global_scores.to_csv(out / "global_anomaly_scores.csv")
     
-    stats = compute_pathway_statistics(
-        zscores=zscores,
-        feature_to_pathway=feature_to_pathway,
-        normal_mask=normal_mask,
-        flag_percentile=flag_percentile,
-        min_pathway_size=min_pathway_size,
+    zscores.to_csv(out / "metabolite_zscores.csv")
+    logger.info(f"Computed {len(zscores.columns)} metabolite z-scores over {len(zscores)} samples")
+
+    # ------------------------------------------------------------------
+    # Clean pathway analysis with absolute Stouffer's Z
+    # ------------------------------------------------------------------
+    from pathway_pipeline.pipeline.pathway_analysis_clean import (
+        compute_pathway_stouffers_z,
+        find_optimal_threshold,
+        flag_samples,
+        validate_flagging,
     )
-    pathway_flags = flag_pathways(
-        stats,
-        zmed_threshold=float(config.get("zmed_threshold", 2.0)),
-        flagged_fraction_threshold=float(config.get("flagged_fraction_threshold", 0.5)),
-        signed_extreme_threshold=float(config.get("signed_extreme_threshold", 2.5)),
-        severe_zmed_threshold=float(config.get("severe_zmed_threshold", 3.0)),
-        severe_flagged_fraction_threshold=float(
-            config.get("severe_flagged_fraction_threshold", 0.7)),
-        severe_signed_extreme_threshold=float(
-            config.get("severe_signed_extreme_threshold", 4.0)),
+    
+    # Filter feature_to_pathway to only include features in our zscores
+    feature_to_pathway_filtered = feature_to_pathway[
+        feature_to_pathway['feature'].isin(zscores.columns)
+    ]
+    
+    # Compute pathway Stouffer's Z-scores
+    pathway_stats = compute_pathway_stouffers_z(
+        zscores,
+        feature_to_pathway_filtered,
+        min_pathway_size=min_pathway_size
     )
-    pathway_flags.to_csv(out / "pathway_statistics.csv", index=False)
-    if not pathway_flags.empty:
-        pivot = (pathway_flags.pivot_table(index="sample_id", columns="pathway_name",
-                                            values="z_med", aggfunc="first"))
-        pivot.to_csv(out / "pathway_zmed_pivot.csv")
-    logger.info(f"Layer 2 (pathways): {int(pathway_flags['flagged'].sum())} flagged "
-                f"({int((pathway_flags['severity'] == 'severe').sum())} severe, "
-                f"{int((pathway_flags['severity'] == 'moderate').sum())} moderate).")
-
-    global_threshold = config.get("global_threshold", None)
-    if global_threshold is not None:
-        global_threshold = float(global_threshold)
-
-    # --- Layer 3: sample decision rule (the operating point) ---
-    decision = decide_samples(
-        pathway_flags=pathway_flags,
-        metabolite_flags=metabolite_flags,
-        global_scores=global_scores,
-        min_moderate=int(config.get("min_moderate_pathways", 2)),
-        min_severe=int(config.get("min_severe_pathways", 1)),
-        global_threshold=global_threshold,
-        min_severe_zmed=config.get_float("min_severe_zmed", None),
-        min_moderate_zmed=config.get_float("min_moderate_zmed", None),
+    
+    logger.info(f"Computed Stouffer's Z for {pathway_stats['pathway_name'].nunique()} pathways "
+                f"across {pathway_stats['sample_id'].nunique()} samples")
+    
+    # Find optimal threshold
+    threshold_info = find_optimal_threshold(
+        pathway_stats,
+        normal_sample_ids,
+        imd_sample_ids,
+        min_detection=float(config.get("min_detection", 0.80)),
+        max_contamination=float(config.get("max_contamination", 0.05)),
+        min_flagged_pathways=int(config.get("min_flagged_pathways", 1)),
+        n_thresholds=int(config.get("n_thresholds", 20)),
     )
-    decision.to_csv(out / "sample_decisions.csv")
-    logger.info(f"Layer 3 (decision rule): flagged {int(decision['flagged'].sum())} "
-                f"of {len(decision)} samples.")
-
-    # --- Optional: tune the operating point on the inner IMD split ---
-    if bool(config.get("run_threshold_tuning", False)):
-        _log_section("STEP 6: Threshold tuning (inner IMD split)")
-        labels = _imd_labels(metadata,
-                             config.get("classification_scheme", "confident_normals"))
-        sweep = tune_decision_thresholds(
-            pathway_stats=stats,
-            zscores=zscores,
-            normal_mask=normal_mask,
-            labels=labels,
-            metabolite_override_grid=config.get_list(
-                "tuning_override_grid", [4.0, 5.0, 6.0, 8.0, 10.0]),
-            moderate_zmed_grid=config.get_list(
-                "tuning_moderate_zmed_grid", [1.5, 2.0, 2.5, 3.0]),
-            severe_zmed_grid=config.get_list(
-                "tuning_severe_zmed_grid", [2.5, 3.0, 3.5, 4.0]),
-            flag_percentile=flag_percentile,
-            signed_extreme_grid=config.get_list(
-                "tuning_signed_extreme_grid", [2.5, 3.0, 4.0]),
-            prevalence=float(config.get("tuning_prevalence", 0.02)),
-            metric=config.get("tuning_metric", "f1"),
-        )
-        sweep.to_csv(out / "threshold_tuning.csv", index=False)
-        logger.info(f"Wrote threshold_tuning.csv ({len(sweep)} settings) to {out}")
-        results["threshold_tuning"] = sweep
-
-    logger.info(f"Wrote metabolite_zscores.csv, metabolite_flags.csv, "
-                f"pathway_statistics.csv, global_anomaly_scores.csv, "
-                f"sample_decisions.csv to {out}")
-    results["metabolite_zscores"] = zscores
-    results["metabolite_flags"] = metabolite_flags
-    results["pathway_statistics"] = pathway_flags
-    results["global_anomaly_scores"] = global_scores
-    results["sample_decisions"] = decision
+    
+    logger.info(f"\nOptimal threshold: {threshold_info['optimal_threshold']:.2f} "
+                f"(percentile {threshold_info['percentile']:.4f})")
+    logger.info(f"Detection rate: {threshold_info['detection_rate']*100:.1f}%")
+    logger.info(f"Contamination rate: {threshold_info['contamination_rate']*100:.1f}%")
+    logger.info(f"Normals flagged: {threshold_info['n_normals_flagged']}")
+    logger.info(f"IMDs flagged: {threshold_info['n_imds_flagged']}")
+    
+    # Flag samples using optimal threshold
+    decisions = flag_samples(
+        pathway_stats,
+        threshold=threshold_info['optimal_threshold'],
+        min_flagged_pathways=int(config.get("min_flagged_pathways", 1))
+    )
+    
+    # Validate
+    validation = validate_flagging(
+        decisions,
+        normal_sample_ids,
+        imd_sample_ids
+    )
+    
+    logger.info(f"\nValidation results:")
+    logger.info(f"  Normals flagged: {validation['normals_flagged']} / {validation['n_normals']} "
+                f"({validation['contamination_rate']*100:.1f}%)")
+    logger.info(f"  IMDs flagged: {validation['imds_flagged']} / {validation['n_imds']} "
+                f"({validation['detection_rate']*100:.1f}%)")
+    
+    if validation['normals_flagged'] > 0:
+        logger.warning(f"WARNING: {validation['normals_flagged']} normal samples were flagged!")
+        if validation['contamination_rate'] > 0.05:
+            logger.warning(f"CRITICAL: Normal contamination rate ({validation['contamination_rate']*100:.1f}%) "
+                          f"exceeds 5% threshold!")
+    
+    if validation['detection_rate'] < 0.80:
+        logger.warning(f"WARNING: Detection rate ({validation['detection_rate']*100:.1f}%) "
+                       f"below 80% target")
+    
+    # Save outputs
+    pathway_stats.to_csv(out / "enhanced_pathway_statistics.csv", index=False)
+    decisions.reset_index().to_csv(out / "enhanced_sample_decisions.csv", index=False)
+    threshold_info['results'].to_csv(out / "threshold_search.csv", index=False)
+    
+    validation_df = pd.DataFrame([{
+        'n_normals': validation['n_normals'],
+        'n_imds': validation['n_imds'],
+        'normals_flagged': validation['normals_flagged'],
+        'imds_flagged': validation['imds_flagged'],
+        'detection_rate': validation['detection_rate'],
+        'contamination_rate': validation['contamination_rate'],
+        'optimal_threshold': threshold_info['optimal_threshold'],
+        'optimal_percentile': threshold_info['percentile'],
+        'flagged_normal_ids': ','.join(validation['flagged_normal_ids'])
+    }])
+    validation_df.to_csv(out / "enhanced_validation.csv", index=False)
+    
+    # Also save as main outputs
+    pathway_stats.to_csv(out / "pathway_statistics.csv", index=False)
+    decisions.reset_index().to_csv(out / "sample_decisions.csv", index=False)
+    
+    results["pathway_stats"] = pathway_stats
+    results["decisions"] = decisions
+    results["threshold_info"] = threshold_info
+    results["validation"] = validation
+    
+    logger.info(f"\nWrote enhanced_pathway_statistics.csv, enhanced_sample_decisions.csv, "
+                f"threshold_search.csv, enhanced_validation.csv to {out}")
+    
     return results
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pathway-shift pipeline: feature -> HMDB -> pathway "
-                    "matching and direction-aware pathway statistics."
+        description="Clean pathway pipeline: feature -> HMDB -> pathway "
+                    "matching and absolute Stouffer's Z pathway statistics."
     )
     parser.add_argument("--input", default=None,
                         help="Path to the feature matrix CSV.")
@@ -563,7 +527,7 @@ def main():
     try:
         run_pipeline(input_file=args.input, output_dir=args.output,
                      config_path=args.config)
-        logger.info("\nPathway pipeline completed successfully!")
+        logger.info("\nClean pathway pipeline completed successfully!")
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)
         sys.exit(1)
