@@ -853,8 +853,9 @@ def _generate_imd_pathway_visualizations(
     imd_mask = (cls == 1) & (oor == 1)
     imd_samples = metadata.index[imd_mask]
 
-    # Get flagged IMD samples
-    flagged_imd = decisions.index[decisions["flagged"] & imd_mask]
+    # Get flagged IMD samples - ensure imd_mask aligns with decisions.index
+    imd_mask_aligned = imd_mask.reindex(decisions.index, fill_value=False)
+    flagged_imd = decisions.index[decisions["flagged"] & imd_mask_aligned]
 
     if len(flagged_imd) == 0:
         logger.info("No flagged IMD samples to visualize.")
@@ -864,7 +865,8 @@ def _generate_imd_pathway_visualizations(
 
     # Get normal reference statistics for comparison
     normal_mask = _get_normal_mask_from_metadata(metadata, "class1_imd")
-    normal_stats = pathway_stats[normal_mask]
+    normal_mask_aligned = normal_mask.reindex(pathway_stats.index, fill_value=False)
+    normal_stats = pathway_stats[normal_mask_aligned]
 
     # Compute mean and std of Z_med for normals per pathway
     normal_means = normal_stats.groupby("pathway_name")["z_med"].agg([
