@@ -29,7 +29,7 @@ non_feature_columns:
 #   confident_normals: normals = Class 0 AND Oordeel 0; everything else = outlier
 #   class1_imd:      normals = Class 0 AND Oordeel 0; Class 1 = IMD (disease);
 #                    Class 2/3 or (Class 0 AND Oordeel 1) = gray (not normal, not IMD)
-classification_scheme: confident_normals
+classification_scheme: class1_imd
 
 normal_classification: 0
 outlier_classifications:
@@ -172,15 +172,17 @@ use_enhanced_stats: true
 
 # Extreme mode: only flag pathways with |Z_stouffer| > threshold
 # This is for IMD detection where only 1-2 pathways are extremely disturbed.
-# P-value thresholds were removed as they caused 72% normal contamination.
-extreme_z_threshold: 20.0    # Only flag pathways with |Z_stouffer| > 20.0
+# Uses absolute Stouffer's Z to detect both same-direction and opposite-direction disturbances.
+# P-value thresholds were removed as they caused 72% normal contamination with 70K tests.
+extreme_z_threshold: 25.0    # Only flag pathways with |Z_stouffer| > 25.0 (absolute value)
 
 # Weighted decision score (used for sample-level decision)
+# A sample is flagged if it has at least min_flagged_pathways with mean |Z_stouffer| > min_weight
 weight_method: stouffer        # stouffer | zmed | p_value
-use_log_weights: true          # log-transform weights for better scale
+use_log_weights: false         # Don't log-transform for extreme mode (we want raw |Z| values)
 score_threshold: null          # flag if weighted_score > this (null = disabled)
-min_flagged_pathways: 1        # Minimum flagged pathways to flag a sample
-min_weight: 5.0                # minimum mean weight for count-based rule
+min_flagged_pathways: 1        # Minimum flagged pathways to flag a sample (IMDs have 1-2 extreme pathways)
+min_weight: 20.0               # minimum mean |Z_stouffer| for flagged pathways
 
 # ============================================================================
 # Visualization (optional)

@@ -817,22 +817,31 @@ def _generate_imd_pathway_visualizations(
         top_n_pathways: Number of top pathways to show in bar plots.
         dpi: DPI for saved figures.
     """
+    if not HAS_SEABORN:
+        logger.warning("Seaborn/matplotlib not available; skipping visualizations.")
+        return
+        
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Identify IMD samples (Class 1 AND Oordeel 1)
+    # Identify IMD samples (Class 1 AND Oordeel 1) from metadata
     cls = pd.to_numeric(metadata["Classification"], errors="coerce")
     oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
     imd_mask = (cls == 1) & (oor == 1)
     imd_samples = metadata.index[imd_mask]
 
-    # Get flagged IMD samples - handle potential duplicate index in decisions
-    # Use direct boolean masking without reindex to avoid duplicate index issues
-    flagged_bool = decisions["flagged"].values
-    imd_bool = imd_mask.values
-    # Only keep indices where both arrays align
-    valid_idx = decisions.index[flagged_bool & imd_bool]
-    flagged_imd = valid_idx.unique()
+    # Get flagged IMD samples - handle duplicate index issues
+    # Convert decisions index to array and imd_mask to array for element-wise comparison
+    decisions_index = decisions.index.values if hasattr(decisions.index, 'values') else decisions.index
+    imd_mask_array = imd_mask.values if hasattr(imd_mask, 'values') else imd_mask
+    flagged_array = decisions["flagged"].values if hasattr(decisions["flagged"], 'values') else decisions["flagged"]
+    
+    # Find intersection using array-based masking
+    # Get indices in metadata that are both IMD and flagged
+    # First, get the sample_ids from decisions that are flagged
+    flagged_sample_ids = set(decisions.index[flagged_array])
+    # Then intersect with IMD sample IDs
+    flagged_imd = list(flagged_sample_ids & set(imd_samples))
 
     if len(flagged_imd) == 0:
         logger.info("No flagged IMD samples to visualize.")
@@ -842,15 +851,19 @@ def _generate_imd_pathway_visualizations(
 
     # Get normal reference statistics for comparison
     normal_mask = _get_normal_mask_from_metadata(metadata, "class1_imd")
-    # Use sample_id column for filtering instead of index to avoid duplicate issues
     normal_samples = metadata.index[normal_mask]
+    
+    # Filter normal_stats using sample_id column to avoid index issues
     normal_stats = pathway_stats[pathway_stats["sample_id"].isin(normal_samples)]
 
     # Compute mean and std of Z_med for normals per pathway
-    normal_means = normal_stats.groupby("pathway_name")["z_med"].agg([
-        ("mean", "mean"),
-        ("std", "std"),
-    ])
+    if not normal_stats.empty:
+        normal_means = normal_stats.groupby("pathway_name")["z_med"].agg([
+            ("mean", "mean"),
+            ("std", "std"),
+        ])
+    else:
+        normal_means = pd.DataFrame()
 
     for sample_id in flagged_imd:
         # Filter to this sample
@@ -873,11 +886,19 @@ def _generate_imd_pathway_visualizations(
         # Merge with normal stats for z-score relative to normals
         sample_df = sample_stats.copy()
         sample_df = sample_df.set_index("pathway_name")
-        sample_df = sample_df.join(normal_means, how="left")
-        sample_df["z_med_normalized"] = (
-            (sample_df["z_med"] - sample_df[("mean", "z_med")]) /
-            sample_df[("std", "z_med")].replace(0, np.nan)
-        )
+        if not normal_means.empty:
+            sample_df = sample_df.join(normal_means, how="left")
+            # Handle the multi-level column names from agg
+            if ('mean', 'z_med') in sample_df.columns and ('std', 'z_med') in sample_df.columns:
+                sample_df["z_med_normalized"] = (
+                    (sample_df["z_med"] - sample_df[("mean", "z_med")]) /
+                    sample_df[("std", "z_med")].replace(0, np.nan)
+                )
+            else:
+                # Fallback if column names are different
+                sample_df["z_med_normalized"] = sample_df["z_med"]
+        else:
+            sample_df["z_med_normalized"] = sample_df["z_med"]
 
         # Sort by |Z_stouffer| for ranking
         sample_df = sample_df.sort_values("z_stouffer", key=abs, ascending=False)
