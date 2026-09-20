@@ -274,12 +274,12 @@ def validate_flagging(
     """
     all_samples = normal_sample_ids + imd_sample_ids
     
-    # Get flagged status for each sample
-    flagged = decisions['flagged'].reindex(all_samples, fill_value=False)
+    # Get flagged status for each sample as a dict to avoid Series indexing issues
+    flagged_dict = decisions['flagged'].to_dict()
     
     # Count flagged in each category
-    normals_flagged = int(flagged[flagged.index.isin(normal_sample_ids)].sum())
-    imds_flagged = int(flagged[flagged.index.isin(imd_sample_ids)].sum())
+    normals_flagged = sum(1 for s in normal_sample_ids if flagged_dict.get(s, False))
+    imds_flagged = sum(1 for s in imd_sample_ids if flagged_dict.get(s, False))
     
     n_normals = len(normal_sample_ids)
     n_imds = len(imd_sample_ids)
@@ -288,8 +288,7 @@ def validate_flagging(
     contamination_rate = normals_flagged / n_normals if n_normals > 0 else 0.0
     
     # Get list of flagged normals
-    # Use at[] to get scalar value instead of loc[] which can return a Series
-    flagged_normal_ids = [s for s in normal_sample_ids if s in flagged.index and flagged.at[s]]
+    flagged_normal_ids = [s for s in normal_sample_ids if flagged_dict.get(s, False)]
     
     return {
         'n_normals': n_normals,
