@@ -541,6 +541,7 @@ def run_pipeline(input_file: str,
             contamination=float(config.get("anomaly_contamination", 0.02)),
             n_neighbors=int(config.get("anomaly_n_neighbors", 20)),
             n_estimators=int(config.get("anomaly_n_estimators", 100)),
+            random_state=int(config.get("anomaly_random_state", 42)),
             percentile=float(config.get("anomaly_percentile", 95.0)),
         )
         

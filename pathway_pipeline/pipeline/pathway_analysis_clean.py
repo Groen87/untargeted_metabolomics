@@ -537,7 +537,8 @@ def run_anomaly_detection(
             n_neighbors=n_neighbors,
             novelty=True,
             contamination='auto',
-            n_jobs=-1
+            n_jobs=-1,
+            random_state=random_state
         )
         lof.fit(X_train)
         

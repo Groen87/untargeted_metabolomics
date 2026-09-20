@@ -69,7 +69,8 @@ anomaly_scorer: lof
 anomaly_contamination: 0.02    # Expected IMD rate in production (2%)
 anomaly_n_neighbors: 20         # For LOF: number of neighbors
 anomaly_n_estimators: 100       # For IForest: number of trees
-anomaly_percentile: 95.0              # Number of percentiles to test for optimal threshold
+anomaly_percentile: 95.0       # Percentile for thresholding (higher = more strict)
+anomaly_random_state: 42       # Random seed for reproducibility
 
 # ============================================================================
 # Legacy parameters (kept for compatibility, not used in clean pipeline)
