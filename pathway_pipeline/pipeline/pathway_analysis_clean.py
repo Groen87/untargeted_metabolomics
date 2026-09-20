@@ -859,19 +859,22 @@ def run_anomaly_detection(
         production_imd_ids_full = []
     
     # Scenario 2: Realistic 2% contamination simulation
+    # Use all test IMDs and extrapolate normals to achieve 2% contamination
     target_contamination = 0.02
-    n_production_normals_sim = len(test_normal_ids)  # Only test normals
-    target_imds_sim = int(np.round(n_production_normals_sim / (1 - target_contamination) * target_contamination))
+    n_production_imds_sim = len(imd_sample_ids_filtered)  # All test IMDs
+    # Calculate how many normals we need to achieve 2% contamination
+    target_normals_sim = int(np.round(n_production_imds_sim / target_contamination - n_production_imds_sim))
     
-    if len(imd_sample_ids_filtered) > target_imds_sim:
+    if len(test_normal_ids) >= target_normals_sim:
         np.random.seed(random_state)
-        production_imd_ids_sim = np.random.choice(imd_sample_ids_filtered, target_imds_sim, replace=False).tolist()
+        production_normal_ids_sim = np.random.choice(test_normal_ids, target_normals_sim, replace=False).tolist()
     else:
-        production_imd_ids_sim = imd_sample_ids_filtered.copy()
-        actual_contamination = len(production_imd_ids_sim) / (n_production_normals_sim + len(production_imd_ids_sim))
-        logger.info(f"\nNote: Not enough IMDs for 2% contamination. Using all {len(production_imd_ids_sim)} IMDs (actual: {actual_contamination*100:.1f}%)")
+        production_normal_ids_sim = test_normal_ids.copy()
+        actual_contamination = len(imd_sample_ids_filtered) / (len(production_normal_ids_sim) + len(imd_sample_ids_filtered))
+        logger.info(f"\nNote: Not enough normals for 2% contamination with all {len(imd_sample_ids_filtered)} IMDs. "
+                   f"Using all {len(production_normal_ids_sim)} normals (actual: {actual_contamination*100:.1f}%)")
     
-    production_normal_ids_sim = test_normal_ids.copy()  # Only test normals
+    production_imd_ids_sim = imd_sample_ids_filtered.copy()
     production_sample_ids_sim = production_normal_ids_sim + production_imd_ids_sim
     
     X_prod_normals_sim = pivot.loc[production_normal_ids_sim]
