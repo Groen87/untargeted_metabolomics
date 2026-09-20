@@ -188,6 +188,7 @@ def process_batch(
     fallback_qc_pattern: Optional[str] = "QC3",
     frac: float = 0.5,
     output_dir: Optional[Path] = None,
+    apply_pqn: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Process a single batch: feature filtering + median normalization + LOESS drift correction.
@@ -202,6 +203,7 @@ def process_batch(
         fallback_qc_pattern: Fallback QC pattern
         frac: LOESS fraction parameter
         output_dir: Optional directory to save intermediate files
+        apply_pqn: Whether to apply PQN normalization (default: True)
         filter_config: Optional configuration dictionary for feature filtering
         
     Returns:
@@ -230,16 +232,19 @@ def process_batch(
     )
     
     # Step 2: Median normalization (AFTER drift correction)
-    logger.info(f"  Applying median normalization...")
-    batch_df = pqn_normalize_batch(
-        batch_df,
-        batch_samples,
-        sample_info=sample_info,
-        qc_pattern=qc_pattern,
-        fallback_qc_pattern=fallback_qc_pattern,
-    )
+    if apply_pqn:
+        logger.info(f"  Applying PQN normalization...")
+        batch_df = pqn_normalize_batch(
+            batch_df,
+            batch_samples,
+            sample_info=sample_info,
+            qc_pattern=qc_pattern,
+            fallback_qc_pattern=fallback_qc_pattern,
+        )
+    else:
+        logger.info(f"  Skipping PQN normalization (disabled in config)")
     
-    # Remove only the batch-specific experiment QC pool (expQC) after PQN.
+    # Remove only the batch-specific experiment QC pool (expQC) after PQN (or LOESS if PQN skipped).
     # expQC is a pool of that batch's own biological samples, so it carries
     # batch biology and must NOT be used for inter-batch correction.
     # The cross-batch control QCs (QC3, QC4, blauw) are RETAINED here so they

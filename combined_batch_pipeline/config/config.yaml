@@ -148,6 +148,13 @@ ralps_config:
   allowed_vc_increase: 0.05
 
 # ============================================================================
+# PQN Normalization Configuration
+# ============================================================================
+# PQN (Probabilistic Quotient Normalization) is applied per-batch after LOESS
+# drift correction. Set to false to skip PQN and only use bridge-QC normalization.
+apply_pqn: true  # Set false to skip PQN normalization
+
+# ============================================================================
 # Bridge-QC Batch Alignment Configuration
 # ============================================================================
 # Aligns batches using cross-batch control (QC) samples that are the SAME
