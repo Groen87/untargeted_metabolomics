@@ -659,13 +659,14 @@ def run_anomaly_detection(
     logger.info(f"  Mean: {train_scores.mean():.4f}, Std: {train_scores.std():.4f}")
     logger.info(f"  Percentile 95: {np.percentile(train_scores, 95):.4f}")
     logger.info(f"  Percentile 99: {np.percentile(train_scores, 99):.4f}")
+    logger.info(f"  Percentile 99.5: {np.percentile(train_scores, 99.5):.4f}")
+    logger.info(f"  Percentile 99.9: {np.percentile(train_scores, 99.9):.4f}")
+    logger.info(f"  Percentile 99.95: {np.percentile(train_scores, 99.95):.4f}")
     
-    # Use percentile from config, but ensure it's not too extreme
-    # If percentile > 99.5, cap it at 99.5 to avoid being too strict
-    effective_percentile = min(percentile, 99.5)
-    threshold = float(np.percentile(train_scores, effective_percentile))
+    # Use the percentile directly from config (no capping)
+    threshold = float(np.percentile(train_scores, percentile))
     
-    logger.info(f"Using percentile {effective_percentile} for threshold: {threshold:.4f}")
+    logger.info(f"Using percentile {percentile} for threshold: {threshold:.4f}")
     
     # Flag validation samples
     val_results['flagged'] = val_results['anomaly_score'] > threshold
