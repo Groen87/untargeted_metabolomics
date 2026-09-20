@@ -163,11 +163,12 @@ def find_optimal_threshold(
         threshold = float(np.percentile(normal_z, p))
         
         # Flag pathways
-        pathway_stats['flagged'] = pathway_stats['z_stouffer_abs'] > threshold
+        pathway_stats_copy = pathway_stats.copy()
+        pathway_stats_copy['flagged'] = pathway_stats_copy['z_stouffer_abs'] > threshold
         
         # Count flagged pathways per sample
-        flagged_counts = pathway_stats[pathway_stats['flagged']].groupby('sample_id').size()
-        all_samples = pathway_stats['sample_id'].unique()
+        flagged_counts = pathway_stats_copy[pathway_stats_copy['flagged']].groupby('sample_id').size()
+        all_samples = pathway_stats_copy['sample_id'].unique()
         flagged_counts = flagged_counts.reindex(all_samples, fill_value=0)
         
         # Flag samples with >= min_flagged_pathways
@@ -492,42 +493,80 @@ def run_anomaly_detection(
     n_estimators: int = 100,
     random_state: int = 42,
     percentile: float = 95.0,
+    train_ratio: float = 0.8,
 ) -> Dict:
-    """Run anomaly detection on pathway Stouffer's Z scores.
+    """Run anomaly detection on pathway Stouffer's Z scores with proper ML methodology.
     
-    Trains on NORMAL samples only, then scores ALL samples (normals + IMDs + gray).
-    This is the correct approach for low prevalence scenarios.
+    This follows the LOF pipeline methodology:
+    1. Split normals into train/test (80/20)
+    2. Train ONLY on training normals
+    3. Validate on test normals + ALL IMDs (no IMDs in training)
+    4. Then simulate production with 2% contamination
     
     Args:
         pathway_stats: DataFrame with columns: sample_id, pathway_name, z_stouffer_abs
-        normal_sample_ids: List of normal sample IDs (for training)
-        imd_sample_ids: List of IMD sample IDs (for validation)
-        gray_sample_ids: List of gray sample IDs (for testing)
+        normal_sample_ids: List of normal sample IDs
+        imd_sample_ids: List of IMD sample IDs
+        gray_sample_ids: List of gray sample IDs
         scorer_name: Which anomaly detector to use ('lof', 'iforest', 'mahalanobis')
         contamination: Expected contamination rate for thresholding
         n_neighbors: Number of neighbors for LOF
         n_estimators: Number of trees for IForest
         random_state: Random seed
         percentile: Percentile for thresholding (higher = more strict)
+        train_ratio: Ratio of normals to use for training (default 0.8)
         
     Returns:
         Dict with anomaly scores, decisions, and validation metrics
     """
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import StandardScaler
+    
     # Pivot to samples x pathways matrix
     # Handle duplicate (sample_id, pathway_name) pairs by taking mean
     pivot = pathway_stats.pivot_table(index='sample_id', columns='pathway_name', values='z_stouffer_abs', aggfunc='mean')
     pivot = pivot.fillna(0)  # Fill missing with 0 (no deviation)
     
-    # Get all sample IDs in order
+    # Get all sample IDs that have pathway data
     all_sample_ids = pivot.index.tolist()
     
-    # Split into train (normals) and test (all)
-    X_train = pivot.loc[normal_sample_ids].values
-    X_test = pivot.values
+    # Filter sample IDs to only those with pathway data
+    normal_sample_ids = [s for s in normal_sample_ids if s in all_sample_ids]
+    imd_sample_ids_filtered = [s for s in imd_sample_ids if s in all_sample_ids]
     
-    logger.info(f"Training anomaly detector on {len(normal_sample_ids)} normal samples")
-    logger.info(f"Scoring {len(all_sample_ids)} total samples")
+    logger.info(f"Samples with pathway data: {len(normal_sample_ids)} normals, {len(imd_sample_ids_filtered)} IMDs")
+    
+    # ========================================================================
+    # Step 1: Split normals into train/test (80/20)
+    # ========================================================================
+    X_normals = pivot.loc[normal_sample_ids]
+    
+    X_train_normals, X_test_normals = train_test_split(
+        X_normals,
+        train_size=train_ratio,
+        test_size=1-train_ratio,
+        random_state=random_state,
+        stratify=pd.Series([0]*len(X_normals), index=X_normals.index)  # All are normals
+    )
+    
+    train_normal_ids = X_train_normals.index.tolist()
+    test_normal_ids = X_test_normals.index.tolist()
+    
+    logger.info(f"\nSplit normals into train/test:")
+    logger.info(f"  Train normals: {len(train_normal_ids)}")
+    logger.info(f"  Test normals: {len(test_normal_ids)}")
+    
+    # ========================================================================
+    # Step 2: Train on training normals only
+    # ========================================================================
+    X_train = X_train_normals.values
+    
+    logger.info(f"\nTraining anomaly detector on {len(train_normal_ids)} normal samples")
     logger.info(f"Using {pivot.shape[1]} pathway features")
+    
+    # Scale features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
     
     # Train anomaly detector
     if scorer_name == "lof":
@@ -540,10 +579,8 @@ def run_anomaly_detection(
             contamination='auto',
             n_jobs=-1
         )
-        lof.fit(X_train)
-        
-        # Score all samples
-        scores = -lof.decision_function(X_test)  # Higher = more anomalous
+        lof.fit(X_train_scaled)
+        model = lof
         method_name = "Local Outlier Factor"
         
     elif scorer_name == "iforest":
@@ -555,10 +592,8 @@ def run_anomaly_detection(
             random_state=random_state,
             n_jobs=-1
         )
-        iforest.fit(X_train)
-        
-        # Score all samples (higher = more anomalous for IF)
-        scores = -iforest.score_samples(X_test)  # Negate to make higher = more anomalous
+        iforest.fit(X_train_scaled)
+        model = iforest
         method_name = "Isolation Forest"
         
     elif scorer_name == "mahalanobis":
@@ -566,70 +601,202 @@ def run_anomaly_detection(
         
         # Fit robust covariance on normals
         mcd = MinCovDet(random_state=random_state)
-        mcd.fit(X_train)
-        
-        # Compute Mahalanobis distance for all samples
-        distances = mcd.mahalanobis(X_test)
-        scores = distances  # Higher = more anomalous
+        mcd.fit(X_train_scaled)
+        model = mcd
         method_name = "Mahalanobis Distance"
         
     else:
         raise ValueError(f"Unknown scorer: {scorer_name}. Use 'lof', 'iforest', or 'mahalanobis'")
     
-    # Create results DataFrame
-    results = pd.DataFrame({
-        'sample_id': all_sample_ids,
-        'anomaly_score': scores
+    # ========================================================================
+    # Step 3: Validate on test normals + ALL IMDs (realistic validation)
+    # ========================================================================
+    # Prepare test set: test normals + all IMDs
+    X_test_normals_scaled = scaler.transform(X_test_normals)
+    X_imds = pivot.loc[imd_sample_ids_filtered]
+    X_imds_scaled = scaler.transform(X_imds)
+    
+    # Combine test normals and IMDs
+    X_val = np.vstack([X_test_normals_scaled, X_imds_scaled])
+    val_sample_ids = test_normal_ids + imd_sample_ids_filtered
+    
+    logger.info(f"\nValidating on {len(test_normal_ids)} test normals + {len(imd_sample_ids_filtered)} IMDs")
+    
+    # Score validation samples
+    if scorer_name == "lof":
+        val_scores = -model.decision_function(X_val)
+    elif scorer_name == "iforest":
+        val_scores = -model.score_samples(X_val)
+    elif scorer_name == "mahalanobis":
+        val_scores = model.mahalanobis(X_val)
+    
+    # Create validation results
+    val_results = pd.DataFrame({
+        'sample_id': val_sample_ids,
+        'anomaly_score': val_scores,
+        'is_normal': [True]*len(test_normal_ids) + [False]*len(imd_sample_ids_filtered),
+        'is_imd': [False]*len(test_normal_ids) + [True]*len(imd_sample_ids_filtered)
     })
     
-    # Compute threshold from normal distribution
-    normal_scores = results[results['sample_id'].isin(normal_sample_ids)]['anomaly_score']
-    threshold = float(np.percentile(normal_scores, percentile))
+    # Compute threshold from training normal scores (no data leakage!)
+    # Get scores for training normals
+    if scorer_name == "lof":
+        train_scores = -model.decision_function(X_train_scaled)
+    elif scorer_name == "iforest":
+        train_scores = -model.score_samples(X_train_scaled)
+    elif scorer_name == "mahalanobis":
+        train_scores = model.mahalanobis(X_train_scaled)
     
-    # Flag samples above threshold
-    results['flagged'] = results['anomaly_score'] > threshold
+    threshold = float(np.percentile(train_scores, percentile))
+    
+    # Flag validation samples
+    val_results['flagged'] = val_results['anomaly_score'] > threshold
     
     # Compute validation metrics
-    all_test_samples = imd_sample_ids + gray_sample_ids
+    n_test_normals = len(test_normal_ids)
+    n_val_imds = len(imd_sample_ids_filtered)
     
-    # Count flagged in each category
-    normals_flagged = int(results[results['sample_id'].isin(normal_sample_ids) & results['flagged']].shape[0])
-    imds_flagged = int(results[results['sample_id'].isin(imd_sample_ids) & results['flagged']].shape[0])
-    grays_flagged = int(results[results['sample_id'].isin(gray_sample_ids) & results['flagged']].shape[0])
+    test_normals_flagged = int(val_results[(val_results['is_normal']) & (val_results['flagged'])].shape[0])
+    val_imds_flagged = int(val_results[(val_results['is_imd']) & (val_results['flagged'])].shape[0])
     
-    n_normals = len(normal_sample_ids)
-    n_imds = len(imd_sample_ids)
-    n_grays = len(gray_sample_ids)
+    val_detection_rate = val_imds_flagged / n_val_imds if n_val_imds > 0 else 0.0
+    val_contamination_rate = test_normals_flagged / n_test_normals if n_test_normals > 0 else 0.0
     
-    detection_rate = imds_flagged / n_imds if n_imds > 0 else 0.0
-    contamination_rate = normals_flagged / n_normals if n_normals > 0 else 0.0
-    gray_flag_rate = grays_flagged / n_grays if n_grays > 0 else 0.0
+    flagged_test_normal_ids = val_results[(val_results['is_normal']) & (val_results['flagged'])]['sample_id'].tolist()
+    flagged_val_imd_ids = val_results[(val_results['is_imd']) & (val_results['flagged'])]['sample_id'].tolist()
     
-    # Get flagged sample IDs
-    flagged_normal_ids = results[results['sample_id'].isin(normal_sample_ids) & results['flagged']]['sample_id'].tolist()
-    flagged_imd_ids = results[results['sample_id'].isin(imd_sample_ids) & results['flagged']]['sample_id'].tolist()
+    logger.info(f"\n{method_name} Validation Results:")
+    logger.info(f"  Threshold: {threshold:.4f} (percentile {percentile} from training normals)")
+    logger.info(f"  Test normals flagged: {test_normals_flagged} / {n_test_normals} ({val_contamination_rate*100:.1f}%)")
+    logger.info(f"  IMDs flagged: {val_imds_flagged} / {n_val_imds} ({val_detection_rate*100:.1f}%)")
     
-    logger.info(f"\n{method_name} Results:")
-    logger.info(f"  Threshold: {threshold:.4f} (percentile {percentile})")
-    logger.info(f"  Normals flagged: {normals_flagged} / {n_normals} ({contamination_rate*100:.1f}%)")
-    logger.info(f"  IMDs flagged: {imds_flagged} / {n_imds} ({detection_rate*100:.1f}%)")
-    logger.info(f"  Gray flagged: {grays_flagged} / {n_grays} ({gray_flag_rate*100:.1f}%)")
+    # ========================================================================
+    # Step 4: Simulate production with 2% contamination
+    # ========================================================================
+    # Create a realistic production scenario: 2% IMDs mixed with normals
+    # Use all normals (train + test) and a subset of IMDs for production simulation
     
+    # For production simulation, we want ~2% contamination
+    # Use all normals and a subset of IMDs
+    all_normal_ids_for_prod = train_normal_ids + test_normal_ids
+    n_production_normals = len(all_normal_ids_for_prod)
+    
+    target_contamination = 0.02
+    target_imds = int(np.round(n_production_normals / (1 - target_contamination) * target_contamination))
+    
+    # Select subset of IMDs to achieve ~2% contamination
+    if len(imd_sample_ids_filtered) > target_imds:
+        # Select random subset of IMDs
+        np.random.seed(random_state)
+        production_imd_ids = np.random.choice(imd_sample_ids_filtered, target_imds, replace=False).tolist()
+    else:
+        production_imd_ids = imd_sample_ids_filtered.copy()
+        actual_contamination = len(production_imd_ids) / (len(all_normal_ids_for_prod) + len(production_imd_ids))
+        logger.info(f"\nNote: Not enough IMDs for 2% contamination. Using all {len(production_imd_ids)} IMDs (actual: {actual_contamination*100:.1f}%)")
+    
+    production_normal_ids = all_normal_ids_for_prod.copy()
+    production_sample_ids = production_normal_ids + production_imd_ids
+    
+    # Get features for production set
+    X_prod_normals = pivot.loc[production_normal_ids]
+    X_prod_imds = pivot.loc[production_imd_ids]
+    
+    if len(X_prod_normals) > 0 and len(X_prod_imds) > 0:
+        X_prod_normals_scaled = scaler.transform(X_prod_normals)
+        X_prod_imds_scaled = scaler.transform(X_prod_imds)
+        X_prod = np.vstack([X_prod_normals_scaled, X_prod_imds_scaled])
+    elif len(X_prod_normals) > 0:
+        # Only normals available
+        X_prod_normals_scaled = scaler.transform(X_prod_normals)
+        X_prod = X_prod_normals_scaled
+    elif len(X_prod_imds) > 0:
+        # Only IMDs available
+        X_prod_imds_scaled = scaler.transform(X_prod_imds)
+        X_prod = X_prod_imds_scaled
+    else:
+        logger.warning("No samples available for production simulation")
+        X_prod = np.array([]).reshape(0, pivot.shape[1])
+    
+    logger.info(f"\nProduction simulation ({target_contamination*100:.0f}% contamination):")
+    logger.info(f"  Normal samples: {len(production_normal_ids)}")
+    logger.info(f"  IMD samples: {len(production_imd_ids)}")
+    logger.info(f"  Total: {len(production_sample_ids)}")
+    
+    # Score production samples
+    if scorer_name == "lof":
+        prod_scores = -model.decision_function(X_prod)
+    elif scorer_name == "iforest":
+        prod_scores = -model.score_samples(X_prod)
+    elif scorer_name == "mahalanobis":
+        prod_scores = model.mahalanobis(X_prod)
+    
+    prod_results = pd.DataFrame({
+        'sample_id': production_sample_ids,
+        'anomaly_score': prod_scores,
+        'is_normal': [True]*len(production_normal_ids) + [False]*len(production_imd_ids),
+        'is_imd': [False]*len(production_normal_ids) + [True]*len(production_imd_ids)
+    })
+    
+    # Flag production samples using same threshold
+    prod_results['flagged'] = prod_results['anomaly_score'] > threshold
+    
+    # Compute production metrics
+    n_prod_normals = len(production_normal_ids)
+    n_prod_imds = len(production_imd_ids)
+    
+    prod_normals_flagged = int(prod_results[(prod_results['is_normal']) & (prod_results['flagged'])].shape[0])
+    prod_imds_flagged = int(prod_results[(prod_results['is_imd']) & (prod_results['flagged'])].shape[0])
+    
+    prod_detection_rate = prod_imds_flagged / n_prod_imds if n_prod_imds > 0 else 0.0
+    prod_contamination_rate = prod_normals_flagged / n_prod_normals if n_prod_normals > 0 else 0.0
+    
+    flagged_prod_normal_ids = prod_results[(prod_results['is_normal']) & (prod_results['flagged'])]['sample_id'].tolist()
+    flagged_prod_imd_ids = prod_results[(prod_results['is_imd']) & (prod_results['flagged'])]['sample_id'].tolist()
+    
+    logger.info(f"\nProduction simulation results:")
+    logger.info(f"  Normals flagged: {prod_normals_flagged} / {n_prod_normals} ({prod_contamination_rate*100:.1f}%)")
+    logger.info(f"  IMDs flagged: {prod_imds_flagged} / {n_prod_imds} ({prod_detection_rate*100:.1f}%)")
+    
+    # ========================================================================
+    # Return all results
+    # ========================================================================
     return {
         'scorer': scorer_name,
         'method': method_name,
-        'results': results,
         'threshold': threshold,
         'percentile': percentile,
-        'n_normals': n_normals,
-        'n_imds': n_imds,
-        'n_grays': n_grays,
-        'normals_flagged': normals_flagged,
-        'imds_flagged': imds_flagged,
-        'grays_flagged': grays_flagged,
-        'detection_rate': detection_rate,
-        'contamination_rate': contamination_rate,
-        'gray_flag_rate': gray_flag_rate,
-        'flagged_normal_ids': flagged_normal_ids,
-        'flagged_imd_ids': flagged_imd_ids,
+        'train_ratio': train_ratio,
+        'random_state': random_state,
+        # Validation results (test normals + all IMDs)
+        'validation': {
+            'n_normals': n_test_normals,
+            'n_imds': n_val_imds,
+            'normals_flagged': test_normals_flagged,
+            'imds_flagged': val_imds_flagged,
+            'detection_rate': val_detection_rate,
+            'contamination_rate': val_contamination_rate,
+            'flagged_normal_ids': flagged_test_normal_ids,
+            'flagged_imd_ids': flagged_val_imd_ids,
+            'results': val_results
+        },
+        # Production simulation results (2% contamination)
+        'production': {
+            'n_normals': n_prod_normals,
+            'n_imds': n_prod_imds,
+            'normals_flagged': prod_normals_flagged,
+            'imds_flagged': prod_imds_flagged,
+            'detection_rate': prod_detection_rate,
+            'contamination_rate': prod_contamination_rate,
+            'target_contamination': target_contamination,
+            'flagged_normal_ids': flagged_prod_normal_ids,
+            'flagged_imd_ids': flagged_prod_imd_ids,
+            'results': prod_results
+        },
+        # All sample results (for reference)
+        'all_samples': {
+            'normal_sample_ids': normal_sample_ids,
+            'imd_sample_ids': imd_sample_ids_filtered,
+            'gray_sample_ids': [s for s in gray_sample_ids if s in all_sample_ids],
+            'n_features': pivot.shape[1]
+        }
     }

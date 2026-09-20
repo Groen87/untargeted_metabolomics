@@ -391,9 +391,13 @@ def run_pipeline(input_file: str,
     metadata_filtered = metadata.loc[analysis_mask]
     normal_mask_filtered = normal_mask.loc[analysis_mask]
     
+    # Get filtered sample IDs
+    normal_sample_ids_filtered = metadata_filtered.index[normal_mask_filtered].unique().tolist()
+    imd_sample_ids_filtered = metadata_filtered.index[~normal_mask_filtered].unique().tolist()
+    
     logger.info(f"Using {len(pathway_features)} features that map to pathways")
     logger.info(f"Analyzing {len(analysis_sample_ids)} samples "
-                f"({len(normal_sample_ids)} normals + {len(imd_sample_ids)} IMDs)")
+                f"({len(normal_sample_ids_filtered)} normals + {len(imd_sample_ids_filtered)} IMDs)")
     
     # Compute z-scores using normals as reference
     zscores = compute_metabolite_zscores(
@@ -433,9 +437,8 @@ def run_pipeline(input_file: str,
     logger.info(f"Computed Stouffer's Z for {pathway_stats['pathway_name'].nunique()} pathways "
                 f"across {pathway_stats['sample_id'].nunique()} samples")
     
-    # Get sample IDs from the filtered zscores (which has unique index)
-    normal_sample_ids_filtered = metadata_filtered.index[normal_mask_filtered].tolist()
-    imd_sample_ids_filtered = metadata_filtered.index[~normal_mask_filtered].tolist()
+    # Use the filtered sample IDs we already computed
+    # normal_sample_ids_filtered and imd_sample_ids_filtered are already defined above
     
     # Find optimal threshold
     threshold_info = find_optimal_threshold(
@@ -531,39 +534,55 @@ def run_pipeline(input_file: str,
         
         logger.info(f"Computed pathway Stouffer's Z for {pathway_stats_all['sample_id'].nunique()} samples")
         
-        # Run anomaly detection - scores ONLY normals and IMDs (no gray)
+        # Run anomaly detection with proper ML methodology
         ad_results = run_anomaly_detection(
             pathway_stats=pathway_stats_all,
             normal_sample_ids=normal_sample_ids,
             imd_sample_ids=imd_sample_ids,
-            gray_sample_ids=[],  # Empty list - no gray samples
+            gray_sample_ids=[],  # Empty list - no gray samples in this analysis
             scorer_name=config.get("anomaly_scorer", "lof"),
             contamination=float(config.get("anomaly_contamination", 0.02)),
             n_neighbors=int(config.get("anomaly_n_neighbors", 20)),
             n_estimators=int(config.get("anomaly_n_estimators", 100)),
             random_state=int(config.get("anomaly_random_state", 42)),
             percentile=float(config.get("anomaly_percentile", 95.0)),
+            train_ratio=float(config.get("anomaly_train_ratio", 0.8)),
         )
         
         # Save anomaly detection results
-        ad_results['results'].to_csv(out / "anomaly_scores.csv", index=False)
+        # Save validation and production results
+        val = ad_results['validation']
+        prod = ad_results['production']
+        
+        val['results'].to_csv(out / "anomaly_validation_scores.csv", index=False)
+        prod['results'].to_csv(out / "anomaly_production_scores.csv", index=False)
         
         ad_validation_df = pd.DataFrame([{
             'scorer': ad_results['scorer'],
             'method': ad_results['method'],
             'threshold': ad_results['threshold'],
             'percentile': ad_results['percentile'],
-            'n_normals': ad_results['n_normals'],
-            'n_imds': ad_results['n_imds'],
-            'n_grays': ad_results['n_grays'],
-            'normals_flagged': ad_results['normals_flagged'],
-            'imds_flagged': ad_results['imds_flagged'],
-            'grays_flagged': ad_results['grays_flagged'],
-            'detection_rate': ad_results['detection_rate'],
-            'contamination_rate': ad_results['contamination_rate'],
-            'gray_flag_rate': ad_results['gray_flag_rate'],
-            'flagged_normal_ids': ','.join(str(s) for s in ad_results['flagged_normal_ids']),
-            'flagged_imd_ids': ','.join(str(s) for s in ad_results['flagged_imd_ids']),
+            'train_ratio': ad_results['train_ratio'],
+            'random_state': ad_results['random_state'],
+            # Validation results
+            'val_n_normals': val['n_normals'],
+            'val_n_imds': val['n_imds'],
+            'val_normals_flagged': val['normals_flagged'],
+            'val_imds_flagged': val['imds_flagged'],
+            'val_detection_rate': val['detection_rate'],
+            'val_contamination_rate': val['contamination_rate'],
+            'val_flagged_normal_ids': ','.join(str(s) for s in val['flagged_normal_ids']),
+            'val_flagged_imd_ids': ','.join(str(s) for s in val['flagged_imd_ids']),
+            # Production simulation results
+            'prod_n_normals': prod['n_normals'],
+            'prod_n_imds': prod['n_imds'],
+            'prod_normals_flagged': prod['normals_flagged'],
+            'prod_imds_flagged': prod['imds_flagged'],
+            'prod_detection_rate': prod['detection_rate'],
+            'prod_contamination_rate': prod['contamination_rate'],
+            'prod_target_contamination': prod['target_contamination'],
+            'prod_flagged_normal_ids': ','.join(str(s) for s in prod['flagged_normal_ids']),
+            'prod_flagged_imd_ids': ','.join(str(s) for s in prod['flagged_imd_ids']),
         }])
         ad_validation_df.to_csv(out / "anomaly_validation.csv", index=False)
         

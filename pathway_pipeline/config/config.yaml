@@ -71,6 +71,7 @@ anomaly_n_neighbors: 20         # For LOF: number of neighbors
 anomaly_n_estimators: 100       # For IForest: number of trees
 anomaly_percentile: 95.0       # Percentile for thresholding (higher = more strict)
 anomaly_random_state: 42       # Random seed for reproducibility
+anomaly_train_ratio: 0.8      # Ratio of normals to use for training (default 80/20 split)
 
 # ============================================================================
 # Legacy parameters (kept for compatibility, not used in clean pipeline)
