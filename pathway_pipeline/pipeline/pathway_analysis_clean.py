@@ -543,7 +543,7 @@ def run_anomaly_detection(
         lof.fit(X_train)
         
         # Score all samples
-        scores = -lof.negative_outlier_factor_  # Higher = more anomalous
+        scores = -lof.decision_function(X_test)  # Higher = more anomalous
         method_name = "Local Outlier Factor"
         
     elif scorer_name == "iforest":

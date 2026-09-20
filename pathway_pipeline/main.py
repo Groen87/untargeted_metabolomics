@@ -562,8 +562,8 @@ def run_pipeline(input_file: str,
             'detection_rate': ad_results['detection_rate'],
             'contamination_rate': ad_results['contamination_rate'],
             'gray_flag_rate': ad_results['gray_flag_rate'],
-            'flagged_normal_ids': ','.join(ad_results['flagged_normal_ids']),
-            'flagged_imd_ids': ','.join(ad_results['flagged_imd_ids']),
+            'flagged_normal_ids': ','.join(str(s) for s in ad_results['flagged_normal_ids']),
+            'flagged_imd_ids': ','.join(str(s) for s in ad_results['flagged_imd_ids']),
         }])
         ad_validation_df.to_csv(out / "anomaly_validation.csv", index=False)
         
