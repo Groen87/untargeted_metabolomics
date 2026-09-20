@@ -288,7 +288,7 @@ def validate_flagging(
     contamination_rate = normals_flagged / n_normals if n_normals > 0 else 0.0
     
     # Get list of flagged normals
-    flagged_normal_ids = [s for s in normal_sample_ids if s in flagged.index and bool(flagged.loc[s])]
+    flagged_normal_ids = [s for s in normal_sample_ids if s in flagged.index and flagged.loc[s]]
     
     return {
         'n_normals': n_normals,
