@@ -555,12 +555,10 @@ def run_pipeline(input_file: str,
         # Save anomaly detection results
         # Save validation and production results
         val = ad_results['validation']
-        prod_full = ad_results['production_full']
-        prod_sim = ad_results['production_sim']
+        prod = ad_results['production']
         
         val['results'].to_csv(out / "anomaly_validation_scores.csv", index=False)
-        prod_full['results'].to_csv(out / "anomaly_production_full_scores.csv", index=False)
-        prod_sim['results'].to_csv(out / "anomaly_production_sim_scores.csv", index=False)
+        prod['results'].to_csv(out / "anomaly_production_scores.csv", index=False)
         
         ad_validation_df = pd.DataFrame([{
             'scorer': ad_results['scorer'],
@@ -578,42 +576,39 @@ def run_pipeline(input_file: str,
             'val_contamination_rate': val['contamination_rate'],
             'val_flagged_normal_ids': ','.join(str(s) for s in val['flagged_normal_ids']),
             'val_flagged_imd_ids': ','.join(str(s) for s in val['flagged_imd_ids']),
-            # Production full evaluation results
-            'prod_full_n_normals': prod_full['n_normals'],
-            'prod_full_n_imds': prod_full['n_imds'],
-            'prod_full_normals_flagged': prod_full['normals_flagged'],
-            'prod_full_imds_flagged': prod_full['imds_flagged'],
-            'prod_full_detection_rate': prod_full['detection_rate'],
-            'prod_full_contamination_rate': prod_full['contamination_rate'],
-            'prod_full_flagged_normal_ids': ','.join(str(s) for s in prod_full['flagged_normal_ids']),
-            'prod_full_flagged_imd_ids': ','.join(str(s) for s in prod_full['flagged_imd_ids']),
-            # Production simulation results (2% contamination)
-            'prod_sim_n_normals': prod_sim['n_normals'],
-            'prod_sim_n_imds': prod_sim['n_imds'],
-            'prod_sim_normals_flagged': prod_sim['normals_flagged'],
-            'prod_sim_imds_flagged': prod_sim['imds_flagged'],
-            'prod_sim_detection_rate': prod_sim['detection_rate'],
-            'prod_sim_contamination_rate': prod_sim['contamination_rate'],
-            'prod_sim_target_contamination': prod_sim['target_contamination'],
-            'prod_sim_flagged_normal_ids': ','.join(str(s) for s in prod_sim['flagged_normal_ids']),
-            'prod_sim_flagged_imd_ids': ','.join(str(s) for s in prod_sim['flagged_imd_ids']),
+            # Production evaluation results with analytical metrics
+            'prod_n_normals': prod['n_normals'],
+            'prod_n_imds': prod['n_imds'],
+            'prod_normals_flagged': prod['normals_flagged'],
+            'prod_imds_flagged': prod['imds_flagged'],
+            'prod_detection_rate': prod['detection_rate'],
+            'prod_false_positive_rate': prod['false_positive_rate'],
+            'prod_flagged_normal_ids': ','.join(str(s) for s in prod['flagged_normal_ids']),
+            'prod_flagged_imd_ids': ','.join(str(s) for s in prod['flagged_imd_ids']),
+            # Analytical metrics at target contamination
+            'prod_target_contamination': prod['target_contamination'],
+            'prod_precision_at_target': prod['precision_at_target'],
+            'prod_f1_at_target': prod['f1_at_target'],
+            'prod_accuracy_at_target': prod['accuracy_at_target'],
+            'prod_roc_auc': prod['roc_auc'],
+            'prod_pr_auc': prod['pr_auc'],
+            'prod_confusion_matrix_at_target': str(prod['confusion_matrix_at_target']),
         }])
         ad_validation_df.to_csv(out / "anomaly_validation.csv", index=False)
         
-        # Generate confusion matrix plots for all three scenarios
+        # Generate confusion matrix plots for all scenarios
         if 'plot_functions' in ad_results:
             try:
                 ad_results['plot_functions']['plot_validation_cm'](out)
-                ad_results['plot_functions']['plot_production_full_cm'](out)
-                ad_results['plot_functions']['plot_production_sim_cm'](out)
+                ad_results['plot_functions']['plot_production_cm'](out)
+                ad_results['plot_functions']['plot_analytical_cm'](out)
                 logger.info(f"\nWrote confusion matrix plots to {out}")
             except Exception as e:
                 logger.warning(f"Could not generate confusion matrix plots: {e}")
         
         # Log comprehensive metrics
         val_metrics = ad_results['validation'].get('metrics', {})
-        prod_full_metrics = ad_results['production_full'].get('metrics', {})
-        prod_sim_metrics = ad_results['production_sim'].get('metrics', {})
+        prod_metrics = ad_results['production'].get('metrics', {})
         
         logger.info(f"\n{ad_results['method']} - Validation Set Metrics:")
         logger.info(f"  Accuracy: {val_metrics.get('accuracy', 'N/A'):.4f}")
@@ -624,23 +619,15 @@ def run_pipeline(input_file: str,
         logger.info(f"  PR AUC: {val_metrics.get('pr_auc', 'N/A'):.4f}")
         logger.info(f"  Confusion Matrix: {val_metrics.get('confusion_matrix', 'N/A')}")
         
-        logger.info(f"\n{ad_results['method']} - Full Production Evaluation Metrics:")
-        logger.info(f"  Accuracy: {prod_full_metrics.get('accuracy', 'N/A'):.4f}")
-        logger.info(f"  Precision: {prod_full_metrics.get('precision', 'N/A'):.4f}")
-        logger.info(f"  Recall: {prod_full_metrics.get('recall', 'N/A'):.4f}")
-        logger.info(f"  F1 Score: {prod_full_metrics.get('f1', 'N/A'):.4f}")
-        logger.info(f"  ROC AUC: {prod_full_metrics.get('roc_auc', 'N/A'):.4f}")
-        logger.info(f"  PR AUC: {prod_full_metrics.get('pr_auc', 'N/A'):.4f}")
-        logger.info(f"  Confusion Matrix: {prod_full_metrics.get('confusion_matrix', 'N/A')}")
-        
-        logger.info(f"\n{ad_results['method']} - Production Simulation (2% contamination) Metrics:")
-        logger.info(f"  Accuracy: {prod_sim_metrics.get('accuracy', 'N/A'):.4f}")
-        logger.info(f"  Precision: {prod_sim_metrics.get('precision', 'N/A'):.4f}")
-        logger.info(f"  Recall: {prod_sim_metrics.get('recall', 'N/A'):.4f}")
-        logger.info(f"  F1 Score: {prod_sim_metrics.get('f1', 'N/A'):.4f}")
-        logger.info(f"  ROC AUC: {prod_sim_metrics.get('roc_auc', 'N/A'):.4f}")
-        logger.info(f"  PR AUC: {prod_sim_metrics.get('pr_auc', 'N/A'):.4f}")
-        logger.info(f"  Confusion Matrix: {prod_sim_metrics.get('confusion_matrix', 'N/A')}")
+        logger.info(f"\n{ad_results['method']} - Production Evaluation Metrics:")
+        logger.info(f"  Detection Rate: {prod_metrics.get('detection_rate', 'N/A'):.4f}")
+        logger.info(f"  False Positive Rate: {prod_metrics.get('false_positive_rate', 'N/A'):.4f}")
+        logger.info(f"  Precision @ 2%: {ad_results['production'].get('precision_at_target', 'N/A'):.4f}")
+        logger.info(f"  F1 @ 2%: {ad_results['production'].get('f1_at_target', 'N/A'):.4f}")
+        logger.info(f"  Accuracy @ 2%: {ad_results['production'].get('accuracy_at_target', 'N/A'):.4f}")
+        logger.info(f"  ROC AUC: {ad_results['production'].get('roc_auc', 'N/A'):.4f}")
+        logger.info(f"  PR AUC: {ad_results['production'].get('pr_auc', 'N/A'):.4f}")
+        logger.info(f"  Confusion Matrix @ 2%: {ad_results['production'].get('confusion_matrix_at_target', 'N/A')}")
         
         results["anomaly_detection"] = ad_results
         
