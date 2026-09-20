@@ -545,8 +545,11 @@ def run_pipeline(input_file: str,
             n_neighbors=int(config.get("anomaly_n_neighbors", 20)),
             n_estimators=int(config.get("anomaly_n_estimators", 100)),
             random_state=int(config.get("anomaly_random_state", 42)),
-            percentile=float(config.get("anomaly_percentile", 95.0)),
+            percentile=float(config.get("anomaly_percentile", 95.0)),  # Kept for backward compatibility
             train_ratio=float(config.get("anomaly_train_ratio", 0.8)),
+            optimization_metric=config.get("anomaly_optimization_metric", "f1"),
+            max_contamination=float(config.get("anomaly_max_contamination", 0.05)),
+            min_detection=float(config.get("anomaly_min_detection", 0.80)),
         )
         
         # Save anomaly detection results

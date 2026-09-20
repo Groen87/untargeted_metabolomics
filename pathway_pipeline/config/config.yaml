@@ -69,9 +69,15 @@ anomaly_scorer: lof
 anomaly_contamination: 0.02    # Expected IMD rate in production (2%)
 anomaly_n_neighbors: 20         # For LOF: number of neighbors
 anomaly_n_estimators: 100       # For IForest: number of trees
-anomaly_percentile: 99.0       # Percentile for thresholding (higher = more strict, 99.0 flags fewer)
+anomaly_percentile: 99.0       # Percentile for thresholding (kept for backward compatibility)
 anomaly_random_state: 42       # Random seed for reproducibility
 anomaly_train_ratio: 0.8      # Ratio of normals to use for training (default 80/20 split)
+
+# Threshold optimization (NEW: threshold is now optimized on validation set)
+# Optimization metric: 'f1', 'precision', 'recall', or 'youden'
+anomaly_optimization_metric: f1
+anomaly_max_contamination: 0.05  # Max acceptable normal contamination rate
+anomaly_min_detection: 0.80     # Min acceptable IMD detection rate
 
 # ============================================================================
 # Legacy parameters (kept for compatibility, not used in clean pipeline)

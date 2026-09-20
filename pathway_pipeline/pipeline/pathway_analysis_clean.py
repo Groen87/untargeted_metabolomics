@@ -482,6 +482,129 @@ def run_clean_pathway_analysis(
     }
 
 
+def find_optimal_anomaly_threshold(
+    scores: np.ndarray,
+    is_normal: np.ndarray,
+    max_contamination: float = 0.05,
+    min_detection: float = 0.80,
+    optimization_metric: str = "f1",
+    n_thresholds: int = 100,
+) -> Dict:
+    """Find optimal threshold for anomaly scores by optimizing a metric on validation data.
+    
+    Args:
+        scores: 1-D array of anomaly scores for validation samples
+        is_normal: Boolean array indicating which samples are normal (True) vs IMD (False)
+        max_contamination: Maximum acceptable normal contamination rate
+        min_detection: Minimum acceptable IMD detection rate
+        optimization_metric: Metric to optimize ('f1', 'precision', 'recall', 'youden')
+        n_thresholds: Number of threshold candidates to test
+        
+    Returns:
+        Dict with optimal threshold, metrics, and all candidate results
+    """
+    from sklearn.metrics import precision_score, recall_score, f1_score
+    
+    # Get sorted unique scores as candidate thresholds
+    sorted_scores = np.sort(scores)
+    
+    # Add some thresholds beyond the max to ensure we get clean results
+    min_score = sorted_scores.min() - 1
+    max_score = sorted_scores.max() + 1
+    candidate_thresholds = np.linspace(min_score, max_score, n_thresholds)
+    
+    results = []
+    best_threshold = None
+    best_metric_value = -np.inf
+    
+    n_normals = np.sum(is_normal)
+    n_imds = np.sum(~is_normal)
+    
+    for threshold in candidate_thresholds:
+        # Flag samples above threshold
+        flagged = scores > threshold
+        
+        # Count results
+        normals_flagged = np.sum(flagged & is_normal)
+        imds_flagged = np.sum(flagged & ~is_normal)
+        
+        contamination_rate = normals_flagged / n_normals if n_normals > 0 else 1.0
+        detection_rate = imds_flagged / n_imds if n_imds > 0 else 0.0
+        
+        # Skip if violates constraints
+        if contamination_rate > max_contamination:
+            continue
+        if detection_rate < min_detection:
+            continue
+        
+        # Compute binary predictions
+        y_true_binary = np.where(is_normal, 0, 1)  # 0=normal, 1=IMD
+        y_pred_binary = np.where(flagged, 1, 0)     # 1=flagged, 0=not
+        
+        # Compute metrics
+        try:
+            precision = precision_score(y_true_binary, y_pred_binary, zero_division=0)
+        except:
+            precision = 0.0
+        
+        try:
+            recall = recall_score(y_true_binary, y_pred_binary, zero_division=0)
+        except:
+            recall = 0.0
+        
+        try:
+            f1 = f1_score(y_true_binary, y_pred_binary, zero_division=0)
+        except:
+            f1 = 0.0
+        
+        # Youden's J statistic = sensitivity + specificity - 1
+        specificity = 1.0 - contamination_rate
+        youden = recall + specificity - 1.0
+        
+        # Select metric to optimize
+        if optimization_metric == "f1":
+            metric_value = f1
+        elif optimization_metric == "precision":
+            metric_value = precision
+        elif optimization_metric == "recall":
+            metric_value = recall
+        elif optimization_metric == "youden":
+            metric_value = youden
+        else:
+            metric_value = f1  # default
+        
+        results.append({
+            'threshold': float(threshold),
+            'contamination_rate': float(contamination_rate),
+            'detection_rate': float(detection_rate),
+            'precision': float(precision),
+            'recall': float(recall),
+            'f1': float(f1),
+            'youden': float(youden),
+            'normals_flagged': int(normals_flagged),
+            'imds_flagged': int(imds_flagged),
+            'metric_value': float(metric_value),
+        })
+        
+        if metric_value > best_metric_value:
+            best_metric_value = metric_value
+            best_threshold = threshold
+    
+    results_df = pd.DataFrame(results)
+    
+    if best_threshold is None:
+        # Fallback: use percentile-based threshold
+        best_threshold = float(np.percentile(scores[is_normal], 99.0))
+        logger.warning(f"No threshold met constraints. Using percentile 99.0 fallback: {best_threshold:.4f}")
+    
+    return {
+        'optimal_threshold': float(best_threshold),
+        'best_metric': optimization_metric,
+        'best_metric_value': float(best_metric_value),
+        'results': results_df,
+    }
+
+
 def run_anomaly_detection(
     pathway_stats: pd.DataFrame,
     normal_sample_ids: List,
@@ -494,6 +617,9 @@ def run_anomaly_detection(
     random_state: int = 42,
     percentile: float = 95.0,
     train_ratio: float = 0.8,
+    optimization_metric: str = "f1",
+    max_contamination: float = 0.05,
+    min_detection: float = 0.80,
 ) -> Dict:
     """Run anomaly detection on pathway Stouffer's Z scores with proper ML methodology.
     
@@ -642,33 +768,47 @@ def run_anomaly_detection(
         'is_imd': [False]*len(test_normal_ids) + [True]*len(imd_sample_ids_filtered)
     })
     
-    # Compute threshold from training normal scores (no data leakage!)
-    # Get scores for training normals
+    # Step 3.5: Find optimal threshold on validation set
+    # Optimize threshold based on validation performance instead of using a fixed percentile
+    # This ensures we pick the threshold that maximizes our target metric
+    
+    val_scores_arr = val_results['anomaly_score'].values
+    val_is_normal_arr = val_results['is_normal'].values
+    
+    threshold_info = find_optimal_anomaly_threshold(
+        scores=val_scores_arr,
+        is_normal=val_is_normal_arr,
+        max_contamination=max_contamination,
+        min_detection=min_detection,
+        optimization_metric=optimization_metric,
+        n_thresholds=100,
+    )
+    
+    threshold = threshold_info['optimal_threshold']
+    best_metric = threshold_info['best_metric']
+    best_metric_value = threshold_info['best_metric_value']
+    
+    # Also compute training normal statistics for reference
     if scorer_name == "lof":
         train_scores = -model.decision_function(X_train_scaled)
     elif scorer_name == "iforest":
-        # For IsolationForest, score_samples returns negative scores (more negative = more anomalous)
-        # We negate to make higher = more anomalous
         train_scores = -model.score_samples(X_train_scaled)
     elif scorer_name == "mahalanobis":
         train_scores = model.mahalanobis(X_train_scaled)
     
-    # Log score statistics for debugging
+    # Log both training stats and optimization results
     logger.info(f"\nTraining normal score statistics:")
     logger.info(f"  Min: {train_scores.min():.4f}, Max: {train_scores.max():.4f}")
     logger.info(f"  Mean: {train_scores.mean():.4f}, Std: {train_scores.std():.4f}")
     logger.info(f"  Percentile 95: {np.percentile(train_scores, 95):.4f}")
     logger.info(f"  Percentile 99: {np.percentile(train_scores, 99):.4f}")
-    logger.info(f"  Percentile 99.5: {np.percentile(train_scores, 99.5):.4f}")
-    logger.info(f"  Percentile 99.9: {np.percentile(train_scores, 99.9):.4f}")
-    logger.info(f"  Percentile 99.95: {np.percentile(train_scores, 99.95):.4f}")
     
-    # Use the percentile directly from config (no capping)
-    threshold = float(np.percentile(train_scores, percentile))
+    logger.info(f"\nOptimized threshold on validation set:")
+    logger.info(f"  Optimization metric: {best_metric}")
+    logger.info(f"  Best {best_metric} value: {best_metric_value:.4f}")
+    logger.info(f"  Optimal threshold: {threshold:.4f}")
     
-    logger.info(f"Using percentile {percentile} for threshold: {threshold:.4f}")
-    
-    # Flag validation samples
+    # Flag validation samples using optimized threshold
     val_results['flagged'] = val_results['anomaly_score'] > threshold
     
     # Compute validation metrics
@@ -685,7 +825,8 @@ def run_anomaly_detection(
     flagged_val_imd_ids = val_results[(val_results['is_imd']) & (val_results['flagged'])]['sample_id'].tolist()
     
     logger.info(f"\n{method_name} Validation Results:")
-    logger.info(f"  Threshold: {threshold:.4f} (percentile {percentile} from training normals)")
+    logger.info(f"  Threshold: {threshold:.4f} (optimized on validation set)")
+    logger.info(f"  Optimization metric: {best_metric} (best value: {best_metric_value:.4f})")
     logger.info(f"  Test normals flagged: {test_normals_flagged} / {n_test_normals} ({val_contamination_rate*100:.1f}%)")
     logger.info(f"  IMDs flagged: {val_imds_flagged} / {n_val_imds} ({val_detection_rate*100:.1f}%)")
     
@@ -693,13 +834,14 @@ def run_anomaly_detection(
     # Step 4: Simulate production with 2% contamination
     # ========================================================================
     # Create TWO production scenarios:
-    # 1. Realistic with all IMDs (for full evaluation metrics)
+    # 1. Full evaluation with test normals + ALL IMDs (for comprehensive metrics)
+    #    This evaluates on samples the model has NEVER seen during training
     # 2. Simulated with 2% contamination (for realistic production scenario)
     
-    # Scenario 1: Full evaluation with ALL IMDs (for comprehensive metrics)
-    # Use ONLY test normals (never include training normals in production evaluation)
+    # Scenario 1: Full evaluation with test normals + ALL IMDs (comprehensive metrics)
+    # Use ONLY test normals (never seen by model during training) + all IMDs
     production_imd_ids_full = imd_sample_ids_filtered.copy()
-    production_normal_ids_full = test_normal_ids.copy()  # Only test normals, NOT training normals
+    production_normal_ids_full = test_normal_ids.copy()  # ONLY test normals (never seen during training)
     production_sample_ids_full = production_normal_ids_full + production_imd_ids_full
     
     X_prod_normals_full = pivot.loc[production_normal_ids_full]
