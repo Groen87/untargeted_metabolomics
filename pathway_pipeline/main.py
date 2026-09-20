@@ -517,34 +517,26 @@ def run_pipeline(input_file: str,
         
         _log_section("STEP 6: Anomaly Detection on Pathway Features")
         
-        # Get all samples (including gray) for anomaly detection
-        # But train ONLY on normals
-        all_sample_ids_full = metadata.index.tolist()
-        
-        # Get gray samples from original metadata
-        gray_mask_full = ~normal_mask & ~imd_mask
-        gray_sample_ids_full = metadata.index[gray_mask_full].tolist()
-        
-        # Recompute pathway stats for ALL samples (normals + IMDs + gray)
+        # Recompute pathway stats for NORMALS + IMDs only (exclude gray)
         feature_to_pathway_all = feature_to_pathway[
             feature_to_pathway['feature'].isin(zscores.columns)
         ]
         
-        # Compute pathway stats for all samples
+        # Compute pathway stats for normals + IMDs only
         pathway_stats_all = compute_pathway_stouffers_z(
             features_filtered,
             feature_to_pathway_all,
             min_pathway_size=min_pathway_size
         )
         
-        logger.info(f"Computed pathway Stouffer's Z for all {pathway_stats_all['sample_id'].nunique()} samples")
+        logger.info(f"Computed pathway Stouffer's Z for {pathway_stats_all['sample_id'].nunique()} samples")
         
-        # Run anomaly detection
+        # Run anomaly detection - scores ONLY normals and IMDs (no gray)
         ad_results = run_anomaly_detection(
             pathway_stats=pathway_stats_all,
             normal_sample_ids=normal_sample_ids,
             imd_sample_ids=imd_sample_ids,
-            gray_sample_ids=gray_sample_ids_full,
+            gray_sample_ids=[],  # Empty list - no gray samples
             scorer_name=config.get("anomaly_scorer", "lof"),
             contamination=float(config.get("anomaly_contamination", 0.02)),
             n_neighbors=int(config.get("anomaly_n_neighbors", 20)),
