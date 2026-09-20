@@ -514,7 +514,8 @@ def run_anomaly_detection(
         Dict with anomaly scores, decisions, and validation metrics
     """
     # Pivot to samples x pathways matrix
-    pivot = pathway_stats.pivot(index='sample_id', columns='pathway_name', values='z_stouffer_abs')
+    # Handle duplicate (sample_id, pathway_name) pairs by taking mean
+    pivot = pathway_stats.pivot_table(index='sample_id', columns='pathway_name', values='z_stouffer_abs', aggfunc='mean')
     pivot = pivot.fillna(0)  # Fill missing with 0 (no deviation)
     
     # Get all sample IDs in order
