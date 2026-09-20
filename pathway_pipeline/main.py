@@ -372,8 +372,8 @@ def run_pipeline(input_file: str,
     analysis_mask = normal_mask | imd_mask
     analysis_sample_ids = metadata.index[analysis_mask].unique().tolist()
     
-    if len(analysis_sample_ids) != 317:
-        logger.warning(f"Expected 317 samples but found {len(analysis_sample_ids)}")
+    logger.info(f"Analyzing {len(analysis_sample_ids)} samples "
+                f"({len(normal_sample_ids)} normals + {len(imd_sample_ids)} IMDs)")
     
     # Filter features to only those that map to pathways
     pathway_features = sorted(set(coverage.get("matched_features", pd.Series(dtype=str))
