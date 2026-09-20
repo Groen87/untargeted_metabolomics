@@ -626,9 +626,13 @@ def run_anomaly_detection(
     if scorer_name == "lof":
         val_scores = -model.decision_function(X_val)
     elif scorer_name == "iforest":
+        # For IsolationForest, score_samples returns negative scores (more negative = more anomalous)
         val_scores = -model.score_samples(X_val)
     elif scorer_name == "mahalanobis":
         val_scores = model.mahalanobis(X_val)
+    
+    # Log score statistics for validation
+    logger.info(f"Validation score statistics: Min={val_scores.min():.4f}, Max={val_scores.max():.4f}, Mean={val_scores.mean():.4f}")
     
     # Create validation results
     val_results = pd.DataFrame({
@@ -643,11 +647,25 @@ def run_anomaly_detection(
     if scorer_name == "lof":
         train_scores = -model.decision_function(X_train_scaled)
     elif scorer_name == "iforest":
+        # For IsolationForest, score_samples returns negative scores (more negative = more anomalous)
+        # We negate to make higher = more anomalous
         train_scores = -model.score_samples(X_train_scaled)
     elif scorer_name == "mahalanobis":
         train_scores = model.mahalanobis(X_train_scaled)
     
-    threshold = float(np.percentile(train_scores, percentile))
+    # Log score statistics for debugging
+    logger.info(f"\nTraining normal score statistics:")
+    logger.info(f"  Min: {train_scores.min():.4f}, Max: {train_scores.max():.4f}")
+    logger.info(f"  Mean: {train_scores.mean():.4f}, Std: {train_scores.std():.4f}")
+    logger.info(f"  Percentile 95: {np.percentile(train_scores, 95):.4f}")
+    logger.info(f"  Percentile 99: {np.percentile(train_scores, 99):.4f}")
+    
+    # Use percentile from config, but ensure it's not too extreme
+    # If percentile > 99.5, cap it at 99.5 to avoid being too strict
+    effective_percentile = min(percentile, 99.5)
+    threshold = float(np.percentile(train_scores, effective_percentile))
+    
+    logger.info(f"Using percentile {effective_percentile} for threshold: {threshold:.4f}")
     
     # Flag validation samples
     val_results['flagged'] = val_results['anomaly_score'] > threshold
@@ -678,9 +696,9 @@ def run_anomaly_detection(
     # 2. Simulated with 2% contamination (for realistic production scenario)
     
     # Scenario 1: Full evaluation with ALL IMDs (for comprehensive metrics)
-    all_normal_ids_for_prod = train_normal_ids + test_normal_ids
+    # Use ONLY test normals (never include training normals in production evaluation)
     production_imd_ids_full = imd_sample_ids_filtered.copy()
-    production_normal_ids_full = all_normal_ids_for_prod.copy()
+    production_normal_ids_full = test_normal_ids.copy()  # Only test normals, NOT training normals
     production_sample_ids_full = production_normal_ids_full + production_imd_ids_full
     
     X_prod_normals_full = pivot.loc[production_normal_ids_full]
@@ -699,7 +717,7 @@ def run_anomaly_detection(
     
     # Scenario 2: Realistic 2% contamination simulation
     target_contamination = 0.02
-    n_production_normals_sim = len(all_normal_ids_for_prod)
+    n_production_normals_sim = len(test_normal_ids)  # Only test normals
     target_imds_sim = int(np.round(n_production_normals_sim / (1 - target_contamination) * target_contamination))
     
     if len(imd_sample_ids_filtered) > target_imds_sim:
@@ -710,7 +728,7 @@ def run_anomaly_detection(
         actual_contamination = len(production_imd_ids_sim) / (n_production_normals_sim + len(production_imd_ids_sim))
         logger.info(f"\nNote: Not enough IMDs for 2% contamination. Using all {len(production_imd_ids_sim)} IMDs (actual: {actual_contamination*100:.1f}%)")
     
-    production_normal_ids_sim = all_normal_ids_for_prod.copy()
+    production_normal_ids_sim = test_normal_ids.copy()  # Only test normals
     production_sample_ids_sim = production_normal_ids_sim + production_imd_ids_sim
     
     X_prod_normals_sim = pivot.loc[production_normal_ids_sim]
