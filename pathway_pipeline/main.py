@@ -499,7 +499,7 @@ def run_pipeline(input_file: str,
         'contamination_rate': validation['contamination_rate'],
         'optimal_threshold': threshold_info['optimal_threshold'],
         'optimal_percentile': threshold_info['percentile'],
-        'flagged_normal_ids': ','.join(validation['flagged_normal_ids'])
+        'flagged_normal_ids': ','.join(str(s) for s in validation['flagged_normal_ids'])
     }])
     validation_df.to_csv(out / "enhanced_validation.csv", index=False)
     
