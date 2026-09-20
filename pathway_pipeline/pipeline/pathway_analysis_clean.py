@@ -673,89 +673,289 @@ def run_anomaly_detection(
     # ========================================================================
     # Step 4: Simulate production with 2% contamination
     # ========================================================================
-    # Create a realistic production scenario: 2% IMDs mixed with normals
-    # Use all normals (train + test) and a subset of IMDs for production simulation
+    # Create TWO production scenarios:
+    # 1. Realistic with all IMDs (for full evaluation metrics)
+    # 2. Simulated with 2% contamination (for realistic production scenario)
     
-    # For production simulation, we want ~2% contamination
-    # Use all normals and a subset of IMDs
+    # Scenario 1: Full evaluation with ALL IMDs (for comprehensive metrics)
     all_normal_ids_for_prod = train_normal_ids + test_normal_ids
-    n_production_normals = len(all_normal_ids_for_prod)
+    production_imd_ids_full = imd_sample_ids_filtered.copy()
+    production_normal_ids_full = all_normal_ids_for_prod.copy()
+    production_sample_ids_full = production_normal_ids_full + production_imd_ids_full
     
-    target_contamination = 0.02
-    target_imds = int(np.round(n_production_normals / (1 - target_contamination) * target_contamination))
+    X_prod_normals_full = pivot.loc[production_normal_ids_full]
+    X_prod_imds_full = pivot.loc[production_imd_ids_full]
     
-    # Select subset of IMDs to achieve ~2% contamination
-    if len(imd_sample_ids_filtered) > target_imds:
-        # Select random subset of IMDs
-        np.random.seed(random_state)
-        production_imd_ids = np.random.choice(imd_sample_ids_filtered, target_imds, replace=False).tolist()
+    if len(X_prod_normals_full) > 0 and len(X_prod_imds_full) > 0:
+        X_prod_normals_scaled_full = scaler.transform(X_prod_normals_full)
+        X_prod_imds_scaled_full = scaler.transform(X_prod_imds_full)
+        X_prod_full = np.vstack([X_prod_normals_scaled_full, X_prod_imds_scaled_full])
     else:
-        production_imd_ids = imd_sample_ids_filtered.copy()
-        actual_contamination = len(production_imd_ids) / (len(all_normal_ids_for_prod) + len(production_imd_ids))
-        logger.info(f"\nNote: Not enough IMDs for 2% contamination. Using all {len(production_imd_ids)} IMDs (actual: {actual_contamination*100:.1f}%)")
+        logger.warning("Not enough samples for full production evaluation")
+        X_prod_full = np.array([]).reshape(0, pivot.shape[1])
+        production_sample_ids_full = []
+        production_normal_ids_full = []
+        production_imd_ids_full = []
     
-    production_normal_ids = all_normal_ids_for_prod.copy()
-    production_sample_ids = production_normal_ids + production_imd_ids
+    # Scenario 2: Realistic 2% contamination simulation
+    target_contamination = 0.02
+    n_production_normals_sim = len(all_normal_ids_for_prod)
+    target_imds_sim = int(np.round(n_production_normals_sim / (1 - target_contamination) * target_contamination))
     
-    # Get features for production set
-    X_prod_normals = pivot.loc[production_normal_ids]
-    X_prod_imds = pivot.loc[production_imd_ids]
+    if len(imd_sample_ids_filtered) > target_imds_sim:
+        np.random.seed(random_state)
+        production_imd_ids_sim = np.random.choice(imd_sample_ids_filtered, target_imds_sim, replace=False).tolist()
+    else:
+        production_imd_ids_sim = imd_sample_ids_filtered.copy()
+        actual_contamination = len(production_imd_ids_sim) / (n_production_normals_sim + len(production_imd_ids_sim))
+        logger.info(f"\nNote: Not enough IMDs for 2% contamination. Using all {len(production_imd_ids_sim)} IMDs (actual: {actual_contamination*100:.1f}%)")
     
-    if len(X_prod_normals) > 0 and len(X_prod_imds) > 0:
-        X_prod_normals_scaled = scaler.transform(X_prod_normals)
-        X_prod_imds_scaled = scaler.transform(X_prod_imds)
-        X_prod = np.vstack([X_prod_normals_scaled, X_prod_imds_scaled])
-    elif len(X_prod_normals) > 0:
-        # Only normals available
-        X_prod_normals_scaled = scaler.transform(X_prod_normals)
-        X_prod = X_prod_normals_scaled
-    elif len(X_prod_imds) > 0:
-        # Only IMDs available
-        X_prod_imds_scaled = scaler.transform(X_prod_imds)
-        X_prod = X_prod_imds_scaled
+    production_normal_ids_sim = all_normal_ids_for_prod.copy()
+    production_sample_ids_sim = production_normal_ids_sim + production_imd_ids_sim
+    
+    X_prod_normals_sim = pivot.loc[production_normal_ids_sim]
+    X_prod_imds_sim = pivot.loc[production_imd_ids_sim]
+    
+    if len(X_prod_normals_sim) > 0 and len(X_prod_imds_sim) > 0:
+        X_prod_normals_scaled_sim = scaler.transform(X_prod_normals_sim)
+        X_prod_imds_scaled_sim = scaler.transform(X_prod_imds_sim)
+        X_prod_sim = np.vstack([X_prod_normals_scaled_sim, X_prod_imds_scaled_sim])
+    elif len(X_prod_normals_sim) > 0:
+        X_prod_normals_scaled_sim = scaler.transform(X_prod_normals_sim)
+        X_prod_sim = X_prod_normals_scaled_sim
+    elif len(X_prod_imds_sim) > 0:
+        X_prod_imds_scaled_sim = scaler.transform(X_prod_imds_sim)
+        X_prod_sim = X_prod_imds_scaled_sim
     else:
         logger.warning("No samples available for production simulation")
-        X_prod = np.array([]).reshape(0, pivot.shape[1])
+        X_prod_sim = np.array([]).reshape(0, pivot.shape[1])
     
-    logger.info(f"\nProduction simulation ({target_contamination*100:.0f}% contamination):")
-    logger.info(f"  Normal samples: {len(production_normal_ids)}")
-    logger.info(f"  IMD samples: {len(production_imd_ids)}")
-    logger.info(f"  Total: {len(production_sample_ids)}")
+    logger.info(f"\nProduction Full Evaluation:")
+    logger.info(f"  Normal samples: {len(production_normal_ids_full)}")
+    logger.info(f"  IMD samples: {len(production_imd_ids_full)}")
+    logger.info(f"  Total: {len(production_sample_ids_full)}")
     
-    # Score production samples
-    if scorer_name == "lof":
-        prod_scores = -model.decision_function(X_prod)
-    elif scorer_name == "iforest":
-        prod_scores = -model.score_samples(X_prod)
-    elif scorer_name == "mahalanobis":
-        prod_scores = model.mahalanobis(X_prod)
+    logger.info(f"\nProduction Simulation (2% contamination):")
+    logger.info(f"  Normal samples: {len(production_normal_ids_sim)}")
+    logger.info(f"  IMD samples: {len(production_imd_ids_sim)}")
+    logger.info(f"  Total: {len(production_sample_ids_sim)}")
     
-    prod_results = pd.DataFrame({
-        'sample_id': production_sample_ids,
-        'anomaly_score': prod_scores,
-        'is_normal': [True]*len(production_normal_ids) + [False]*len(production_imd_ids),
-        'is_imd': [False]*len(production_normal_ids) + [True]*len(production_imd_ids)
-    })
+    # Score production samples for BOTH scenarios
+    # Full evaluation scenario
+    if len(X_prod_full) > 0:
+        if scorer_name == "lof":
+            prod_scores_full = -model.decision_function(X_prod_full)
+        elif scorer_name == "iforest":
+            prod_scores_full = -model.score_samples(X_prod_full)
+        elif scorer_name == "mahalanobis":
+            prod_scores_full = model.mahalanobis(X_prod_full)
+        
+        prod_results_full = pd.DataFrame({
+            'sample_id': production_sample_ids_full,
+            'anomaly_score': prod_scores_full,
+            'is_normal': [True]*len(production_normal_ids_full) + [False]*len(production_imd_ids_full),
+            'is_imd': [False]*len(production_normal_ids_full) + [True]*len(production_imd_ids_full)
+        })
+        prod_results_full['flagged'] = prod_results_full['anomaly_score'] > threshold
+    else:
+        prod_results_full = pd.DataFrame()
     
-    # Flag production samples using same threshold
-    prod_results['flagged'] = prod_results['anomaly_score'] > threshold
+    # Simulated 2% contamination scenario
+    if len(X_prod_sim) > 0:
+        if scorer_name == "lof":
+            prod_scores_sim = -model.decision_function(X_prod_sim)
+        elif scorer_name == "iforest":
+            prod_scores_sim = -model.score_samples(X_prod_sim)
+        elif scorer_name == "mahalanobis":
+            prod_scores_sim = model.mahalanobis(X_prod_sim)
+        
+        prod_results_sim = pd.DataFrame({
+            'sample_id': production_sample_ids_sim,
+            'anomaly_score': prod_scores_sim,
+            'is_normal': [True]*len(production_normal_ids_sim) + [False]*len(production_imd_ids_sim),
+            'is_imd': [False]*len(production_normal_ids_sim) + [True]*len(production_imd_ids_sim)
+        })
+        prod_results_sim['flagged'] = prod_results_sim['anomaly_score'] > threshold
+    else:
+        prod_results_sim = pd.DataFrame()
     
-    # Compute production metrics
-    n_prod_normals = len(production_normal_ids)
-    n_prod_imds = len(production_imd_ids)
+    # Compute metrics for full evaluation scenario
+    n_prod_normals_full = len(production_normal_ids_full)
+    n_prod_imds_full = len(production_imd_ids_full)
     
-    prod_normals_flagged = int(prod_results[(prod_results['is_normal']) & (prod_results['flagged'])].shape[0])
-    prod_imds_flagged = int(prod_results[(prod_results['is_imd']) & (prod_results['flagged'])].shape[0])
+    if len(prod_results_full) > 0:
+        prod_normals_flagged_full = int(prod_results_full[(prod_results_full['is_normal']) & (prod_results_full['flagged'])].shape[0])
+        prod_imds_flagged_full = int(prod_results_full[(prod_results_full['is_imd']) & (prod_results_full['flagged'])].shape[0])
+        
+        prod_detection_rate_full = prod_imds_flagged_full / n_prod_imds_full if n_prod_imds_full > 0 else 0.0
+        prod_contamination_rate_full = prod_normals_flagged_full / n_prod_normals_full if n_prod_normals_full > 0 else 0.0
+        
+        flagged_prod_normal_ids_full = prod_results_full[(prod_results_full['is_normal']) & (prod_results_full['flagged'])]['sample_id'].tolist()
+        flagged_prod_imd_ids_full = prod_results_full[(prod_results_full['is_imd']) & (prod_results_full['flagged'])]['sample_id'].tolist()
+    else:
+        prod_normals_flagged_full = 0
+        prod_imds_flagged_full = 0
+        prod_detection_rate_full = 0.0
+        prod_contamination_rate_full = 0.0
+        flagged_prod_normal_ids_full = []
+        flagged_prod_imd_ids_full = []
     
-    prod_detection_rate = prod_imds_flagged / n_prod_imds if n_prod_imds > 0 else 0.0
-    prod_contamination_rate = prod_normals_flagged / n_prod_normals if n_prod_normals > 0 else 0.0
+    # Compute metrics for simulated 2% contamination scenario
+    n_prod_normals_sim = len(production_normal_ids_sim)
+    n_prod_imds_sim = len(production_imd_ids_sim)
     
-    flagged_prod_normal_ids = prod_results[(prod_results['is_normal']) & (prod_results['flagged'])]['sample_id'].tolist()
-    flagged_prod_imd_ids = prod_results[(prod_results['is_imd']) & (prod_results['flagged'])]['sample_id'].tolist()
+    if len(prod_results_sim) > 0:
+        prod_normals_flagged_sim = int(prod_results_sim[(prod_results_sim['is_normal']) & (prod_results_sim['flagged'])].shape[0])
+        prod_imds_flagged_sim = int(prod_results_sim[(prod_results_sim['is_imd']) & (prod_results_sim['flagged'])].shape[0])
+        
+        prod_detection_rate_sim = prod_imds_flagged_sim / n_prod_imds_sim if n_prod_imds_sim > 0 else 0.0
+        prod_contamination_rate_sim = prod_normals_flagged_sim / n_prod_normals_sim if n_prod_normals_sim > 0 else 0.0
+        
+        flagged_prod_normal_ids_sim = prod_results_sim[(prod_results_sim['is_normal']) & (prod_results_sim['flagged'])]['sample_id'].tolist()
+        flagged_prod_imd_ids_sim = prod_results_sim[(prod_results_sim['is_imd']) & (prod_results_sim['flagged'])]['sample_id'].tolist()
+    else:
+        prod_normals_flagged_sim = 0
+        prod_imds_flagged_sim = 0
+        prod_detection_rate_sim = 0.0
+        prod_contamination_rate_sim = 0.0
+        flagged_prod_normal_ids_sim = []
+        flagged_prod_imd_ids_sim = []
     
-    logger.info(f"\nProduction simulation results:")
-    logger.info(f"  Normals flagged: {prod_normals_flagged} / {n_prod_normals} ({prod_contamination_rate*100:.1f}%)")
-    logger.info(f"  IMDs flagged: {prod_imds_flagged} / {n_prod_imds} ({prod_detection_rate*100:.1f}%)")
+    logger.info(f"\nProduction Full Evaluation:")
+    logger.info(f"  Normals flagged: {prod_normals_flagged_full} / {n_prod_normals_full} ({prod_contamination_rate_full*100:.1f}%)")
+    logger.info(f"  IMDs flagged: {prod_imds_flagged_full} / {n_prod_imds_full} ({prod_detection_rate_full*100:.1f}%)")
+    
+    logger.info(f"\nProduction Simulation (2% contamination):")
+    logger.info(f"  Normals flagged: {prod_normals_flagged_sim} / {n_prod_normals_sim} ({prod_contamination_rate_sim*100:.1f}%)")
+    logger.info(f"  IMDs flagged: {prod_imds_flagged_sim} / {n_prod_imds_sim} ({prod_detection_rate_sim*100:.1f}%)")
+    
+    # ========================================================================
+    # Compute comprehensive metrics for validation and both production scenarios
+    # ========================================================================
+    def compute_metrics(y_true, y_pred, y_scores=None):
+        """Compute comprehensive classification metrics."""
+        from sklearn.metrics import (
+            accuracy_score, precision_score, recall_score, f1_score,
+            roc_auc_score, average_precision_score, confusion_matrix,
+            precision_recall_curve
+        )
+        
+        # Convert to binary (1 = IMD/outlier, 0 = normal)
+        y_true_binary = (y_true == False).astype(int)  # True=normal, False=IMD
+        y_pred_binary = (y_pred == True).astype(int)  # flagged=1
+        
+        metrics = {}
+        
+        # Basic metrics
+        try:
+            metrics['accuracy'] = accuracy_score(y_true_binary, y_pred_binary)
+        except:
+            metrics['accuracy'] = float('nan')
+        
+        try:
+            metrics['precision'] = precision_score(y_true_binary, y_pred_binary, zero_division=0)
+        except:
+            metrics['precision'] = float('nan')
+        
+        try:
+            metrics['recall'] = recall_score(y_true_binary, y_pred_binary, zero_division=0)
+        except:
+            metrics['recall'] = float('nan')
+        
+        try:
+            metrics['f1'] = f1_score(y_true_binary, y_pred_binary, zero_division=0)
+        except:
+            metrics['f1'] = float('nan')
+        
+        # AUC metrics
+        if y_scores is not None:
+            try:
+                metrics['roc_auc'] = roc_auc_score(y_true_binary, y_scores)
+            except:
+                metrics['roc_auc'] = float('nan')
+            
+            try:
+                metrics['pr_auc'] = average_precision_score(y_true_binary, y_scores)
+            except:
+                metrics['pr_auc'] = float('nan')
+        else:
+            metrics['roc_auc'] = float('nan')
+            metrics['pr_auc'] = float('nan')
+        
+        # Confusion matrix
+        try:
+            cm = confusion_matrix(y_true_binary, y_pred_binary)
+            metrics['confusion_matrix'] = cm.tolist()
+        except:
+            metrics['confusion_matrix'] = None
+        
+        return metrics
+    
+    # Compute metrics for validation set
+    val_y_true = val_results['is_normal'].values  # True = normal, False = IMD
+    val_y_pred = val_results['flagged'].values
+    val_y_scores = val_results['anomaly_score'].values
+    
+    val_metrics = compute_metrics(val_y_true, val_y_pred, val_y_scores)
+    
+    # Compute metrics for full production evaluation
+    if len(prod_results_full) > 0:
+        prod_y_true_full = prod_results_full['is_normal'].values
+        prod_y_pred_full = prod_results_full['flagged'].values
+        prod_y_scores_full = prod_results_full['anomaly_score'].values
+        prod_metrics_full = compute_metrics(prod_y_true_full, prod_y_pred_full, prod_y_scores_full)
+    else:
+        prod_metrics_full = {}
+    
+    # Compute metrics for simulated 2% contamination production
+    if len(prod_results_sim) > 0:
+        prod_y_true_sim = prod_results_sim['is_normal'].values
+        prod_y_pred_sim = prod_results_sim['flagged'].values
+        prod_y_scores_sim = prod_results_sim['anomaly_score'].values
+        prod_metrics_sim = compute_metrics(prod_y_true_sim, prod_y_pred_sim, prod_y_scores_sim)
+    else:
+        prod_metrics_sim = {}
+    
+    # ========================================================================
+    # Generate confusion matrix plots
+    # ========================================================================
+    def plot_confusion_matrix(y_true, y_pred, title, output_path):
+        """Generate and save confusion matrix plot."""
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            
+            from sklearn.metrics import confusion_matrix
+            
+            y_true_binary = (y_true == False).astype(int)
+            y_pred_binary = (y_pred == True).astype(int)
+            
+            cm = confusion_matrix(y_true_binary, y_pred_binary)
+            
+            plt.figure(figsize=(6, 5))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                        xticklabels=['Normal', 'IMD'],
+                        yticklabels=['Normal', 'IMD'])
+            plt.xlabel('Predicted')
+            plt.ylabel('True')
+            plt.title(title)
+            plt.tight_layout()
+            plt.savefig(output_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            return True
+        except ImportError:
+            logger.warning("matplotlib/seaborn not available. Skipping confusion matrix plot.")
+            return False
+        except Exception as e:
+            logger.warning(f"Error generating confusion matrix: {e}")
+            return False
+    
+    # Generate confusion matrix for simulated 2% contamination scenario
+    def plot_confusion_matrix_sim(y_true, y_pred, title, output_path):
+        """Generate and save confusion matrix plot for simulation."""
+        return plot_confusion_matrix(y_true, y_pred, title, output_path)
     
     # ========================================================================
     # Return all results
@@ -777,20 +977,35 @@ def run_anomaly_detection(
             'contamination_rate': val_contamination_rate,
             'flagged_normal_ids': flagged_test_normal_ids,
             'flagged_imd_ids': flagged_val_imd_ids,
-            'results': val_results
+            'results': val_results,
+            'metrics': val_metrics
+        },
+        # Production full evaluation results
+        'production_full': {
+            'n_normals': n_prod_normals_full,
+            'n_imds': n_prod_imds_full,
+            'normals_flagged': prod_normals_flagged_full,
+            'imds_flagged': prod_imds_flagged_full,
+            'detection_rate': prod_detection_rate_full,
+            'contamination_rate': prod_contamination_rate_full,
+            'flagged_normal_ids': flagged_prod_normal_ids_full,
+            'flagged_imd_ids': flagged_prod_imd_ids_full,
+            'results': prod_results_full,
+            'metrics': prod_metrics_full
         },
         # Production simulation results (2% contamination)
-        'production': {
-            'n_normals': n_prod_normals,
-            'n_imds': n_prod_imds,
-            'normals_flagged': prod_normals_flagged,
-            'imds_flagged': prod_imds_flagged,
-            'detection_rate': prod_detection_rate,
-            'contamination_rate': prod_contamination_rate,
+        'production_sim': {
+            'n_normals': n_prod_normals_sim,
+            'n_imds': n_prod_imds_sim,
+            'normals_flagged': prod_normals_flagged_sim,
+            'imds_flagged': prod_imds_flagged_sim,
+            'detection_rate': prod_detection_rate_sim,
+            'contamination_rate': prod_contamination_rate_sim,
             'target_contamination': target_contamination,
-            'flagged_normal_ids': flagged_prod_normal_ids,
-            'flagged_imd_ids': flagged_prod_imd_ids,
-            'results': prod_results
+            'flagged_normal_ids': flagged_prod_normal_ids_sim,
+            'flagged_imd_ids': flagged_prod_imd_ids_sim,
+            'results': prod_results_sim,
+            'metrics': prod_metrics_sim
         },
         # All sample results (for reference)
         'all_samples': {
@@ -798,5 +1013,24 @@ def run_anomaly_detection(
             'imd_sample_ids': imd_sample_ids_filtered,
             'gray_sample_ids': [s for s in gray_sample_ids if s in all_sample_ids],
             'n_features': pivot.shape[1]
+        },
+        'plot_functions': {
+            'plot_validation_cm': lambda output_dir: plot_confusion_matrix(
+                val_y_true, val_y_pred, 
+                f'{method_name} - Validation Set',
+                str(Path(output_dir) / 'anomaly_validation_confusion_matrix.png')
+            ),
+            'plot_production_full_cm': lambda output_dir: plot_confusion_matrix(
+                prod_y_true_full,
+                prod_y_pred_full,
+                f'{method_name} - Full Production Evaluation',
+                str(Path(output_dir) / 'anomaly_production_full_confusion_matrix.png')
+            ),
+            'plot_production_sim_cm': lambda output_dir: plot_confusion_matrix(
+                prod_y_true_sim,
+                prod_y_pred_sim,
+                f'{method_name} - Production Simulation (2% contamination)',
+                str(Path(output_dir) / 'anomaly_production_simulation_confusion_matrix.png')
+            )
         }
     }
