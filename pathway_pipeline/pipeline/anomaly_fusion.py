@@ -262,16 +262,49 @@ def run_fused_anomaly_detection(
     view_pca = view_pca or {}
     view_scorers = view_scorers or {}
 
+    # Views must have a unique sample index; duplicated rows would inflate
+    # every .loc[sample_ids] lookup.
+    for name, view in feature_views.items():
+        if view.index.duplicated().any():
+            n_dup = int(view.index.duplicated().sum())
+            logger.warning(
+                f"View '{name}' has {n_dup} duplicated sample IDs; keeping first occurrence"
+            )
+            feature_views[name] = view[~view.index.duplicated(keep="first")]
+
     # Samples present in ALL views
     common_ids = None
     for view in feature_views.values():
         idx = set(view.index)
         common_ids = idx if common_ids is None else (common_ids & idx)
-    common_ids = sorted(common_ids)
 
-    normal_ids = [s for s in normal_sample_ids if s in common_ids]
-    imd_ids = [s for s in imd_sample_ids if s in common_ids]
-    gray_ids = [s for s in gray_sample_ids if s in common_ids]
+    # Deduplicate label lists and make them disjoint: a sample ID listed as
+    # both normal and IMD would otherwise be duplicated in the validation /
+    # production score tables (length mismatch against .loc lookups).
+    def _unique_in(items, exclude=None):
+        seen = set(exclude or [])
+        out = []
+        for s in items:
+            if s in common_ids and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
+    normal_ids = _unique_in(normal_sample_ids)
+    imd_ids = _unique_in(imd_sample_ids, exclude=normal_ids)
+    gray_ids = _unique_in(gray_sample_ids, exclude=normal_ids + imd_ids)
+
+    n_overlap = len(
+        {s for s in imd_sample_ids if s in common_ids} & set(normal_ids)
+    )
+    if n_overlap:
+        logger.warning(
+            f"{n_overlap} sample IDs appear in BOTH normal and IMD lists; "
+            "keeping their normal label"
+        )
+    n_dup_normal = len(normal_sample_ids) - len(set(normal_sample_ids))
+    if n_dup_normal > 0:
+        logger.warning(f"{n_dup_normal} duplicated normal sample IDs removed")
 
     logger.info(
         f"\nFused anomaly detection: {len(feature_views)} views, "
