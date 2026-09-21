@@ -688,37 +688,50 @@ class FeatureFilter:
         self._hmdb_features_cache = None
         
         # ========================================================================
-        # Check for duplicate feature names (rows) - this is a DATA ISSUE
-        # In metabolomics data: rows = features/metabolites, columns = samples
-        # Duplicate feature names means the same metabolite appears multiple times
-        # This should NOT be averaged - it needs to be investigated
+        # Handle duplicate feature names (rows) BEFORE filtering.
+        # In metabolomics data: rows = features/metabolites, columns = samples.
+        # Features sharing the same name are most likely ROTAMERS of the same
+        # metabolite (same compound split across several chromatographic
+        # peaks). Their peak areas are summed per sample -- the correct way to
+        # reintegrate a compound split into multiple peaks -- NOT averaged
+        # (averaging would halve the signal) and NOT dropped (keeping only the
+        # first peak would discard part of the compound's true area).
         # ========================================================================
         if df.index.has_duplicates:
             dup_mask = df.index.duplicated(keep=False)  # All duplicates including first
             dup_features = df.index[dup_mask].unique().tolist()
-            
-            logger.error(f"\n{'='*70}")
-            logger.error(f"ERROR: Found {len(dup_features)} DUPLICATE FEATURE NAMES (rows)")
-            logger.error(f"{'='*70}")
-            logger.error("These are duplicate METABOLITE/feature identifiers, NOT duplicate samples.")
-            logger.error("Averaging rows with the same name would destroy biological meaning!")
-            logger.error(f"\nDuplicate feature names ({len(dup_features)} total):")
+
+            logger.info(f"\n{'='*70}")
+            logger.info(f"Found {len(dup_features)} feature names with duplicate rows "
+                        f"(likely rotamers); their areas will be SUMMED per sample")
+            logger.info(f"{'='*70}")
             # Print all duplicate feature names for review.
             # Sort/count by str() because the index can hold mixed types
             # (e.g. NaN floats from unnamed features alongside strings).
             counts = df.index.astype(str).value_counts()
             for dup_name in sorted(dup_features, key=lambda x: str(x)):
                 count = int(counts.get(str(dup_name), 0))
-                logger.error(f"  '{dup_name}' appears {count}x")
-            logger.error(f"\n{'='*70}")
-            logger.error("ACTION REQUIRED: Review these duplicate feature names.")
-            logger.error("Each duplicate should be renamed or the data source corrected.")
-            logger.error("For now, keeping FIRST occurrence and dropping duplicates.")
-            logger.error(f"{'='*70}\n")
-            
-            # Keep first occurrence, drop subsequent duplicates
-            df = df[~df.index.duplicated(keep='first')]
-            logger.info(f"Kept first occurrence of each duplicate. Data shape: {df.shape}")
+                logger.info(f"  '{dup_name}' appears {count}x -> summed into one feature")
+            logger.info(f"{'='*70}\n")
+
+            # Sum rows sharing the same feature name (rotamer areas add up).
+            # NaN-named rows cannot be grouped by identity -- groupby treats
+            # each NaN as a distinct key and drops them, so keep those rows
+            # unchanged alongside the summed duplicates.
+            nan_mask = df.index.isna()
+            if nan_mask.any():
+                logger.warning(f"  {int(nan_mask.sum())} rows have a NaN/unnamed index; "
+                               f"these are kept as-is and NOT summed together")
+
+            dup_names_set = set(dup_features)
+            named_dup_mask = df.index.isin(dup_names_set)
+            named_dup = df[named_dup_mask]
+            summed = named_dup.groupby(level=0, sort=False).sum()
+
+            non_dup = df[~named_dup_mask]
+            df = pd.concat([non_dup, summed])
+            logger.info(f"Summed duplicate (rotamer) rows: {len(named_dup)} -> {len(summed)} features. "
+                        f"Data shape: {df.shape}")
         
         logger.info(f"\nApplying feature filters...")
         logger.info(f"Initial feature count: {len(df)}")
