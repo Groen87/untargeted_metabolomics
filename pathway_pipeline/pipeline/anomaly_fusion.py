@@ -225,6 +225,7 @@ def run_fused_anomaly_detection(
     max_contamination: float = 0.05,
     min_detection: float = 0.80,
     view_pca: Optional[Dict[str, object]] = None,
+    view_scorers: Optional[Dict[str, str]] = None,
     target_contamination: float = 0.02,
 ) -> Dict:
     """
@@ -242,10 +243,14 @@ def run_fused_anomaly_detection(
         normal_sample_ids / imd_sample_ids / gray_sample_ids: sample labels.
         view_pca: dict view_name -> PCA n_components (None = no PCA for that
             view). Missing entries default to no PCA.
+        view_scorers: dict view_name -> scorer ('lof', 'iforest',
+            'mahalanobis'). Views missing from the dict use the global
+            scorer_name. Recommended: PCA + 'iforest' for the high-dimensional
+            metabolite view, raw features + 'lof' for the pathway view.
 
     Returns a dict shaped like run_anomaly_detection's return value so the
     pipeline's saving/logging code works unchanged, plus per-view diagnostics
-    under 'views'.
+    under 'views' and 'view_auc'.
     """
     from sklearn.model_selection import train_test_split
 
@@ -255,6 +260,7 @@ def run_fused_anomaly_detection(
 
     gray_sample_ids = list(gray_sample_ids or [])
     view_pca = view_pca or {}
+    view_scorers = view_scorers or {}
 
     # Samples present in ALL views
     common_ids = None
@@ -291,19 +297,22 @@ def run_fused_anomaly_detection(
     # Fit each view on training normals, calibrate on train-normal scores
     # ------------------------------------------------------------------
     views_out: Dict[str, Dict] = {}
-    method_name = None
+    method_names: List[str] = []
     for name, view in feature_views.items():
+        view_scorer = view_scorers.get(name, scorer_name)
         X_train = view.loc[train_ids].to_numpy(dtype=float)
-        scaler, pca, model, method_name = _fit_view(
+        scaler, pca, model, view_method_name = _fit_view(
             X_train,
-            scorer_name,
+            view_scorer,
             contamination,
             n_neighbors,
             n_estimators,
             random_state,
             pca_components=view_pca.get(name, None),
         )
-        train_scores = _score_view(model, scorer_name, _transform_view(scaler, pca, X_train))
+        method_names.append(f"{view_method_name}({name})")
+        logger.info(f"  View '{name}': scorer={view_scorer}, pca={view_pca.get(name, None)}")
+        train_scores = _score_view(model, view_scorer, _transform_view(scaler, pca, X_train))
         mu = float(np.mean(train_scores))
         sigma = float(np.std(train_scores))
         if sigma <= 0:
@@ -313,6 +322,7 @@ def run_fused_anomaly_detection(
             "scaler": scaler,
             "pca": pca,
             "model": model,
+            "scorer": view_scorer,
             "mu": mu,
             "sigma": sigma,
             "n_features": int(view.shape[1]),
@@ -326,7 +336,7 @@ def run_fused_anomaly_detection(
         per_view = {}
         for name, vw in views_out.items():
             X = feature_views[name].loc[sample_ids].to_numpy(dtype=float)
-            raw = _score_view(vw["model"], scorer_name, _transform_view(vw["scaler"], vw["pca"], X))
+            raw = _score_view(vw["model"], vw["scorer"], _transform_view(vw["scaler"], vw["pca"], X))
             per_view[name] = (raw - vw["mu"]) / vw["sigma"]
         zdf = pd.DataFrame(per_view, index=sample_ids)
         fused = zdf.max(axis=1).to_numpy(dtype=float)
@@ -382,6 +392,41 @@ def run_fused_anomaly_detection(
     logger.info(
         f"  IMDs flagged: {val_imds_flagged} / {n_val_imds} ({val_detection_rate*100:.1f}%)"
     )
+
+    # Per-view ROC-AUC / PR-AUC on the validation set (held-out normals +
+    # all IMDs): shows which view carries the discriminative signal before
+    # trusting the fusion.
+    view_auc: Dict[str, Dict] = {}
+    try:
+        from sklearn.metrics import average_precision_score, roc_auc_score
+
+        all_true = (~val_is_normal).astype(int)
+        for name in views_out:
+            zscores_view = zdf_val[name].to_numpy(dtype=float)
+            try:
+                auc = float(roc_auc_score(all_true, zscores_view))
+                ap = float(average_precision_score(all_true, zscores_view))
+            except Exception:
+                auc = float("nan")
+                ap = float("nan")
+            view_auc[name] = {"roc_auc": auc, "pr_auc": ap}
+        try:
+            fused_auc = float(roc_auc_score(all_true, fused_val))
+            fused_ap = float(average_precision_score(all_true, fused_val))
+        except Exception:
+            fused_auc = float("nan")
+            fused_ap = float("nan")
+        view_auc["fused"] = {"roc_auc": fused_auc, "pr_auc": fused_ap}
+    except Exception:
+        view_auc = {"fused": {"roc_auc": float("nan"), "pr_auc": float("nan")}}
+
+    logger.info("\nPer-view discrimination on validation set (control-calibrated z):")
+    for name, auc_dict in view_auc.items():
+        auc_val = auc_dict["roc_auc"]
+        ap_val = auc_dict["pr_auc"]
+        auc_str = f"{auc_val:.4f}" if np.isfinite(auc_val) else "N/A"
+        ap_str = f"{ap_val:.4f}" if np.isfinite(ap_val) else "N/A"
+        logger.info(f"  {name}: ROC-AUC={auc_str}, PR-AUC={ap_str}")
 
     val_metrics = _compute_metrics(val_is_normal, val_flagged, fused_val)
 
@@ -523,9 +568,12 @@ def run_fused_anomaly_detection(
 
     view_list = " + ".join(feature_views.keys())
     if len(feature_views) > 1:
-        method_out = f"Fused {method_name} (max of control-calibrated z over: {view_list})"
+        method_out = (
+            f"Fused (max of control-calibrated z over: {view_list}; "
+            f"scorers: {', '.join(method_names)})"
+        )
     else:
-        method_out = f"{method_name} on {view_list} (control-calibrated z)"
+        method_out = f"{method_names[0]} (control-calibrated z)"
 
     return {
         "scorer": scorer_name,
@@ -578,11 +626,15 @@ def run_fused_anomaly_detection(
         "views": {
             name: {
                 "n_features": vw["n_features"],
+                "scorer": vw["scorer"],
                 "train_score_mu": vw["mu"],
                 "train_score_sigma": vw["sigma"],
+                "roc_auc": view_auc.get(name, {}).get("roc_auc", float("nan")),
+                "pr_auc": view_auc.get(name, {}).get("pr_auc", float("nan")),
             }
             for name, vw in views_out.items()
         },
+        "view_auc": view_auc,
         "plot_functions": {
             "plot_validation_cm": lambda output_dir: _plot_cm(
                 val_is_normal,

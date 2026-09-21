@@ -134,6 +134,21 @@ use_fused_anomaly_detection: true
 # Include the metabolite-level z-score view (set false for pathway-only)
 fused_include_metabolite_view: true
 
+# Per-view PCA (recommended: reduce the high-dimensional metabolite view;
+# keep the low-dimensional pathway view raw since LOF works well there).
+# A float in (0, 1] = fraction of variance to preserve; an int = exact
+# number of components; null/absent = no PCA for that view.
+# PCA is fit on TRAINING NORMALS only (no leakage).
+fused_pca_pathway_view: null      # e.g. 0.95 or 10
+fused_pca_metabolite_view: 0.95    # strongly recommended for LOF here
+
+# Per-view anomaly scorer (overrides anomaly_scorer for that view):
+# 'lof', 'iforest', or 'mahalanobis'. Recommended: lof for the pathway
+# view (local density in low dimensions), iforest for the metabolite view
+# (handles high dimensions better than distance-based methods).
+fused_scorer_pathway_view: lof
+fused_scorer_metabolite_view: iforest
+
 # Threshold optimization (NEW: threshold is now optimized on validation set)
 # Optimization metric: 'f1', 'precision', 'recall', or 'youden'
 anomaly_optimization_metric: f1

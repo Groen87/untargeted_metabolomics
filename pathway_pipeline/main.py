@@ -595,10 +595,23 @@ def run_pipeline(input_file: str,
             if bool(config.get("fused_include_metabolite_view", True)):
                 feature_views["metabolite_z"] = metabolite_view
             
+            # Per-view PCA: default none. Recommended for the high-dimensional
+            # metabolite view (distances concentrate in high dimensions, which
+            # hurts LOF); the low-dimensional pathway view usually works raw.
+            # A view set to null/false stays unreduced.
             view_pca = {}
-            if bool(config.get("anomaly_use_pca", False)):
-                view_pca["pathway_zsummary"] = config.get("anomaly_pca_components", 0.95)
-                view_pca["metabolite_z"] = config.get("anomaly_pca_components", 0.95)
+            if config.get("fused_pca_pathway_view") not in (None, False):
+                view_pca["pathway_zsummary"] = config.get("fused_pca_pathway_view")
+            if config.get("fused_pca_metabolite_view") not in (None, False):
+                view_pca["metabolite_z"] = config.get("fused_pca_metabolite_view")
+            
+            # Per-view scorer: default from anomaly_scorer. Recommended:
+            # lof for the pathway view, iforest for the metabolite view.
+            view_scorers = {}
+            if config.get("fused_scorer_pathway_view"):
+                view_scorers["pathway_zsummary"] = config.get("fused_scorer_pathway_view")
+            if config.get("fused_scorer_metabolite_view"):
+                view_scorers["metabolite_z"] = config.get("fused_scorer_metabolite_view")
             
             ad_results = run_fused_anomaly_detection(
                 feature_views=feature_views,
@@ -616,6 +629,7 @@ def run_pipeline(input_file: str,
                 max_contamination=float(config.get("anomaly_max_contamination", 0.05)),
                 min_detection=float(config.get("anomaly_min_detection", 0.80)),
                 view_pca=view_pca,
+                view_scorers=view_scorers,
             )
         else:
             if enhanced is not None:
