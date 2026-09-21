@@ -990,6 +990,14 @@ def load_data(
             use_cache=use_hmdb_cache,
         )
     
+    # Optionally print all HMDB-tagged feature names (one per line) so they
+    # can be reviewed and curated into e.g. a medication exclusion list.
+    if log_hmdb_tagged_features:
+        tagged = [col for col in features.columns if _split_feature_name_and_hmdb(col)]
+        logger.info(
+            f"HMDB-tagged features ({len(tagged)}):\n" + "\n".join(tagged)
+        )
+    
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
     

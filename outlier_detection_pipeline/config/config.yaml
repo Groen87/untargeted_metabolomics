@@ -81,6 +81,9 @@ endogenous_metabolites_file: null  # Path to endogenous_metabolites.tsv (output 
 filter_to_smpdb_hmdb: false  # Filter features to those with HMDB codes in SMPDB pathways
 smpdb_pathways_file: null  # Path to smpdb_kept_pathways.tsv
 hmdb_xml_file: "data/hmdb_metabolites.xml"  # Same HMDB XML as pathway_pipeline uses
+# Print every HMDB-tagged feature name (one per line) after loading, so they
+# can be reviewed and curated into e.g. a medication exclusion list.
+log_hmdb_tagged_features: false
 
 # Outlier analysis
 # Univariate guardrail (deployment-time clinical safety net). A deterministic,
