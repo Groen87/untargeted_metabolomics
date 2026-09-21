@@ -344,7 +344,7 @@ def flag_samples_enhanced(
 
     # Combined p per (sample, pathway): Bonferroni over the statistics that
     # were computed for that pair.
-    stat_cols = ["p_stouffer", "p_topk", "p_ratio"]
+    stat_cols = [c for c in ("p_stouffer", "p_topk", "p_ratio") if c in pathway_stats.columns]
     pvals = pathway_stats[stat_cols].to_numpy(dtype=float)
     n_available = (~np.isnan(pvals)).sum(axis=1)
     with np.errstate(invalid="ignore"):

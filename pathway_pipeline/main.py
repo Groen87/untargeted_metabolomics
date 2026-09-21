@@ -491,10 +491,12 @@ def run_pipeline(input_file: str,
     # ------------------------------------------------------------------
     # Enhanced three-statistic flagging (correlation-adjusted Stouffer,
     # top-k with empirical null, substrate:product ratio z-scores), combined
-    # with BH-FDR across pathways. Runs in addition to the classic absolute
-    # Stouffer analysis above so results are comparable.
+    # with BH-FDR across pathways. Replaces the classic absolute Stouffer
+    # analysis for downstream anomaly detection when enabled.
     # ------------------------------------------------------------------
-    if bool(config.get("use_enhanced_flagging", False)):
+    use_enhanced = bool(config.get("use_enhanced_flagging", False))
+    enhanced = None
+    if use_enhanced:
         from pathway_pipeline.pipeline.pathway_flagging import flag_samples_enhanced
         
         _log_section("STEP 5.5: Enhanced pathway flagging (3-statistic, FDR-controlled)")
@@ -569,14 +571,32 @@ def run_pipeline(input_file: str,
             feature_to_pathway['feature'].isin(zscores.columns)
         ]
         
-        # Compute pathway stats for normals + IMDs only
-        pathway_stats_all = compute_pathway_stouffers_z(
-            features_filtered,
-            feature_to_pathway_all,
-            min_pathway_size=min_pathway_size
-        )
-        
-        logger.info(f"Computed pathway Stouffer's Z for {pathway_stats_all['sample_id'].nunique()} samples")
+        if enhanced is not None:
+            # Use the enhanced three-statistic pathway evidence instead of
+            # the classic absolute Stouffer Z. Convert the combined p-value
+            # per (sample, pathway) into a deviation score: -log10(p), where
+            # 0 means no deviation (matching the fillna(0) semantics of the
+            # anomaly detection pivot).
+            eps = 1e-300
+            pathway_stats_all = enhanced['pathway_stats'][[
+                'sample_id', 'pathway_name', 'p_combined'
+            ]].dropna(subset=['p_combined']).copy()
+            pathway_stats_all['z_stouffer_abs'] = -np.log10(
+                pathway_stats_all['p_combined'].clip(lower=eps)
+            )
+            logger.info(
+                f"Using enhanced 3-statistic evidence for anomaly detection: "
+                f"{pathway_stats_all['pathway_name'].nunique()} pathways, "
+                f"{pathway_stats_all['sample_id'].nunique()} samples"
+            )
+        else:
+            # Classic: compute pathway stats for normals + IMDs only
+            pathway_stats_all = compute_pathway_stouffers_z(
+                features_filtered,
+                feature_to_pathway_all,
+                min_pathway_size=min_pathway_size
+            )
+            logger.info(f"Computed pathway Stouffer's Z for {pathway_stats_all['sample_id'].nunique()} samples")
         
         # Run anomaly detection with proper ML methodology
         ad_results = run_anomaly_detection(
