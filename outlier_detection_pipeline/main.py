@@ -2037,6 +2037,7 @@ def run_pipeline(
     exclude_substrings = config.get_list('exclude_substrings', [])
     filter_to_smpdb_hmdb = config.get('filter_to_smpdb_hmdb', False)
     smpdb_pathways_file = config.get('smpdb_pathways_file', None)
+    hmdb_xml_file = config.get('hmdb_xml_file', None)
 
     features, classification, oordeel, raw_classification = load_data(
         input_file=input_file,
@@ -2050,6 +2051,7 @@ def run_pipeline(
         exclude_substrings=exclude_substrings,
         smpdb_pathways_file=smpdb_pathways_file,
         filter_to_smpdb_hmdb=filter_to_smpdb_hmdb,
+        hmdb_xml_file=hmdb_xml_file,
     )
 
     # Store original features for IQR analysis (before any filtering or PCA)

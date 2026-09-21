@@ -24,7 +24,11 @@ from pathlib import Path
 import pickle
 import hashlib
 
-from pathway_pipeline.pipeline.pathway_mapping import load_pathways_tsv
+from pathway_pipeline.pipeline.pathway_mapping import (
+    load_pathways_tsv,
+    match_features_to_hmdb,
+)
+from pathway_pipeline.pipeline.hmdb_parser import build_name_index
 from pathway_pipeline.pipeline.name_utils import normalize_name, normalize_loose
 
 
@@ -525,94 +529,103 @@ def _filter_to_endogenous_features(
 def _filter_to_smpdb_hmdb_features(
     features: pd.DataFrame,
     smpdb_pathways_file: str,
+    hmdb_xml_file: Optional[str] = None,
+    min_name_length: int = 3,
     use_cache: bool = True,
 ) -> pd.DataFrame:
     """
-    Filter features to only those with HMDB codes present in SMPDB pathways.
-    
-    This uses the same matching logic as pathway_pipeline but only extracts
-    the unique HMDB accessions from the pathways TSV and filters features
-    to those matching these HMDB codes.
-    
+    Filter features to only those resolving to HMDB accessions that appear in
+    the SMPDB pathways TSV.
+
+    Uses the EXACT same matching chain as the pathway_pipeline
+    (pathway_pipeline.pipeline.pathway_mapping.match_features_to_hmdb):
+
+      1. HMDB tag: a trailing HMDB accession in the column name (bare
+         ``HMDB########`` or ``Name.HMDB########``) is taken authoritatively.
+      2. Exact name: the normalized column name matches the HMDB XML name
+         index (primary names, synonyms, and bare accessions).
+      3. Loose name: the non-alphanumeric-stripped column name matches a
+         loose-normalized index entry (catches hyphenation/spacing).
+
+    A feature is kept when AT LEAST ONE of its resolved HMDB accessions
+    appears in the union of the pathways' ``hmdb_ids`` lists. Pathways are
+    never turned into features -- this is purely a feature keep-filter.
+
     Args:
         features: DataFrame with feature columns
         smpdb_pathways_file: Path to smpdb_kept_pathways.tsv
-        use_cache: Whether to use cached data
-        
+        hmdb_xml_file: Path to hmdb_metabolites.xml (same file the
+            pathway_pipeline uses to build its name index). Required for
+            plain-name features; without it only HMDB-tagged features can
+            match.
+        min_name_length: Skip names shorter than this for name-based matching
+            (same default as pathway_pipeline).
+        use_cache: Whether to use cached HMDB name index
+
     Returns:
         Filtered DataFrame containing only features with HMDB codes in pathways
     """
-    # Load the pathways TSV
+    # Load the pathways TSV and collect the union of pathway HMDB accessions.
     pathways = load_pathways_tsv(smpdb_pathways_file)
     if pathways.empty:
         logger.warning(f"Could not load pathways from {smpdb_pathways_file}. Using all features.")
         return features
-    
-    # Extract all unique HMDB accessions from the pathways
-    all_hmdb_ids = set()
+
+    smpdb_hmdb_ids: Set[str] = set()
     for _, row in pathways.iterrows():
-        all_hmdb_ids.update(row['hmdb_ids'])
-    
-    if not all_hmdb_ids:
+        smpdb_hmdb_ids.update(acc.upper() for acc in row['hmdb_ids'])
+
+    if not smpdb_hmdb_ids:
         logger.warning(f"No HMDB IDs found in {smpdb_pathways_file}. Using all features.")
         return features
-    
-    logger.info(f"Loaded {len(all_hmdb_ids)} unique HMDB accessions from SMPDB pathways")
-    
-    # Build a name index from the HMDB IDs (for name-based matching)
-    # Each HMDB ID maps to itself
-    name_index = {hmdb_id.upper(): {hmdb_id.upper()} for hmdb_id in all_hmdb_ids}
-    
-    # Also build loose index
-    loose_index = {}
-    for norm_name, accs in name_index.items():
-        loose = normalize_loose(norm_name)
-        if loose and len(loose) >= 3:
-            if loose in loose_index:
-                loose_index[loose] |= accs
-            else:
-                loose_index[loose] = set(accs)
-    
-    # Match features to HMDB accessions using the same logic as pathway_pipeline
-    original_cols = list(features.columns)
-    kept_columns = []
-    
-    n_matched_hmdb = 0
-    n_matched_name = 0
-    n_matched_loose = 0
-    
-    for col in features.columns:
-        col_norm = normalize_name(col)
-        
-        # 1) Check if column has HMDB tag
-        tagged = _split_feature_name_and_hmdb(col)
-        if tagged and tagged in all_hmdb_ids:
-            kept_columns.append(col)
-            n_matched_hmdb += 1
-            continue
-        
-        # 2) Exact name match
-        if col_norm and len(col_norm) >= 3 and col_norm in name_index:
-            kept_columns.append(col)
-            n_matched_name += 1
-            continue
-        
-        # 3) Loose name match
-        if col_norm and len(col_norm) >= 3:
-            col_loose = normalize_loose(col)
-            if col_loose and len(col_loose) >= 3 and col_loose in loose_index:
-                kept_columns.append(col)
-                n_matched_loose += 1
-                continue
-    
-    n_removed = len(original_cols) - len(kept_columns)
-    logger.info(
-        f"Filtered to SMPDB HMDB features: {n_removed} features removed, "
-        f"{len(kept_columns)} features retained "
-        f"({n_matched_hmdb} HMDB-tagged, {n_matched_name} exact name, "
-        f"{n_matched_loose} loose name)"
+
+    logger.info(f"Loaded {len(smpdb_hmdb_ids)} unique HMDB accessions from SMPDB pathways")
+
+    # Build the SAME name index the pathway_pipeline uses (HMDB XML primary
+    # names + synonyms -> accessions), so plain-name features resolve to the
+    # same accessions as in the pathway_pipeline.
+    name_index: Dict[str, Set[str]] = {}
+    if hmdb_xml_file:
+        name_index = build_name_index(
+            hmdb_xml_file, min_name_length=min_name_length, use_cache=use_cache
+        )
+        if not name_index:
+            logger.warning(
+                "HMDB name index is empty (XML missing or unreadable); only "
+                "HMDB-tagged features can match the SMPDB filter."
+            )
+    else:
+        logger.warning(
+            "No hmdb_xml_file configured for the SMPDB filter; only HMDB-tagged "
+            "features can match. Set hmdb_xml_file (same file as pathway_pipeline)."
+        )
+
+    # Resolve every feature column to HMDB accessions using the pathway
+    # pipeline's own matcher, then keep those intersecting the SMPDB set.
+    feature_to_hmdb = match_features_to_hmdb(
+        feature_columns=list(features.columns),
+        name_index=name_index,
+        min_name_length=min_name_length,
     )
-    
+    matched = feature_to_hmdb.dropna(subset=["hmdb_id"])
+    feature_hits: Set[str] = {
+        feat for feat, acc in zip(matched["feature"], matched["hmdb_id"])
+        if acc.upper() in smpdb_hmdb_ids
+    }
+
+    # Report match-method breakdown for the kept features (same diagnostics
+    # style as the pathway_pipeline logging).
+    kept_matched = matched[matched["feature"].isin(feature_hits)]
+    method_counts = kept_matched["match_method"].value_counts().to_dict()
+
+    kept_columns = [col for col in features.columns if col in feature_hits]
+    n_removed = len(features.columns) - len(kept_columns)
+    logger.info(
+        f"Filtered to SMPDB pathway features: {n_removed} features removed, "
+        f"{len(kept_columns)} features retained "
+        f"(match methods among retained: {method_counts})"
+    )
+
     return features[kept_columns]
 
 
@@ -754,6 +767,7 @@ def load_data(
     exclude_substrings: Optional[List[str]] = None,
     smpdb_pathways_file: Optional[str] = None,
     filter_to_smpdb_hmdb: bool = False,
+    hmdb_xml_file: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
@@ -786,6 +800,9 @@ def load_data(
             HMDB codes in pathways
         filter_to_smpdb_hmdb: Whether to filter features to those with HMDB
             codes present in the SMPDB pathways file
+        hmdb_xml_file: Path to hmdb_metabolites.xml (same file as
+            pathway_pipeline) used to resolve plain-name features to HMDB
+            accessions for the SMPDB filter
 
     Returns:
         Tuple of:
@@ -957,7 +974,10 @@ def load_data(
     # Filter to SMPDB pathway HMDB features if requested
     if filter_to_smpdb_hmdb and smpdb_pathways_file:
         features = _filter_to_smpdb_hmdb_features(
-            features, smpdb_pathways_file, use_cache=use_hmdb_cache
+            features,
+            smpdb_pathways_file,
+            hmdb_xml_file=hmdb_xml_file,
+            use_cache=use_hmdb_cache,
         )
     
     logger.info(f"Feature columns: {len(features.columns)}")
