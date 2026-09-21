@@ -778,6 +778,7 @@ def load_data(
     smpdb_pathways_file: Optional[str] = None,
     filter_to_smpdb_hmdb: bool = False,
     hmdb_xml_file: Optional[str] = None,
+    log_hmdb_tagged_features: bool = False,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
