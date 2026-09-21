@@ -70,6 +70,14 @@ filter_to_endogenous: false  # Filter features to the endogenous metabolite keep
 use_hmdb_cache: true  # Use cached HMDB data for faster subsequent runs
 endogenous_metabolites_file: null  # Path to endogenous_metabolites.tsv (output of hmdb_drug_filter.py)
 
+# SMPDB pathways filtering - keep only features with HMDB codes in pathways
+# Uses smpdb_kept_pathways.tsv (from pathway_pipeline) which has columns:
+# smp_id, pathway_name, n_compounds, hmdb_ids (semicolon-separated list of HMDB accessions)
+# This extracts all unique HMDB codes from the pathways file and filters features
+# to only those matching these HMDB codes (by HMDB tag in column name or by name match)
+filter_to_smpdb_hmdb: false  # Filter features to those with HMDB codes in SMPDB pathways
+smpdb_pathways_file: null  # Path to smpdb_kept_pathways.tsv
+
 # Outlier analysis
 # Univariate guardrail (deployment-time clinical safety net). A deterministic,
 # OR-combined flag that catches samples the multivariate model misses on

@@ -24,6 +24,9 @@ from pathlib import Path
 import pickle
 import hashlib
 
+from pathway_pipeline.pipeline.pathway_mapping import load_pathways_tsv
+from pathway_pipeline.pipeline.name_utils import normalize_name, normalize_loose
+
 
 # Greek symbols -> spelled-out English canonical token. Metabolomics data
 # mixes three spellings of the same concept, e.g. omega:
@@ -519,6 +522,119 @@ def _filter_to_endogenous_features(
     return filtered_features
 
 
+def _filter_to_smpdb_hmdb_features(
+    features: pd.DataFrame,
+    smpdb_pathways_file: str,
+    use_cache: bool = True,
+) -> pd.DataFrame:
+    """
+    Filter features to only those with HMDB codes present in SMPDB pathways.
+    
+    This uses the same matching logic as pathway_pipeline but only extracts
+    the unique HMDB accessions from the pathways TSV and filters features
+    to those matching these HMDB codes.
+    
+    Args:
+        features: DataFrame with feature columns
+        smpdb_pathways_file: Path to smpdb_kept_pathways.tsv
+        use_cache: Whether to use cached data
+        
+    Returns:
+        Filtered DataFrame containing only features with HMDB codes in pathways
+    """
+    # Load the pathways TSV
+    pathways = load_pathways_tsv(smpdb_pathways_file)
+    if pathways.empty:
+        logger.warning(f"Could not load pathways from {smpdb_pathways_file}. Using all features.")
+        return features
+    
+    # Extract all unique HMDB accessions from the pathways
+    all_hmdb_ids = set()
+    for _, row in pathways.iterrows():
+        all_hmdb_ids.update(row['hmdb_ids'])
+    
+    if not all_hmdb_ids:
+        logger.warning(f"No HMDB IDs found in {smpdb_pathways_file}. Using all features.")
+        return features
+    
+    logger.info(f"Loaded {len(all_hmdb_ids)} unique HMDB accessions from SMPDB pathways")
+    
+    # Build a name index from the HMDB IDs (for name-based matching)
+    # Each HMDB ID maps to itself
+    name_index = {hmdb_id.upper(): {hmdb_id.upper()} for hmdb_id in all_hmdb_ids}
+    
+    # Also build loose index
+    loose_index = {}
+    for norm_name, accs in name_index.items():
+        loose = normalize_loose(norm_name)
+        if loose and len(loose) >= 3:
+            if loose in loose_index:
+                loose_index[loose] |= accs
+            else:
+                loose_index[loose] = set(accs)
+    
+    # Match features to HMDB accessions using the same logic as pathway_pipeline
+    original_cols = list(features.columns)
+    kept_columns = []
+    
+    n_matched_hmdb = 0
+    n_matched_name = 0
+    n_matched_loose = 0
+    
+    for col in features.columns:
+        col_norm = normalize_name(col)
+        
+        # 1) Check if column has HMDB tag
+        tagged = _split_feature_name_and_hmdb(col)
+        if tagged and tagged in all_hmdb_ids:
+            kept_columns.append(col)
+            n_matched_hmdb += 1
+            continue
+        
+        # 2) Exact name match
+        if col_norm and len(col_norm) >= 3 and col_norm in name_index:
+            kept_columns.append(col)
+            n_matched_name += 1
+            continue
+        
+        # 3) Loose name match
+        if col_norm and len(col_norm) >= 3:
+            col_loose = normalize_loose(col)
+            if col_loose and len(col_loose) >= 3 and col_loose in loose_index:
+                kept_columns.append(col)
+                n_matched_loose += 1
+                continue
+    
+    n_removed = len(original_cols) - len(kept_columns)
+    logger.info(
+        f"Filtered to SMPDB HMDB features: {n_removed} features removed, "
+        f"{len(kept_columns)} features retained "
+        f"({n_matched_hmdb} HMDB-tagged, {n_matched_name} exact name, "
+        f"{n_matched_loose} loose name)"
+    )
+    
+    return features[kept_columns]
+
+
+def _split_feature_name_and_hmdb(col: str) -> Optional[str]:
+    """Extract a trailing HMDB accession from a feature column name.
+    
+    This is the same function as in pathway_pipeline/pathway_mapping.py
+    Handles the two annotated forms used in the dataset:
+        'Cortisol.HMDB0000063' -> 'HMDB0000063'
+        'HMDB0000063'          -> 'HMDB0000063'
+    Returns the accession (uppercased) when present, else None.
+    """
+    norm = normalize_name(col)
+    if norm.startswith("HMDB") and len(norm) >= 7 and norm[4:].isdigit():
+        return norm
+    if "." in norm:
+        suffix = norm.rsplit(".", 1)[-1]
+        if suffix.startswith("HMDB") and len(suffix) >= 7 and suffix[4:].isdigit():
+            return suffix
+    return None
+
+
 def _exclude_metabolites(
     features: pd.DataFrame,
     exclude_names: List[str],
@@ -636,6 +752,8 @@ def load_data(
     exclude_metabolites: Optional[List[str]] = None,
     classification_scheme: str = "default",
     exclude_substrings: Optional[List[str]] = None,
+    smpdb_pathways_file: Optional[str] = None,
+    filter_to_smpdb_hmdb: bool = False,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
@@ -664,6 +782,10 @@ def load_data(
             inliers are ONLY the confident normals (Classification 0 AND
             Oordeel targeted 0); every other sample is labelled outlier (1)
             and used only for testing. No samples are dropped.
+        smpdb_pathways_file: Path to smpdb_kept_pathways.tsv for filtering to
+            HMDB codes in pathways
+        filter_to_smpdb_hmdb: Whether to filter features to those with HMDB
+            codes present in the SMPDB pathways file
 
     Returns:
         Tuple of:
@@ -831,6 +953,12 @@ def load_data(
                 logger.warning(f"Could not load endogenous metabolite names from {endogenous_metabolites_file}. Using all features.")
         else:
             logger.warning(f"Endogenous metabolites file not found at {endogenous_metabolites_file}. Using all features.")
+    
+    # Filter to SMPDB pathway HMDB features if requested
+    if filter_to_smpdb_hmdb and smpdb_pathways_file:
+        features = _filter_to_smpdb_hmdb_features(
+            features, smpdb_pathways_file, use_cache=use_hmdb_cache
+        )
     
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
