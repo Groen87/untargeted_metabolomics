@@ -488,6 +488,50 @@ def run_pipeline(input_file: str,
         logger.warning(f"WARNING: Detection rate ({validation['detection_rate']*100:.1f}%) "
                        f"below 80% target")
     
+    # ------------------------------------------------------------------
+    # Enhanced three-statistic flagging (correlation-adjusted Stouffer,
+    # top-k with empirical null, substrate:product ratio z-scores), combined
+    # with BH-FDR across pathways. Runs in addition to the classic absolute
+    # Stouffer analysis above so results are comparable.
+    # ------------------------------------------------------------------
+    if bool(config.get("use_enhanced_flagging", False)):
+        from pathway_pipeline.pipeline.pathway_flagging import flag_samples_enhanced
+        
+        _log_section("STEP 5.5: Enhanced pathway flagging (3-statistic, FDR-controlled)")
+        
+        enhanced = flag_samples_enhanced(
+            zscores=zscores,
+            features=features_filtered,
+            feature_to_pathway=feature_to_pathway_filtered,
+            normal_mask=normal_mask_filtered,
+            ratio_specs=config.get("ratio_z_specs", []),
+            target_fdr=float(config.get("enhanced_target_fdr", 0.05)),
+            topk_k=int(config.get("enhanced_topk_k", 3)),
+            n_boot=int(config.get("enhanced_n_boot", 1000)),
+            random_state=int(config.get("anomaly_random_state", 42)),
+            min_pathway_size=min_pathway_size,
+            iqr_scale=bool(config.get("iqr_scale", True)),
+        )
+        
+        enhanced['pathway_stats'].to_csv(out / "enhanced_flagging_pathway_stats.csv", index=False)
+        enhanced['sample_summary'].to_csv(out / "enhanced_flagging_sample_summary.csv", index=False)
+        
+        diag = enhanced['diagnostics']
+        logger.info(f"\nEnhanced flagging diagnostics:")
+        logger.info(f"  Pathways tested per sample: {diag['n_pathways_tested']}")
+        logger.info(f"  Target FDR: {diag['target_fdr']}")
+        logger.info(f"  Control-side flag rate: {diag['control_false_flag_rate']:.4f}")
+        
+        # Compare enhanced flags against ground truth (normals vs IMDs)
+        summary = enhanced['sample_summary'].set_index("sample_id")
+        enhanced_flagged = set(summary.index[summary["flagged"]])
+        n_enh_imds = len(enhanced_flagged & set(imd_sample_ids_filtered))
+        n_enh_normals = len(enhanced_flagged & set(normal_sample_ids_filtered))
+        logger.info(f"  Enhanced flags: {n_enh_imds} / {len(imd_sample_ids_filtered)} IMDs, "
+                    f"{n_enh_normals} / {len(normal_sample_ids_filtered)} normals")
+        
+        results["enhanced_flagging"] = enhanced
+    
     # Save outputs
     pathway_stats.to_csv(out / "enhanced_pathway_statistics.csv", index=False)
     decisions.reset_index().to_csv(out / "enhanced_sample_decisions.csv", index=False)
