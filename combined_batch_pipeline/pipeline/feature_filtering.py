@@ -688,32 +688,34 @@ class FeatureFilter:
         self._hmdb_features_cache = None
         
         # ========================================================================
-        # Handle duplicate samples BEFORE filtering
-        # (samples measured twice with _1/_2 suffixes should be averaged)
+        # Check for duplicate feature names (rows) - this is a DATA ISSUE
+        # In metabolomics data: rows = features/metabolites, columns = samples
+        # Duplicate feature names means the same metabolite appears multiple times
+        # This should NOT be averaged - it needs to be investigated
         # ========================================================================
         if df.index.has_duplicates:
-            # Check for samples with large differences between duplicate measurements
             dup_mask = df.index.duplicated(keep=False)  # All duplicates including first
-            dup_samples = df.index[dup_mask].unique()
+            dup_features = df.index[dup_mask].unique().tolist()
             
-            flagged_samples = []
-            for sample_name in dup_samples:
-                sample_rows = df.loc[[sample_name]]
-                if len(sample_rows) == 2:
-                    # Calculate % difference between the two measurements across all features
-                    diff = (sample_rows.iloc[0] - sample_rows.iloc[1]).abs()
-                    mean_vals = (sample_rows.iloc[0] + sample_rows.iloc[1]) / 2
-                    # Avoid division by zero
-                    mean_vals_safe = mean_vals.replace(0, np.nan)
-                    pct_diff = (diff / mean_vals_safe * 100).mean()
-                    if pct_diff > 30:
-                        flagged_samples.append(f"{sample_name} ({pct_diff:.1f}% diff)")
+            logger.error(f"\n{'='*70}")
+            logger.error("ERROR: Found {len(dup_features)} DUPLICATE FEATURE NAMES (rows)")
+            logger.error("{'='*70}")
+            logger.error("These are duplicate METABOLITE/feature identifiers, NOT duplicate samples.")
+            logger.error("Averaging rows with the same name would destroy biological meaning!")
+            logger.error(f"\nDuplicate feature names ({len(dup_features)} total):")
+            # Print all duplicate feature names for review
+            for dup_name in sorted(dup_features):
+                count = (df.index == dup_name).sum()
+                logger.error(f"  '{dup_name}' appears {count}x")
+            logger.error(f"\n{'='*70}")
+            logger.error("ACTION REQUIRED: Review these duplicate feature names.")
+            logger.error("Each duplicate should be renamed or the data source corrected.")
+            logger.error("For now, keeping FIRST occurrence and dropping duplicates.")
+            logger.error(f"{'='*70}\n")
             
-            if flagged_samples:
-                logger.warning(f"  FLAGGED: Samples with >30% difference between duplicates: {', '.join(flagged_samples)}")
-            
-            logger.info(f"  Combining {df.index.duplicated().sum()} duplicate sample names by taking mean")
-            df = df.groupby(level=0).mean()
+            # Keep first occurrence, drop subsequent duplicates
+            df = df[~df.index.duplicated(keep='first')]
+            logger.info(f"Kept first occurrence of each duplicate. Data shape: {df.shape}")
         
         logger.info(f"\nApplying feature filters...")
         logger.info(f"Initial feature count: {len(df)}")
