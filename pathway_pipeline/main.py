@@ -606,27 +606,31 @@ def run_pipeline(input_file: str,
             except Exception as e:
                 logger.warning(f"Could not generate confusion matrix plots: {e}")
         
-        # Log comprehensive metrics
+        # Log comprehensive metrics. _fmt handles missing metrics (prints 'N/A')
+        # instead of crashing on the string default with a float format code.
+        def _fmt(value, ndigits: int = 4) -> str:
+            return f"{value:.{ndigits}f}" if isinstance(value, (int, float)) and not pd.isna(value) else 'N/A'
+
         val_metrics = ad_results['validation'].get('metrics', {})
         prod_metrics = ad_results['production'].get('metrics', {})
         
         logger.info(f"\n{ad_results['method']} - Validation Set Metrics:")
-        logger.info(f"  Accuracy: {val_metrics.get('accuracy', 'N/A'):.4f}")
-        logger.info(f"  Precision: {val_metrics.get('precision', 'N/A'):.4f}")
-        logger.info(f"  Recall: {val_metrics.get('recall', 'N/A'):.4f}")
-        logger.info(f"  F1 Score: {val_metrics.get('f1', 'N/A'):.4f}")
-        logger.info(f"  ROC AUC: {val_metrics.get('roc_auc', 'N/A'):.4f}")
-        logger.info(f"  PR AUC: {val_metrics.get('pr_auc', 'N/A'):.4f}")
+        logger.info(f"  Accuracy: {_fmt(val_metrics.get('accuracy'))}")
+        logger.info(f"  Precision: {_fmt(val_metrics.get('precision'))}")
+        logger.info(f"  Recall: {_fmt(val_metrics.get('recall'))}")
+        logger.info(f"  F1 Score: {_fmt(val_metrics.get('f1'))}")
+        logger.info(f"  ROC AUC: {_fmt(val_metrics.get('roc_auc'))}")
+        logger.info(f"  PR AUC: {_fmt(val_metrics.get('pr_auc'))}")
         logger.info(f"  Confusion Matrix: {val_metrics.get('confusion_matrix', 'N/A')}")
         
         logger.info(f"\n{ad_results['method']} - Production Evaluation Metrics:")
-        logger.info(f"  Detection Rate: {prod_metrics.get('detection_rate', 'N/A'):.4f}")
-        logger.info(f"  False Positive Rate: {prod_metrics.get('false_positive_rate', 'N/A'):.4f}")
-        logger.info(f"  Precision @ 2%: {ad_results['production'].get('precision_at_target', 'N/A'):.4f}")
-        logger.info(f"  F1 @ 2%: {ad_results['production'].get('f1_at_target', 'N/A'):.4f}")
-        logger.info(f"  Accuracy @ 2%: {ad_results['production'].get('accuracy_at_target', 'N/A'):.4f}")
-        logger.info(f"  ROC AUC: {ad_results['production'].get('roc_auc', 'N/A'):.4f}")
-        logger.info(f"  PR AUC: {ad_results['production'].get('pr_auc', 'N/A'):.4f}")
+        logger.info(f"  Detection Rate: {_fmt(prod_metrics.get('detection_rate'))}")
+        logger.info(f"  False Positive Rate: {_fmt(prod_metrics.get('false_positive_rate'))}")
+        logger.info(f"  Precision @ 2%: {_fmt(ad_results['production'].get('precision_at_target'))}")
+        logger.info(f"  F1 @ 2%: {_fmt(ad_results['production'].get('f1_at_target'))}")
+        logger.info(f"  Accuracy @ 2%: {_fmt(ad_results['production'].get('accuracy_at_target'))}")
+        logger.info(f"  ROC AUC: {_fmt(ad_results['production'].get('roc_auc'))}")
+        logger.info(f"  PR AUC: {_fmt(ad_results['production'].get('pr_auc'))}")
         logger.info(f"  Confusion Matrix @ 2%: {ad_results['production'].get('confusion_matrix_at_target', 'N/A')}")
         
         results["anomaly_detection"] = ad_results
