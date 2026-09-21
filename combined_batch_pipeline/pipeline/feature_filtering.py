@@ -698,14 +698,17 @@ class FeatureFilter:
             dup_features = df.index[dup_mask].unique().tolist()
             
             logger.error(f"\n{'='*70}")
-            logger.error("ERROR: Found {len(dup_features)} DUPLICATE FEATURE NAMES (rows)")
-            logger.error("{'='*70}")
+            logger.error(f"ERROR: Found {len(dup_features)} DUPLICATE FEATURE NAMES (rows)")
+            logger.error(f"{'='*70}")
             logger.error("These are duplicate METABOLITE/feature identifiers, NOT duplicate samples.")
             logger.error("Averaging rows with the same name would destroy biological meaning!")
             logger.error(f"\nDuplicate feature names ({len(dup_features)} total):")
-            # Print all duplicate feature names for review
-            for dup_name in sorted(dup_features):
-                count = (df.index == dup_name).sum()
+            # Print all duplicate feature names for review.
+            # Sort/count by str() because the index can hold mixed types
+            # (e.g. NaN floats from unnamed features alongside strings).
+            counts = df.index.astype(str).value_counts()
+            for dup_name in sorted(dup_features, key=lambda x: str(x)):
+                count = int(counts.get(str(dup_name), 0))
                 logger.error(f"  '{dup_name}' appears {count}x")
             logger.error(f"\n{'='*70}")
             logger.error("ACTION REQUIRED: Review these duplicate feature names.")
