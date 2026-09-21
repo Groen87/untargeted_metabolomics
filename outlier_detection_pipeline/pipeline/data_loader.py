@@ -608,10 +608,18 @@ def _filter_to_smpdb_hmdb_features(
         min_name_length=min_name_length,
     )
     matched = feature_to_hmdb.dropna(subset=["hmdb_id"])
-    feature_hits: Set[str] = {
+    # HMDB-tagged features are ALWAYS kept: the trailing accession in the
+    # feature name signals a confident identification, so the feature must
+    # not be dropped just because its accession is not on a kept SMPDB pathway.
+    tagged_features: Set[str] = {
+        feat for feat, method in zip(matched["feature"], matched["match_method"])
+        if method == "hmdb_tag"
+    }
+    smpdb_hits: Set[str] = {
         feat for feat, acc in zip(matched["feature"], matched["hmdb_id"])
         if acc.upper() in smpdb_hmdb_ids
     }
+    feature_hits: Set[str] = smpdb_hits | tagged_features
 
     # Report match-method breakdown for the kept features (same diagnostics
     # style as the pathway_pipeline logging).
@@ -620,10 +628,12 @@ def _filter_to_smpdb_hmdb_features(
 
     kept_columns = [col for col in features.columns if col in feature_hits]
     n_removed = len(features.columns) - len(kept_columns)
+    n_tagged_only = len(tagged_features - smpdb_hits)
     logger.info(
         f"Filtered to SMPDB pathway features: {n_removed} features removed, "
         f"{len(kept_columns)} features retained "
-        f"(match methods among retained: {method_counts})"
+        f"(match methods among retained: {method_counts}; {n_tagged_only} "
+        f"HMDB-tagged features kept despite no SMPDB pathway)"
     )
 
     return features[kept_columns]
