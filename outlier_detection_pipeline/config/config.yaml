@@ -48,6 +48,49 @@ exclude_metabolites:
 #   - "Glucose"
 #   - "HMDB0000122"
 
+# Medication exclusion (optional; same exact, case-insensitive matching as
+# exclude_metabolites, kept as a separate list so drugs and endogenous
+# metabolites can be curated independently). Enter the names exactly as they
+# appear in the input CSV columns. Leave empty/null to disable.
+exclude_medications:
+  # Drug parents
+  - "Sulfamethoxazole.HMDB0015150"
+  - "Lidocaine.HMDB0014426"
+  - "Metronidazole.HMDB0015052"
+  - "Lamotrigine.HMDB0014695"
+  - "Carbamazepine.HMDB0014704"
+  - "Nitisinone.HMDB0014492"
+  - "Midazolam.HMDB0014821"
+  - "Mycophenolic acid.HMDB0015159"
+  - "Trimethoprim.HMDB0014583"
+  - "Acetaminophen.HMDB0001859"
+  - "Metoprolol.HMDB0001932"
+  - "Etoricoxib.HMDB0015565"
+  - "Diazoxide.HMDB0015251"
+  - "Aciclovir.HMDB0014925"
+  - "Diazepam.HMDB0014967"
+  - "Meloxicam.HMDB0014952"
+  - "Amitriptyline.HMDB0014466"
+  - "Baclofen.HMDB0014327"
+  - "Omeprazol.HMDB0001913"
+  - "Dexamethasone.HMDB0015364"
+  - "Labetalol.HMDB0014736"
+  - "Sertraline.HMDB0005010"
+  - "Ceftriaxone.HMDB0015343"
+  - "Amoxicillin.HMDB0015193"
+  - "Fluconazole.HMDB0014342"
+  - "Levetiracetam.HMDB0015333"
+  - "Vigabatrin.HMDB0015212"
+  - "Pregabalin.HMDB0014375"
+  - "Clobazam.HMDB0014493"
+  - "Furosemide.HMDB0001933"
+  - "Valproic acid.HMDB0001877"
+  - "Ticagrelor.HMDB0015702"
+  # Drug metabolites
+  - "norlidocaine.HMDB0060656"
+  - "norclobazam.HMDB0060970"
+  - "Salicylic acid.HMDB0001895"  # aspirin metabolite
+
 # Substring-based feature exclusion (negative deny-list; complements the
 # endogenous keep-list). Any feature column whose name contains one of these
 # substrings (case-insensitive) is dropped. Use to remove features that

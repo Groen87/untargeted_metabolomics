@@ -2034,6 +2034,7 @@ def run_pipeline(
     use_hmdb_cache = config.get('use_hmdb_cache', True)
     endogenous_metabolites_file = config.get('endogenous_metabolites_file', None)
     exclude_metabolites = config.get_list('exclude_metabolites', [])
+    exclude_medications = config.get_list('exclude_medications', [])
     exclude_substrings = config.get_list('exclude_substrings', [])
     filter_to_smpdb_hmdb = config.get('filter_to_smpdb_hmdb', False)
     smpdb_pathways_file = config.get('smpdb_pathways_file', None)
@@ -2048,6 +2049,7 @@ def run_pipeline(
         use_hmdb_cache=use_hmdb_cache,
         endogenous_metabolites_file=endogenous_metabolites_file,
         exclude_metabolites=exclude_metabolites,
+        exclude_medications=exclude_medications,
         classification_scheme=config.get('classification_scheme', 'default'),
         exclude_substrings=exclude_substrings,
         smpdb_pathways_file=smpdb_pathways_file,

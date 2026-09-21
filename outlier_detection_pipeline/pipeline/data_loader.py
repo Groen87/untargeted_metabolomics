@@ -773,6 +773,7 @@ def load_data(
     filter_to_endogenous: bool = False,
     use_hmdb_cache: bool = True,
     exclude_metabolites: Optional[List[str]] = None,
+    exclude_medications: Optional[List[str]] = None,
     classification_scheme: str = "default",
     exclude_substrings: Optional[List[str]] = None,
     smpdb_pathways_file: Optional[str] = None,
@@ -794,6 +795,9 @@ def load_data(
         use_hmdb_cache: Whether to use cached HMDB data if available
         exclude_metabolites: Optional list of metabolite/feature names to drop
             from the analysis (exact, case-insensitive match)
+        exclude_medications: Optional list of medication/drug feature names to
+            drop (same matching as exclude_metabolites; kept as a separate key
+            so drugs and endogenous metabolites can be curated independently)
         classification_scheme: How to build the binary label from the raw
             Classification column. 'default' keeps the legacy Oordeel-based
             cleaning (drop ambiguous 2/3 with Oordeel=0; reclassify 0 with
@@ -960,6 +964,9 @@ def load_data(
     # Exclude user-specified metabolite features (exact, case-insensitive match)
     if exclude_metabolites:
         features = _exclude_metabolites(features, exclude_metabolites)
+    # Exclude medication/drug features (same exact match, separate list)
+    if exclude_medications:
+        features = _exclude_metabolites(features, exclude_medications)
 
     # Exclude feature columns whose names contain non-endogenous atom/group
     # substrings (e.g. 'bromo', 'iodo', 'chloro', 'fluoro', 'silyl', 'cyano',
