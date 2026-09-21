@@ -571,52 +571,99 @@ def run_pipeline(input_file: str,
             feature_to_pathway['feature'].isin(zscores.columns)
         ]
         
-        if enhanced is not None:
-            # Use the enhanced three-statistic pathway evidence instead of
-            # the classic absolute Stouffer Z. Convert the combined p-value
-            # per (sample, pathway) into a deviation score: -log10(p), where
-            # 0 means no deviation (matching the fillna(0) semantics of the
-            # anomaly detection pivot).
-            eps = 1e-300
-            pathway_stats_all = enhanced['pathway_stats'][[
-                'sample_id', 'pathway_name', 'p_combined'
-            ]].dropna(subset=['p_combined']).copy()
-            pathway_stats_all['z_stouffer_abs'] = -np.log10(
-                pathway_stats_all['p_combined'].clip(lower=eps)
+        use_fused = bool(config.get("use_fused_anomaly_detection", False))
+        
+        if use_fused:
+            # Fused multi-view anomaly detection: one detector per feature
+            # view (per-pathway z-summaries + metabolite-level z-scores),
+            # each calibrated against the training-normal score
+            # distribution, combined with max() before threshold search.
+            from pathway_pipeline.pipeline.anomaly_fusion import (
+                build_pathway_zsummary_features,
+                run_fused_anomaly_detection,
             )
-            logger.info(
-                f"Using enhanced 3-statistic evidence for anomaly detection: "
-                f"{pathway_stats_all['pathway_name'].nunique()} pathways, "
-                f"{pathway_stats_all['sample_id'].nunique()} samples"
+            
+            zsummary_view = build_pathway_zsummary_features(
+                zscores=zscores,
+                feature_to_pathway=feature_to_pathway_all,
+                min_pathway_size=min_pathway_size,
+                topk=int(config.get("enhanced_topk_k", 3)),
+            )
+            metabolite_view = zscores.fillna(0.0)
+            
+            feature_views = {"pathway_zsummary": zsummary_view}
+            if bool(config.get("fused_include_metabolite_view", True)):
+                feature_views["metabolite_z"] = metabolite_view
+            
+            view_pca = {}
+            if bool(config.get("anomaly_use_pca", False)):
+                view_pca["pathway_zsummary"] = config.get("anomaly_pca_components", 0.95)
+                view_pca["metabolite_z"] = config.get("anomaly_pca_components", 0.95)
+            
+            ad_results = run_fused_anomaly_detection(
+                feature_views=feature_views,
+                normal_sample_ids=normal_sample_ids,
+                imd_sample_ids=imd_sample_ids,
+                gray_sample_ids=[],
+                scorer_name=config.get("anomaly_scorer", "lof"),
+                contamination=float(config.get("anomaly_contamination", 0.02)),
+                n_neighbors=int(config.get("anomaly_n_neighbors", 20)),
+                n_estimators=int(config.get("anomaly_n_estimators", 100)),
+                random_state=int(config.get("anomaly_random_state", 42)),
+                percentile=float(config.get("anomaly_percentile", 95.0)),
+                train_ratio=float(config.get("anomaly_train_ratio", 0.8)),
+                optimization_metric=config.get("anomaly_optimization_metric", "f1"),
+                max_contamination=float(config.get("anomaly_max_contamination", 0.05)),
+                min_detection=float(config.get("anomaly_min_detection", 0.80)),
+                view_pca=view_pca,
             )
         else:
-            # Classic: compute pathway stats for normals + IMDs only
-            pathway_stats_all = compute_pathway_stouffers_z(
-                features_filtered,
-                feature_to_pathway_all,
-                min_pathway_size=min_pathway_size
+            if enhanced is not None:
+                # Use the enhanced three-statistic pathway evidence instead of
+                # the classic absolute Stouffer Z. Convert the combined p-value
+                # per (sample, pathway) into a deviation score: -log10(p), where
+                # 0 means no deviation (matching the fillna(0) semantics of the
+                # anomaly detection pivot).
+                eps = 1e-300
+                pathway_stats_all = enhanced['pathway_stats'][[
+                    'sample_id', 'pathway_name', 'p_combined'
+                ]].dropna(subset=['p_combined']).copy()
+                pathway_stats_all['z_stouffer_abs'] = -np.log10(
+                    pathway_stats_all['p_combined'].clip(lower=eps)
+                )
+                logger.info(
+                    f"Using enhanced 3-statistic evidence for anomaly detection: "
+                    f"{pathway_stats_all['pathway_name'].nunique()} pathways, "
+                    f"{pathway_stats_all['sample_id'].nunique()} samples"
+                )
+            else:
+                # Classic: compute pathway stats for normals + IMDs only
+                pathway_stats_all = compute_pathway_stouffers_z(
+                    features_filtered,
+                    feature_to_pathway_all,
+                    min_pathway_size=min_pathway_size
+                )
+                logger.info(f"Computed pathway Stouffer's Z for {pathway_stats_all['sample_id'].nunique()} samples")
+            
+            # Run anomaly detection with proper ML methodology
+            ad_results = run_anomaly_detection(
+                pathway_stats=pathway_stats_all,
+                normal_sample_ids=normal_sample_ids,
+                imd_sample_ids=imd_sample_ids,
+                gray_sample_ids=[],  # Empty list - no gray samples in this analysis
+                scorer_name=config.get("anomaly_scorer", "lof"),
+                contamination=float(config.get("anomaly_contamination", 0.02)),
+                n_neighbors=int(config.get("anomaly_n_neighbors", 20)),
+                n_estimators=int(config.get("anomaly_n_estimators", 100)),
+                random_state=int(config.get("anomaly_random_state", 42)),
+                percentile=float(config.get("anomaly_percentile", 95.0)),  # Kept for backward compatibility
+                train_ratio=float(config.get("anomaly_train_ratio", 0.8)),
+                optimization_metric=config.get("anomaly_optimization_metric", "f1"),
+                max_contamination=float(config.get("anomaly_max_contamination", 0.05)),
+                min_detection=float(config.get("anomaly_min_detection", 0.80)),
+                use_pca=bool(config.get("anomaly_use_pca", False)),
+                pca_components=config.get("anomaly_pca_components", 0.95),
             )
-            logger.info(f"Computed pathway Stouffer's Z for {pathway_stats_all['sample_id'].nunique()} samples")
-        
-        # Run anomaly detection with proper ML methodology
-        ad_results = run_anomaly_detection(
-            pathway_stats=pathway_stats_all,
-            normal_sample_ids=normal_sample_ids,
-            imd_sample_ids=imd_sample_ids,
-            gray_sample_ids=[],  # Empty list - no gray samples in this analysis
-            scorer_name=config.get("anomaly_scorer", "lof"),
-            contamination=float(config.get("anomaly_contamination", 0.02)),
-            n_neighbors=int(config.get("anomaly_n_neighbors", 20)),
-            n_estimators=int(config.get("anomaly_n_estimators", 100)),
-            random_state=int(config.get("anomaly_random_state", 42)),
-            percentile=float(config.get("anomaly_percentile", 95.0)),  # Kept for backward compatibility
-            train_ratio=float(config.get("anomaly_train_ratio", 0.8)),
-            optimization_metric=config.get("anomaly_optimization_metric", "f1"),
-            max_contamination=float(config.get("anomaly_max_contamination", 0.05)),
-            min_detection=float(config.get("anomaly_min_detection", 0.80)),
-            use_pca=bool(config.get("anomaly_use_pca", False)),
-            pca_components=config.get("anomaly_pca_components", 0.95),
-        )
         
         # Save anomaly detection results
         # Save validation and production results

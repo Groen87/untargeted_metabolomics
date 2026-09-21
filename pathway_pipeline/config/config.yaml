@@ -118,6 +118,22 @@ anomaly_use_pca: false
 # (components chosen automatically, e.g. 0.95); an int = exact number.
 anomaly_pca_components: 0.95
 
+# Fused multi-view anomaly detection (NEW)
+# When enabled, trains one detector per feature view and combines the
+# control-calibrated scores with max() before threshold optimization:
+#   - pathway_zsummary: per-pathway z-score summaries (signed mean z, mean |z|,
+#     max |z|, top-k |z|) -- preserves magnitude/direction instead of p-values
+#   - metabolite_z: metabolite-level z-scores (same basis the enhanced
+#     flagging uses)
+# Each view is scaled (and optionally PCA-reduced, see anomaly_use_pca) on
+# TRAINING NORMALS only; per-view raw scores are converted to z-scores using
+# the training-normal score distribution so views are comparable, then fused
+# with max(). This adds detections among samples the pathway view misses
+# while the control calibration keeps the false-positive rate in check.
+use_fused_anomaly_detection: true
+# Include the metabolite-level z-score view (set false for pathway-only)
+fused_include_metabolite_view: true
+
 # Threshold optimization (NEW: threshold is now optimized on validation set)
 # Optimization metric: 'f1', 'precision', 'recall', or 'youden'
 anomaly_optimization_metric: f1
