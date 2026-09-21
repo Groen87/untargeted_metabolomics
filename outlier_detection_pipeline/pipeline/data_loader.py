@@ -964,9 +964,6 @@ def load_data(
     # Exclude user-specified metabolite features (exact, case-insensitive match)
     if exclude_metabolites:
         features = _exclude_metabolites(features, exclude_metabolites)
-    # Exclude medication/drug features (same exact match, separate list)
-    if exclude_medications:
-        features = _exclude_metabolites(features, exclude_medications)
 
     # Exclude feature columns whose names contain non-endogenous atom/group
     # substrings (e.g. 'bromo', 'iodo', 'chloro', 'fluoro', 'silyl', 'cyano',
@@ -1005,6 +1002,12 @@ def load_data(
         logger.info(
             f"HMDB-tagged features ({len(tagged)}):\n" + "\n".join(tagged)
         )
+
+    # Exclude medication/drug features AFTER the SMPDB/HMDB-tag keep-filter,
+    # so medications are removed from exactly the set the model will train on.
+    # Same exact, case-insensitive match as exclude_metabolites.
+    if exclude_medications:
+        features = _exclude_metabolites(features, exclude_medications)
     
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
