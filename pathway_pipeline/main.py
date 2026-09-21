@@ -550,6 +550,8 @@ def run_pipeline(input_file: str,
             optimization_metric=config.get("anomaly_optimization_metric", "f1"),
             max_contamination=float(config.get("anomaly_max_contamination", 0.05)),
             min_detection=float(config.get("anomaly_min_detection", 0.80)),
+            use_pca=bool(config.get("anomaly_use_pca", False)),
+            pca_components=config.get("anomaly_pca_components", 0.95),
         )
         
         # Save anomaly detection results

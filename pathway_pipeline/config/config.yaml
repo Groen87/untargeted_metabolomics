@@ -73,6 +73,16 @@ anomaly_percentile: 99.0       # Percentile for thresholding (kept for backward 
 anomaly_random_state: 42       # Random seed for reproducibility
 anomaly_train_ratio: 0.8      # Ratio of normals to use for training (default 80/20 split)
 
+# Optional PCA dimensionality reduction before the anomaly detector.
+# PCA is fit on TRAINING NORMALS ONLY (after scaling) and the same projection
+# is applied to validation/production samples -- no leakage from held-out data.
+# With ~300 pathway features and few training normals, PCA can stabilize
+# LOF/Mahalanobis; keep it off when you have plenty of samples per pathway.
+anomaly_use_pca: false
+# Number of components: a float in (0, 1] = fraction of variance to preserve
+# (components chosen automatically, e.g. 0.95); an int = exact number.
+anomaly_pca_components: 0.95
+
 # Threshold optimization (NEW: threshold is now optimized on validation set)
 # Optimization metric: 'f1', 'precision', 'recall', or 'youden'
 anomaly_optimization_metric: f1

@@ -620,6 +620,8 @@ def run_anomaly_detection(
     optimization_metric: str = "f1",
     max_contamination: float = 0.05,
     min_detection: float = 0.80,
+    use_pca: bool = False,
+    pca_components: float = 0.95,
 ) -> Dict:
     """Run anomaly detection on pathway Stouffer's Z scores with proper ML methodology.
     
@@ -641,7 +643,12 @@ def run_anomaly_detection(
         random_state: Random seed
         percentile: Percentile for thresholding (higher = more strict)
         train_ratio: Ratio of normals to use for training (default 0.8)
-        
+        use_pca: Whether to reduce dimensionality with PCA (fit on training
+            normals only, applied to all downstream sets -- no leakage)
+        pca_components: Number of PCA components. If a float in (0, 1], it is
+            the fraction of variance to preserve (components are chosen
+            automatically); if an int, the exact number of components.
+    
     Returns:
         Dict with anomaly scores, decisions, and validation metrics
     """
@@ -694,6 +701,21 @@ def run_anomaly_detection(
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     
+    # Optional PCA dimensionality reduction. Fit on TRAINING NORMALS ONLY and
+    # apply the same projection to validation/production sets, so no
+    # information from test samples leaks into the feature space.
+    pca = None
+    if use_pca:
+        from sklearn.decomposition import PCA as _PCA
+        pca = _PCA(n_components=pca_components, random_state=random_state)
+        X_train_scaled = pca.fit_transform(X_train_scaled)
+        logger.info(
+            f"PCA reduced {pivot.shape[1]} pathway features to "
+            f"{pca.n_components_} components "
+            f"(n_components setting: {pca_components}, "
+            f"explained variance: {float(pca.explained_variance_ratio_.sum()):.4f})"
+        )
+    
     # Train anomaly detector
     if scorer_name == "lof":
         from sklearn.neighbors import LocalOutlierFactor
@@ -741,6 +763,11 @@ def run_anomaly_detection(
     X_test_normals_scaled = scaler.transform(X_test_normals)
     X_imds = pivot.loc[imd_sample_ids_filtered]
     X_imds_scaled = scaler.transform(X_imds)
+    
+    # Apply the same PCA projection (if enabled) to the held-out sets.
+    if pca is not None:
+        X_test_normals_scaled = pca.transform(X_test_normals_scaled)
+        X_imds_scaled = pca.transform(X_imds_scaled)
     
     # Combine test normals and IMDs
     X_val = np.vstack([X_test_normals_scaled, X_imds_scaled])
@@ -863,6 +890,9 @@ def run_anomaly_detection(
     if len(X_prod_normals) > 0 and len(X_prod_imds) > 0:
         X_prod_normals_scaled = scaler.transform(X_prod_normals)
         X_prod_imds_scaled = scaler.transform(X_prod_imds)
+        if pca is not None:
+            X_prod_normals_scaled = pca.transform(X_prod_normals_scaled)
+            X_prod_imds_scaled = pca.transform(X_prod_imds_scaled)
         
         # Score ALL production samples
         if scorer_name == "lof":
