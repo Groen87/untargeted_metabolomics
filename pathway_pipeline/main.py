@@ -591,9 +591,16 @@ def run_pipeline(input_file: str,
             )
             metabolite_view = zscores.fillna(0.0)
             
-            feature_views = {"pathway_zsummary": zsummary_view}
+            feature_views = {}
+            if bool(config.get("fused_include_pathway_view", True)):
+                feature_views["pathway_zsummary"] = zsummary_view
             if bool(config.get("fused_include_metabolite_view", True)):
                 feature_views["metabolite_z"] = metabolite_view
+            if not feature_views:
+                raise ValueError(
+                    "Both feature views disabled (fused_include_pathway_view and "
+                    "fused_include_metabolite_view are false); enable at least one"
+                )
             
             # Per-view PCA: default none. Recommended for the high-dimensional
             # metabolite view (distances concentrate in high dimensions, which

@@ -131,6 +131,9 @@ anomaly_pca_components: 0.95
 # with max(). This adds detections among samples the pathway view misses
 # while the control calibration keeps the false-positive rate in check.
 use_fused_anomaly_detection: true
+# Include the per-pathway z-summary view (set false for metabolite-only; the
+# metabolite view had the higher ROC-AUC in practice)
+fused_include_pathway_view: true
 # Include the metabolite-level z-score view (set false for pathway-only)
 fused_include_metabolite_view: true
 
