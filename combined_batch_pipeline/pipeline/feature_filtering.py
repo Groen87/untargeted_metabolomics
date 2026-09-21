@@ -688,6 +688,29 @@ class FeatureFilter:
         self._hmdb_features_cache = None
         
         # ========================================================================
+        # Handle EMPTY feature names FIRST: give every unnamed feature a unique
+        # name (unknown_1, unknown_2, ...). Unnamed features are distinct
+        # chromatographic peaks -- they must NEVER be merged/summed together
+        # under a shared empty name. Numbering preserves their uniqueness.
+        # ========================================================================
+        new_index = df.index.copy()
+        if not isinstance(new_index, pd.MultiIndex):
+            empty_mask = pd.isna(new_index) | (new_index.astype(str).str.strip() == '') \
+                | (new_index.astype(str).str.strip().str.lower().isin(['nan', 'none', 'null']))
+            n_empty = int(empty_mask.sum())
+            if n_empty > 0:
+                n_digits = len(str(n_empty))
+                index_values = list(df.index)
+                unknown_counter = 1
+                for pos in range(len(index_values)):
+                    if empty_mask[pos]:
+                        index_values[pos] = f"unknown_{unknown_counter:0{n_digits}d}"
+                        unknown_counter += 1
+                df = df.set_axis(pd.Index(index_values, name=df.index.name))
+                logger.info(f"Renamed {n_empty} unnamed features to unique names "
+                            f"(unknown_1 .. unknown_{n_empty}); they will NOT be merged")
+        
+        # ========================================================================
         # Handle duplicate feature names (rows) BEFORE filtering.
         # In metabolomics data: rows = features/metabolites, columns = samples.
         # Features sharing the same name are most likely ROTAMERS of the same
@@ -696,6 +719,8 @@ class FeatureFilter:
         # reintegrate a compound split into multiple peaks -- NOT averaged
         # (averaging would halve the signal) and NOT dropped (keeping only the
         # first peak would discard part of the compound's true area).
+        # Empty names were already renamed to unique unknown_N above, so they
+        # never take part in this merge.
         # ========================================================================
         if df.index.has_duplicates:
             dup_mask = df.index.duplicated(keep=False)  # All duplicates including first
@@ -715,14 +740,6 @@ class FeatureFilter:
             logger.info(f"{'='*70}\n")
 
             # Sum rows sharing the same feature name (rotamer areas add up).
-            # NaN-named rows cannot be grouped by identity -- groupby treats
-            # each NaN as a distinct key and drops them, so keep those rows
-            # unchanged alongside the summed duplicates.
-            nan_mask = df.index.isna()
-            if nan_mask.any():
-                logger.warning(f"  {int(nan_mask.sum())} rows have a NaN/unnamed index; "
-                               f"these are kept as-is and NOT summed together")
-
             dup_names_set = set(dup_features)
             named_dup_mask = df.index.isin(dup_names_set)
             named_dup = df[named_dup_mask]
