@@ -7,8 +7,8 @@ onto the merged data by sample identifier, and writes
 ``data/merged_data_with_classification.csv``.
 
 The outlier file's ``Monster`` column is matched against the merged file's
-``Sample`` column. The resulting ``Oordeel targeted`` and ``Classification``
-columns are placed immediately after the ``Sample`` column.
+``Sample`` column. The resulting ``Oordeel targeted``, ``Classification`` and
+``Non-treated`` columns are placed immediately after the ``Sample`` column.
 
 Usage:
     python combined_batch_pipeline/pipeline/add_classification.py
@@ -77,7 +77,7 @@ def add_classification(
     merged_df = _read_csv(Path(_resolve(merged_file)))
 
     result = merged_df.merge(
-        outlier_df[["Monster", "Oordeel targeted", "Classification"]],
+        outlier_df[["Monster", "Oordeel targeted", "Classification", "Non-treated"]],
         left_on="Sample",
         right_on="Monster",
         how="left",
@@ -88,11 +88,12 @@ def add_classification(
     cols = list(result.columns)
     new_cols = []
     for col in cols:
-        if col not in ("Oordeel targeted", "Classification"):
+        if col not in ("Oordeel targeted", "Classification", "Non-treated"):
             new_cols.append(col)
             if col == "Sample":
                 new_cols.append("Oordeel targeted")
                 new_cols.append("Classification")
+                new_cols.append("Non-treated")
 
     result = result[new_cols]
 
@@ -111,7 +112,7 @@ def main() -> int:
     parser.add_argument(
         "--outlier-file",
         default="data/data outlier model.csv",
-        help="CSV with classification info (columns: Monster, Oordeel targeted, Classification).",
+        help="CSV with classification info (columns: Monster, Oordeel targeted, Classification, Non-treated).",
     )
     parser.add_argument(
         "--merged-file",
