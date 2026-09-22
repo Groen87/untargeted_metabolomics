@@ -37,6 +37,7 @@ from sklearn.model_selection import StratifiedKFold
 
 from outlier_detection_pipeline.config.config import Config
 from outlier_detection_pipeline.pipeline.data_loader import load_data, split_data, get_class_distribution
+from outlier_detection_pipeline.pipeline.roles import lab_protocol_role_masks
 from outlier_detection_pipeline.pipeline.model import ExtendedIsolationForestModel
 from outlier_detection_pipeline.pipeline.pca import SparsePCAWrapper
 from outlier_detection_pipeline.pipeline.evaluation import (
@@ -621,10 +622,11 @@ def _save_false_negatives_csv(
 
     Roles follow the lab protocol (matching the per-group breakdown and the
     Z-score analysis): a sample is a false negative only if it is a TRUE
-    OUTLIER (raw Class 1 AND Oordeel 1) that was NOT flagged, and a false
-    positive only if it is a TRUE INLIER (raw Class 0 AND Oordeel 0) that WAS
-    flagged. Samples with NaN Oordeel and every other (Class, Oordeel)
-    combination are gray and excluded.
+    OUTLIER (raw Class 1 AND Oordeel 1 AND Non-treated 1, i.e. a non-treated
+    IMD) that was NOT flagged, and a false positive only if it is a TRUE
+    INLIER (raw Class 0 AND Oordeel 0) that WAS flagged. The treated IMD group
+    (Class 1 AND Oordeel 1 AND Non-treated 0/NaN), samples with NaN Oordeel and
+    every other (Class, Oordeel) combination are gray and excluded.
 
     When `group_map` is not available (e.g. non-confident-normals schemes
     with no Oordeel/Classification metadata), falls back to the binary label
@@ -649,19 +651,20 @@ def _save_false_negatives_csv(
     # silently drop every match.
     if group_map is not None and len(group_map) > 0:
         gm = group_map.copy()
-        gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
-        gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
-        gm = gm.dropna(subset=['oordeel'])
-        true_outlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
-        true_inlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist()}
+        is_true_outlier, is_true_inlier = lab_protocol_role_masks(gm)
+        true_outlier_ids = {str(i) for i in gm[is_true_outlier].index.tolist()}
+        true_inlier_ids = {str(i) for i in gm[is_true_inlier].index.tolist()}
         rc_by_id = {str(i): v for i, v in gm['raw_classification'].to_dict().items()}
         oo_by_id = {str(i): v for i, v in gm['oordeel'].to_dict().items()}
+        nt_by_id = ({str(i): v for i, v in gm['non_treated'].to_dict().items()}
+                    if 'non_treated' in gm.columns else {})
         use_roles = True
     else:
         true_outlier_ids = set()
         true_inlier_ids = set()
         rc_by_id = {}
         oo_by_id = {}
+        nt_by_id = {}
         use_roles = False
 
     fn_rows = []
@@ -680,17 +683,20 @@ def _save_false_negatives_csv(
         if use_roles:
             row['raw_classification'] = rc_by_id.get(sid_s)
             row['oordeel'] = oo_by_id.get(sid_s)
+            if nt_by_id:
+                row['non_treated'] = nt_by_id.get(sid_s)
             if sid_s in true_outlier_ids and flagged == 0:
                 row['role'] = 'false_negative'
                 fn_rows.append(row)
             elif sid_s in true_inlier_ids and flagged == 1:
                 row['role'] = 'false_positive'
                 fp_rows.append(row)
-            elif flagged == 1:
-                # Neither a true outlier (1,1) nor a true inlier (0,0) but
+            elif flagged == 1 and sid_s not in true_outlier_ids:
+                # Neither a true outlier nor a true inlier but
                 # flagged by the model: a gray_investigation sample the model
-                # scored as an outlier. (True inliers that were flagged are
-                # already handled above, so this is genuinely the gray pool.)
+                # scored as an outlier. (True outliers that were flagged are
+                # TPs, and true inliers that were flagged are already handled
+                # above, so this is genuinely the gray pool.)
                 row['role'] = 'gray_flagged'
                 gray_rows.append(row)
         else:
@@ -861,9 +867,10 @@ def _compute_combined_guardrail_metrics(
     The combined flag for a test sample is 1 if the model flagged it
     (``flagged`` in per_sample_results) OR the guardrail flagged it (its id is
     a key in ``guardrail_flags``). Headline totals are restricted to the clean
-    lab-protocol roles (true outlier = Class 1 & Oordeel 1; true inlier =
-    Class 0 & Oordeel 0) when a group_map is supplied, exactly as the model-
-    only metrics are. Returns a dict with the same keys the sweep consumes.
+    lab-protocol roles (true outlier = Class 1 & Oordeel 1 & Non-treated 1;
+    true inlier = Class 0 & Oordeel 0) when a group_map is supplied, exactly
+    as the model-only metrics are. Returns a dict with the same keys the
+    sweep consumes.
     """
     if not per_sample_results:
         return {}
@@ -884,14 +891,13 @@ def _compute_combined_guardrail_metrics(
         })
     df = pd.DataFrame(rows)
 
-    # Clean roles: true outlier = (1,1), true inlier = (0,0); gray excluded.
+    # Clean roles: true outlier = Class 1 & Oordeel 1 & Non-treated 1,
+    # true inlier = Class 0 & Oordeel 0; gray excluded.
     if group_map is not None and len(group_map) > 0:
         gm = group_map.copy()
-        gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
-        gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
-        gm = gm.dropna(subset=['oordeel'])
-        to_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
-        tio_ids = {str(i) for i in gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist()}
+        is_true_outlier, is_true_inlier = lab_protocol_role_masks(gm)
+        to_ids = {str(i) for i in gm[is_true_outlier].index.tolist()}
+        tio_ids = {str(i) for i in gm[is_true_inlier].index.tolist()}
         df['sid_s'] = df['sample_id'].astype(str)
         is_true_outlier = df['sid_s'].isin(to_ids)
         is_true_inlier = df['sid_s'].isin(tio_ids)
@@ -966,8 +972,9 @@ def _plot_fn_fp_zscore_analysis(
     The role of each sample (false_negative / false_positive / gray) is
     determined solely by which CSV it was listed in; the CSVs themselves are
     produced by ``_save_false_negatives_csv`` using the lab-protocol role
-    definitions (true_outlier = Class 1 & Oordeel 1 unflagged; true_inlier =
-    Class 0 & Oordeel 0 flagged; gray = every other combination flagged as an
+    definitions (true_outlier = Class 1 & Oordeel 1 & Non-treated 1 unflagged;
+    true_inlier = Class 0 & Oordeel 0 flagged; gray = every other combination
+    flagged as an
     outlier). This avoids re-deriving the roles here and guarantees the plots
     match the CSVs exactly.
 
@@ -1126,19 +1133,22 @@ def _per_group_breakdown(
     on confident normals.
 
     Ground-truth definition (lab protocol):
-      - True outlier  = raw Classification 1 (IMD) AND Oordeel targeted 1.
-        A flagged sample in this group is a TP.
-      - True inlier   = raw Class 0 AND Oordeel 0. A flagged sample here is
-        a FP.
-      - Every other (Class, Oordeel) combination is a gray area: reported
-        as its own group but NOT counted in the TP/FN totals. Samples with
-        a NaN Oordeel targeted are dropped entirely before the breakdown.
+      - True outlier  = raw Classification 1 (IMD) AND Oordeel targeted 1
+        AND Non-treated 1 (a non-treated IMD). A flagged sample in this
+        group is a TP.
+      - True inlier   = raw Class 0 AND Oordeel 0 (any Non-treated). A
+        flagged sample here is a FP.
+      - Every other (Class, Oordeel, Non-treated) combination is a gray
+        area -- including the treated IMD group (Class 1 AND Oordeel 1 AND
+        Non-treated 0/NaN) -- reported as its own group but NOT counted in
+        the TP/FN totals. Samples with a NaN Oordeel targeted are dropped
+        entirely before the breakdown.
 
     Args:
         per_sample_results: rows with sample_id, true_label (binary), score, flagged
         anomaly_threshold: the calibrated absolute score cutoff used
         group_map: DataFrame indexed by sample_id with columns
-            'raw_classification' and 'oordeel'
+            'raw_classification', 'oordeel' and (optionally) 'non_treated'
         target_contamination: assumed deployment prevalence (e.g. 0.02)
         output_dir: where to save the per-group CSV/log
         label: optional prefix for the saved filename
@@ -1153,9 +1163,15 @@ def _per_group_breakdown(
     if 'sample_id' not in rows.columns:
         return None
     rows = rows.set_index('sample_id')
-    merged = rows.join(group_map[['raw_classification', 'oordeel']], how='left')
+    gm_cols = [c for c in ('raw_classification', 'oordeel', 'non_treated')
+               if c in group_map.columns]
+    merged = rows.join(group_map[gm_cols], how='left')
     merged['raw_classification'] = pd.to_numeric(merged['raw_classification'], errors='coerce')
     merged['oordeel'] = pd.to_numeric(merged['oordeel'], errors='coerce')
+    if 'non_treated' in merged.columns:
+        merged['non_treated'] = pd.to_numeric(merged['non_treated'], errors='coerce')
+    else:
+        merged['non_treated'] = np.nan
 
     # Drop samples with a NaN Oordeel targeted: their role is undefined, so
     # they cannot be scored against ground truth.
@@ -1167,40 +1183,41 @@ def _per_group_breakdown(
         merged = merged[~nan_oordeel_mask]
 
     # Ground-truth roles (lab protocol):
-    #   true_outlier  = raw Class 1 AND Oordeel 1
-    #   true_inlier   = raw Class 0 AND Oordeel 0
-    #   gray_investigation = every other combination
-    rc = merged['raw_classification']
-    oo = merged['oordeel']
-    is_true_outlier = ((rc == 1) & (oo == 1)).astype(int)
-    is_true_inlier = ((rc == 0) & (oo == 0)).astype(int)
-    merged['is_true_outlier'] = is_true_outlier
-    merged['is_true_inlier'] = is_true_inlier
+    #   true_outlier  = raw Class 1 AND Oordeel 1 AND Non-treated 1
+    #                   (non-treated IMD)
+    #   true_inlier   = raw Class 0 AND Oordeel 0 (any Non-treated)
+    #   gray_investigation = every other combination, including the treated
+    #                   IMD group (Class 1 & Oordeel 1 & Non-treated 0/NaN)
+    to_mask, tio_mask = lab_protocol_role_masks(merged)
+    merged['is_true_outlier'] = to_mask.astype(int)
+    merged['is_true_inlier'] = tio_mask.astype(int)
     merged['role'] = np.select(
-        [is_true_outlier.astype(bool), is_true_inlier.astype(bool)],
+        [to_mask, tio_mask],
         ['true_outlier', 'true_inlier'],
         default='gray_investigation',
     )
 
     p = float(target_contamination)
     records = []
-    for (rcv, oov), grp in merged.groupby(['raw_classification', 'oordeel'], dropna=False):
+    for (rcv, oov, ntv), grp in merged.groupby(
+            ['raw_classification', 'oordeel', 'non_treated'], dropna=False):
         n = len(grp)
         n_flagged = int(grp['flagged'].sum())
         flag_rate = (n_flagged / n) if n else float('nan')
-        role = ('true_outlier' if (rcv == 1 and oov == 1)
-                else 'true_inlier' if (rcv == 0 and oov == 0)
-                else 'gray_investigation')
+        role = str(grp['role'].iloc[0])
         records.append({
             'raw_classification': rcv,
             'oordeel': oov,
+            'non_treated': ntv,
             'role': role,
             'n_samples': n,
             'n_flagged': n_flagged,
             'flag_rate': flag_rate,
         })
 
-    breakdown = pd.DataFrame(records).sort_values(['raw_classification', 'oordeel']).reset_index(drop=True)
+    breakdown = pd.DataFrame(records).sort_values(
+        ['raw_classification', 'oordeel', 'non_treated'],
+        na_position='last').reset_index(drop=True)
 
     # Headline metrics at deployment prevalence, excluding the gray groups
     # (everything that is not a true outlier or a true inlier) per the protocol.
@@ -1230,9 +1247,10 @@ def _per_group_breakdown(
     hdr = f"PER-GROUP BREAKDOWN ({label})" if label else "PER-GROUP BREAKDOWN"
     _log_section_header(hdr)
     logger.info(f"Anomaly threshold: {anomaly_threshold:.6f}  | deployment prevalence: {p:.2%}")
-    logger.info(f"{'Class':>6} {'Oordeel':>8} {'role':>20} {'n':>5} {'flagged':>8} {'flag_rate':>10}")
+    logger.info(f"{'Class':>6} {'Oordeel':>8} {'NT':>4} {'role':>20} {'n':>5} {'flagged':>8} {'flag_rate':>10}")
     for _, r in breakdown.iterrows():
-        logger.info(f"{r['raw_classification']:>6} {r['oordeel']:>8} {r['role']:>20} "
+        nt = '-' if pd.isna(r['non_treated']) else f"{int(r['non_treated'])}"
+        logger.info(f"{r['raw_classification']:>6} {r['oordeel']:>8} {nt:>4} {r['role']:>20} "
                     f"{r['n_samples']:>5} {r['n_flagged']:>8} {r['flag_rate']:>10.2%}")
     logger.info(f"Headline (excl. gray groups): TP={tp} FN={fn} FP={fp} TN={tn} | "
                 f"detection={detection:.2%} FPR={fpr:.2%} "
@@ -1618,15 +1636,15 @@ def _run_outer_cv(
 
     # Pooled false-negative / false-positive IMD sample ids across all
     # outer-CV folds, using the lab-protocol roles (true outlier = Class 1 &
-    # Oordeel 1; true inlier = Class 0 & Oordeel 0). Gray groups and NaN
-    # Oordeel are excluded. Ids normalised to strings for dtype-safe matching.
+    # Oordeel 1 & Non-treated 1; true inlier = Class 0 & Oordeel 0). Gray
+    # groups (including treated IMD: Class 1 & Oordeel 1 & Non-treated 0/NaN)
+    # and NaN Oordeel are excluded. Ids normalised to strings for dtype-safe
+    # matching.
     if group_map is not None and len(group_map) > 0:
         gm = group_map.copy()
-        gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
-        gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
-        gm = gm.dropna(subset=['oordeel'])
-        pooled_true_outlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
-        pooled_true_inlier_ids = {str(i) for i in gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index.tolist()}
+        pooled_to_mask, pooled_tio_mask = lab_protocol_role_masks(gm)
+        pooled_true_outlier_ids = {str(i) for i in gm[pooled_to_mask].index.tolist()}
+        pooled_true_inlier_ids = {str(i) for i in gm[pooled_tio_mask].index.tolist()}
     else:
         pooled_true_outlier_ids = set()
         pooled_true_inlier_ids = set()
@@ -1643,7 +1661,7 @@ def _run_outer_cv(
             elif sid_s in pooled_true_inlier_ids and flagged == 1:
                 fp_rows.append({'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
                                 'score': r.get('score'), 'flagged': flagged, 'role': 'false_positive'})
-            elif flagged == 1:
+            elif flagged == 1 and sid_s not in pooled_true_outlier_ids:
                 gray_rows.append({'sample_id': r.get('sample_id'), 'fold': r.get('fold'),
                                   'score': r.get('score'), 'flagged': flagged, 'role': 'gray_flagged'})
         else:
@@ -1753,14 +1771,13 @@ def _run_outer_cv(
                           and int(r.get('model_flagged', 0)) == 0
                           and int(r.get('guardrail_flagged', 0)) == 0]
                 # When a group_map is supplied, restrict the headline count to
-                # the clean true-outlier role (Class 1 & Oordeel 1) so it is
+                # the clean true-outlier role (Class 1 & Oordeel 1 & Non-treated 1)
+                # so it is
                 # consistent with the combined detection_rate denominator.
                 if group_map is not None and len(group_map) > 0 and missed:
                     gm = group_map.copy()
-                    gm['raw_classification'] = pd.to_numeric(gm.get('raw_classification'), errors='coerce')
-                    gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
-                    gm = gm.dropna(subset=['oordeel'])
-                    to_ids = {str(i) for i in gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index.tolist()}
+                    missed_to_mask, _ = lab_protocol_role_masks(gm)
+                    to_ids = {str(i) for i in gm[missed_to_mask].index.tolist()}
                     missed = [r for r in missed if str(r.get('sample_id')) in to_ids]
                 missed_ids = [str(r.get('sample_id')) for r in missed]
                 logger.info(f"Missed by BOTH model and guardrail: {len(missed)} "
@@ -2041,7 +2058,7 @@ def run_pipeline(
     hmdb_xml_file = config.get('hmdb_xml_file', None)
     log_hmdb_tagged_features = config.get('log_hmdb_tagged_features', False)
 
-    features, classification, oordeel, raw_classification = load_data(
+    features, classification, oordeel, raw_classification, non_treated = load_data(
         input_file=input_file,
         non_feature_columns=non_feature_cols,
         patient_id_column=patient_id_col,
@@ -2068,13 +2085,21 @@ def run_pipeline(
     feature_filter = config.get('feature_filter', None)
     features = _apply_feature_filter(features, feature_filter)
 
-    # Build a sample_id -> (raw Classification, Oordeel) group map aligned to
-    # the features index, for the per-group evaluation breakdown. Feature
-    # filtering only drops columns, so the row index is unchanged.
+    # Build a sample_id -> (raw Classification, Oordeel, Non-treated) group map
+    # aligned to the features index, for the per-group evaluation breakdown and
+    # the lab-protocol roles (true outlier = Class 1 & Oordeel 1 & Non-treated
+    # 1; Class 1 & Oordeel 1 & Non-treated 0 = treated IMD, gray). Feature
+    # filtering only drops columns, so the row index is unchanged. The
+    # 'non_treated' column is only included when the input actually had a
+    # 'Non-treated' column: an all-NaN column would push every (Class 1,
+    # Oordeel 1) sample into the gray treated-IMD group even for legacy
+    # inputs without treatment info.
     group_map = pd.DataFrame({
         'raw_classification': raw_classification.reindex(features.index),
         'oordeel': oordeel.reindex(features.index),
     }, index=features.index)
+    if non_treated.notna().any():
+        group_map['non_treated'] = non_treated.reindex(features.index)
 
     # Step 2: Split data (stratified train-test split)
     _log_section_header("STEP 2: Splitting data (stratified train-test)")

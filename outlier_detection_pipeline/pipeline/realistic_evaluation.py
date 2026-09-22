@@ -25,6 +25,8 @@ from sklearn.metrics import (
 )
 import logging
 
+from outlier_detection_pipeline.pipeline.roles import lab_protocol_role_masks
+
 try:
     import matplotlib
     matplotlib.use("Agg")  # non-interactive backend; avoids Tk 'main thread is not in main loop' errors on Windows
@@ -174,23 +176,22 @@ def run_realistic_evaluation(
 
     # Headline-metric role masks. By default every test normal counts as an
     # inlier (TN/FP) and every test abnormal as an outlier (TP/FN). When a
-    # per-sample group_map (raw Classification + Oordeel) is provided, restrict
-    # the headline detection/FPR/precision/f1/accuracy to the lab-protocol
-    # clean groups only: true_outlier = (Class 1 AND Oordeel 1), true_inlier =
-    # (Class 0 AND Oordeel 0). Samples with NaN Oordeel and every other
-    # (Class, Oordeel) combination are gray and excluded from the headline
-    # totals (they remain in per_sample_results and the per-group breakdown).
+    # per-sample group_map (raw Classification + Oordeel + Non-treated) is
+    # provided, restrict the headline detection/FPR/precision/f1/accuracy to
+    # the lab-protocol clean groups only: true_outlier = (Class 1 AND Oordeel 1
+    # AND Non-treated 1, the non-treated IMD), true_inlier = (Class 0 AND
+    # Oordeel 0, any Non-treated). Samples with NaN Oordeel/Classification and
+    # every other combination -- including the treated IMD (Class 1 & Oordeel 1
+    # & Non-treated 0/NaN) -- are gray and excluded from the headline totals
+    # (they remain in per_sample_results and the per-group breakdown).
     normal_role_mask = np.ones(n_normal, dtype=bool)
     abnormal_role_mask = (np.ones(n_abnormal, dtype=bool)
                           if n_abnormal > 0 else np.zeros(0, dtype=bool))
     if group_map is not None and len(group_map) > 0:
         gm = group_map.copy()
-        gm['raw_classification'] = pd.to_numeric(
-            gm.get('raw_classification'), errors='coerce')
-        gm['oordeel'] = pd.to_numeric(gm.get('oordeel'), errors='coerce')
-        gm = gm.dropna(subset=['oordeel'])
-        to_mask = gm[((gm['raw_classification'] == 1) & (gm['oordeel'] == 1))].index
-        tio_mask = gm[((gm['raw_classification'] == 0) & (gm['oordeel'] == 0))].index
+        to_mask_series, tio_mask_series = lab_protocol_role_masks(gm)
+        to_mask = gm[to_mask_series].index
+        tio_mask = gm[tio_mask_series].index
         # Outlier rows that are actually true outliers (1,1): keep in headline.
         ab_idx = pd.Index(X_abnormal_test.index)
         normal_idx = pd.Index(X_normal_test.index)

@@ -15,6 +15,12 @@ feature_columns: null     # All columns except the ones listed below
 non_feature_columns:
   - "Oordeel trageted"
   - "Classification"
+# The 'Non-treated' column (copied into the merged data by the
+# combined_batch add_classification step) is not a feature: the loader keeps
+# it out of the feature matrix automatically. It is used by the lab-protocol
+# ground-truth roles: within the (Classification 1, Oordeel targeted 1) IMD
+# group, Non-treated 1 = non-treated IMD = true outlier; Non-treated 0/NaN =
+# treated IMD = gray (not counted in the headline TP/FN totals).
 
 # How to build the binary sample label from the raw Classification column.
 #   default          : Legacy Oordeel-based cleaning. Drops ambiguous samples

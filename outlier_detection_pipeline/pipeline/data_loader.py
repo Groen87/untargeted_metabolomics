@@ -780,7 +780,7 @@ def load_data(
     filter_to_smpdb_hmdb: bool = False,
     hmdb_xml_file: Optional[str] = None,
     log_hmdb_tagged_features: bool = False,
-) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
+) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
     Load data from CSV file and optionally filter to endogenous metabolite features.
 
@@ -811,6 +811,10 @@ def load_data(
             inliers are ONLY the confident normals (Classification 0 AND
             Oordeel targeted 0); every other sample is labelled outlier (1)
             and used only for testing. No samples are dropped.
+            The 'Non-treated' column (when present) does not change the binary
+            label; it is carried through so the lab-protocol roles can split
+            the (Classification 1, Oordeel 1) group into non-treated IMD
+            (true outliers) and treated IMD (gray).
         smpdb_pathways_file: Path to smpdb_kept_pathways.tsv for filtering to
             HMDB codes in pathways
         filter_to_smpdb_hmdb: Whether to filter features to those with HMDB
@@ -825,6 +829,8 @@ def load_data(
         - classification: Series with the binary label (0=inlier, 1=outlier)
         - oordeel: Series with the raw Oordeel targeted values
         - raw_classification: Series with the raw Classification values
+        - non_treated: Series with the raw 'Non-treated' values (all-NaN when
+          the input has no such column)
     """
     logger.info(f"Loading data from {input_file}")
 
@@ -956,9 +962,19 @@ def load_data(
     oordeel = df['Oordeel targeted']
     # Keep raw_classification aligned to the (possibly subsetted) df index.
     raw_classification = raw_classification.reindex(df.index)
+    if 'Non-treated' in df.columns:
+        non_treated = pd.Series(df['Non-treated'], index=df.index, name='non_treated')
+    else:
+        non_treated = pd.Series(np.nan, index=df.index, name='non_treated')
+        logger.info("No 'Non-treated' column in the input; non-treated roles "
+                    "fall back to the legacy (Class 1 & Oordeel 1) definition.")
     
-    # Get feature columns (all columns except non-feature columns)
-    feature_cols = [col for col in df.columns if col not in non_feature_columns]
+    # Get feature columns (all columns except non-feature columns). The
+    # 'Non-treated' metadata column is kept out of the features even when it
+    # is not listed in non_feature_columns, so it can never leak in as a
+    # feature.
+    feature_cols = [col for col in df.columns if col not in non_feature_columns
+                    and col != 'Non-treated']
     features = df[feature_cols]
     
     # Exclude user-specified metabolite features (exact, case-insensitive match)
@@ -1012,7 +1028,7 @@ def load_data(
     logger.info(f"Feature columns: {len(features.columns)}")
     logger.info(f"Non-feature columns: {non_feature_columns}")
     
-    return features, classification, oordeel, raw_classification
+    return features, classification, oordeel, raw_classification, non_treated
 
 
 def split_data(
