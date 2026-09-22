@@ -74,7 +74,7 @@ output_dir: "outputs/outlier_detection"
 
 # Column names
 non_feature_columns:
-  - "Oordeel trageted"
+  - "Oordeel targeted"
   - "Classification"
 
 # Classification values
@@ -142,13 +142,13 @@ The input CSV (`merged_data_with_classification.csv`) should have:
 - **Rows**: Patient IDs (will be used as index)
 - **Columns**: 
   - Feature columns (metabolite intensities)
-  - `Oordeel trageted` (non-feature metadata)
+  - `Oordeel targeted` (non-feature metadata)
   - `Classification` (0 = normal, 1/2/3 = outliers)
 
 Example:
 
 ```csv
-,Feature1,Feature2,Feature3,Oordeel trageted,Classification
+,Feature1,Feature2,Feature3,Oordeel targeted,Classification
 Patient1,1.2,3.4,5.6,Targeted,0
 Patient2,2.3,4.5,6.7,Non-targeted,1
 Patient3,3.4,5.6,7.8,Targeted,0

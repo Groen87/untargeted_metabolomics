@@ -381,7 +381,7 @@ def main():
     age_column = config.get("age_column", None)
     features, metadata, ages = load_feature_matrix(
         args.input or config.get("input_file", "data/merged_data_with_classification.csv"),
-        non_feature_columns=config.get_list("non_feature_columns", ["Oordeel trageted", "Classification"]),
+        non_feature_columns=config.get_list("non_feature_columns", ["Oordeel targeted", "Classification"]),
         patient_id_column=config.get("patient_id_column", None),
         age_column=age_column,
     )

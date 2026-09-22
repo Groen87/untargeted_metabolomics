@@ -901,7 +901,7 @@ def load_data(
                 f"because none had Oordeel targeted == 0 or 1. Unique values "
                 f"found: {unique_oordeel}. Check that the 'Oordeel targeted' "
                 f"column exists and uses 0/1 (the config non_feature_columns "
-                f"must list the exact CSV column name, e.g. 'Oordeel trageted' "
+                f"must list the exact CSV column name, e.g. 'Oordeel targeted' "
                 f"if that is the spelling in the CSV)."
             )
         df['Classification'] = np.where(oordeel_num.values == 1, 1, 0)

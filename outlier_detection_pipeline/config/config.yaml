@@ -13,7 +13,7 @@ output_dir: "outputs/outlier_detection"
 patient_id_column: null  # Patient IDs are row index (not a column)
 feature_columns: null     # All columns except the ones listed below
 non_feature_columns:
-  - "Oordeel trageted"
+  - "Oordeel targeted"
   - "Classification"
 # The 'Non-treated' column (copied into the merged data by the
 # combined_batch add_classification step) is not a feature: the loader keeps
