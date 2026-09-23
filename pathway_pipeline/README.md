@@ -7,8 +7,8 @@ The pipeline:
 
 1. **Matches** every feature column to an HMDB accession using the HMDB XML
    metabolite database (a streaming name/synonym index).
-2. **Links** those HMDB accessions to metabolic pathways via an SMPDB-derived
-   pathways TSV.
+2. **Links** those HMDB accessions to metabolic pathways via a PathBank-derived
+   pathway members CSV (the legacy SMPDB pathways TSV is also auto-detected).
 3. **Runs the layered analysis & flagging engine** (see *Layered flagging*
    below): atomic per-metabolite flags → pathway statistics with severity tiers
    → a sample decision rule → an optional global anomaly safety light, plus an
@@ -44,14 +44,21 @@ pathway_pipeline/
   `<metabolite>` elements each carry an `<accession>`, a primary `<name>`, and
   zero or more `<synonyms>`. The file is streamed with `iterparse` and the
   resulting name index is cached to disk.
-- **Pathways TSV** (`data/pathways.tsv`):
+- **Pathways file** (`data/pathway_member.csv`): the PathBank pathway members
+  CSV, one row per (pathway, metabolite) member:
 
   ```
-  smp_id	pathway_name	n_compounds	hmdb_ids
-  SMP0000575	11-beta-Hydroxylase Deficiency (CYP11B1)	41	HMDB0000015;HMDB0000016;...
+  pathway_id,metabolite_name,metabolite_id,hmdb_id,kegg_id,chebi_id,formula,smiles
+  SMP0000055,Adenosine triphosphate,PW_C000414,HMDB0000538,C00002,...
   ```
 
-  `hmdb_ids` is a `;`-separated list of HMDB accessions.
+  Members are aggregated per `pathway_id`; members without a valid `hmdb_id`
+  are dropped. Since the members CSV carries no human-readable pathway name,
+  `pathway_name` falls back to the PathBank id (e.g. `SMP0000055`).
+
+  The legacy wide SMPDB TSV (`smp_id`, `pathway_name`, `n_compounds`,
+  `;`-separated `hmdb_ids`) is still supported and auto-detected from its
+  header; see `load_pathways` in `pipeline/pathway_mapping.py`.
 
 ## Feature -> HMDB Matching
 

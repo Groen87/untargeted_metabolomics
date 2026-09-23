@@ -19,6 +19,8 @@ from pathway_pipeline.pipeline.name_utils import normalize_name, normalize_loose
 from pathway_pipeline.pipeline.hmdb_parser import build_name_index
 from pathway_pipeline.pipeline.pathway_mapping import (
     load_pathways_tsv,
+    load_pathway_members_csv,
+    load_pathways,
     match_features_to_hmdb,
     link_features_to_pathways,
     pathway_coverage,
@@ -93,6 +95,19 @@ SMP0000136\tTCA Cycle\t3\tHMDB0000208;HMDB0000148;HMDB0000902
 SMP0000999\tLonely pathway\t1\tHMDB0000223
 """
 
+PATHWAY_MEMBERS_CSV = """pathway_id,metabolite_name,metabolite_id,hmdb_id,kegg_id,chebi_id,formula,smiles
+SMP0000575,Adenosine triphosphate,PW_C000414,HMDB0000538,C00002,15422.0,C10H16N5O13P3,NC1=NC=NC2=C1N=CN2[C@@H]1O[C@H](COP(O)(=O)OP(O)(=O)OP(O)(O)=O)[C@@H](O)[C@H]1O
+SMP0000575,L-Alanine,PW_C000105,HMDB0000161,C00041,16977.0,C3H7NO2,C[C@H](N)C(O)=O
+SMP0000575,Adenosine monophosphate,PW_C000032,HMDB0000045,C00020,16027.0,C10H14N5O7P,NC1=C2N=CN([C@@H]3O[C@H](COP(O)(O)=O)[C@@H](O)[C@H]3O)C2=NC=N1
+SMP0000575,Pyrophosphate,PW_C000170,HMDB0000250,C00013,18361.0,O7P2,[O-]P([O-])(=O)OP([O-])([O-])=O
+SMP0000575,Zinc (II) ion,PW_C001005,HMDB0001303,C00038,29105.0,Zn,[Zn++]
+SMP0000575,Oxoglutaric acid,PW_C000134,HMDB0000208,C00026,30915.0,C5H6O5,OC(=O)CCC(=O)C(O)=O
+SMP0000575,L-Glutamic acid,PW_C000095,HMDB0000148,C00025,16015.0,C5H9NO4,N[C@@H](CCC(O)=O)C(O)=O
+SMP0000136,Compound without HMDB,PW_C000999,,C99999,,,
+SMP0000136,Glucose,PW_C000873,HMDB0000223,C00031,4167.0,C6H12O6,OC[C@H]1O[C@@H](O)[C@H](O)[C@@H](O)[C@@H]1O
+SMP0000136,Duplicate accession row,PW_C000873,HMDB0000223,C00031,4167.0,C6H12O6,OC[C@H]1O[C@@H](O)[C@H](O)[C@@H](O)[C@@H]1O
+"""
+
 
 def _write_hmdb(tmp_path: Path) -> Path:
     p = tmp_path / "hmdb.xml"
@@ -103,6 +118,12 @@ def _write_hmdb(tmp_path: Path) -> Path:
 def _write_pathways(tmp_path: Path) -> Path:
     p = tmp_path / "pathways.tsv"
     p.write_text(PATHWAYS_TSV, encoding="utf-8")
+    return p
+
+
+def _write_pathway_members(tmp_path: Path) -> Path:
+    p = tmp_path / "pathway_member.csv"
+    p.write_text(PATHWAY_MEMBERS_CSV, encoding="utf-8")
     return p
 
 
@@ -159,6 +180,53 @@ def test_load_pathways_tsv_parses_columns(tmp_path):
     assert df["smp_id"].tolist() == ["SMP0000575", "SMP0000136", "SMP0000999"]
     assert df.loc[0, "hmdb_ids"] == ["HMDB0000063", "HMDB0000015", "HMDB0000037"]
     assert int(df.loc[0, "n_compounds"]) == 3
+
+
+def test_load_pathway_members_csv_aggregates_per_pathway(tmp_path):
+    csv = _write_pathway_members(tmp_path)
+    df = load_pathway_members_csv(str(csv))
+    assert list(df.columns) == ["smp_id", "pathway_name", "n_compounds", "hmdb_ids"]
+    assert df["smp_id"].tolist() == ["SMP0000136", "SMP0000575"]
+    # pathway_name falls back to the PathBank id (no name column in the CSV).
+    assert df["pathway_name"].tolist() == df["smp_id"].tolist()
+    # Members without an HMDB accession are dropped; duplicates deduplicated.
+    assert df.loc[df["smp_id"] == "SMP0000575", "hmdb_ids"].iloc[0] == [
+        "HMDB0000045", "HMDB0000148", "HMDB0000161", "HMDB0000208", "HMDB0000250",
+        "HMDB0000538", "HMDB0001303",
+    ]
+    assert int(df.loc[df["smp_id"] == "SMP0000575", "n_compounds"].iloc[0]) == 7
+    assert df.loc[df["smp_id"] == "SMP0000136", "hmdb_ids"].iloc[0] == ["HMDB0000223"]
+
+
+def test_load_pathways_detects_both_formats(tmp_path):
+    tsv = _write_pathways(tmp_path)
+    csv = _write_pathway_members(tmp_path)
+    assert load_pathways(str(tsv))["smp_id"].tolist() == [
+        "SMP0000575", "SMP0000136", "SMP0000999"
+    ]
+    assert load_pathways(str(csv))["smp_id"].tolist() == ["SMP0000136", "SMP0000575"]
+
+
+def test_link_features_to_pathways_with_pathway_members(tmp_path):
+    csv = _write_pathway_members(tmp_path)
+    pathways = load_pathway_members_csv(str(csv))
+    f2h = pd.DataFrame([
+        {"feature": "Cortisol", "hmdb_id": "HMDB0000063", "match_method": "name_exact", "n_hmdb_ids": 1},
+        {"feature": "Glutamate", "hmdb_id": "HMDB0000148", "match_method": "name_exact", "n_hmdb_ids": 1},
+        {"feature": "OGT", "hmdb_id": "HMDB0000208", "match_method": "name_exact", "n_hmdb_ids": 1},
+        {"feature": "Glucose", "hmdb_id": "HMDB0000223", "match_method": "name_exact", "n_hmdb_ids": 1},
+    ])
+    links = link_features_to_pathways(f2h, pathways)
+    # HMDB0000148, HMDB0000208 -> SMP0000575; HMDB0000223 -> SMP0000136;
+    # HMDB0000063 is in no pathway; HMDB0000045 etc. have no matching feature.
+    assert set(links["feature"]) == {"Glutamate", "OGT", "Glucose"}
+    assert links.groupby("smp_id")["feature"].apply(set).to_dict() == {
+        "SMP0000575": {"Glutamate", "OGT"},
+        "SMP0000136": {"Glucose"},
+    }
+    cov = pathway_coverage(links, min_pathway_size=2)
+    assert set(cov["smp_id"]) == {"SMP0000575"}
+    assert np.isclose(cov.loc[cov["smp_id"] == "SMP0000575", "coverage"].iloc[0], 2 / 7)
 
 
 def test_match_features_hmdb_tag_exact_and_loose(tmp_path):

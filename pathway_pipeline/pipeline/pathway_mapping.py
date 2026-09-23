@@ -9,7 +9,8 @@ annotation tables the later per-pathway shift statistics consume:
    one-to-many relationship between a feature's HMDB accessions and the
    pathways each accession participates in.
 3. ``pathway_coverage.csv`` -- one row per pathway with the count and list of
-   matched features, plus the pathway's total compound count from the TSV.
+   matched features, plus the pathway's total compound count from the
+   pathways file (PathBank members CSV or legacy SMPDB TSV).
 
 Feature columns come in three shapes (mirroring the outlier-detection
 pipeline):
@@ -73,6 +74,86 @@ def load_pathways_tsv(pathways_file: str) -> pd.DataFrame:
     df = df.reset_index(drop=True)
     logger.info(f"Loaded {len(df)} pathways from {pathways_file}")
     return df[["smp_id", "pathway_name", "n_compounds", "hmdb_ids"]]
+
+
+def load_pathway_members_csv(pathway_members_file: str) -> pd.DataFrame:
+    """Load the PathBank-derived pathway members CSV.
+
+    The expected structure is one row per (pathway, metabolite) member::
+
+        pathway_id,metabolite_name,metabolite_id,hmdb_id,kegg_id,chebi_id,formula,smiles
+        SMP0000055,Adenosine triphosphate,PW_C000414,HMDB0000538,C00002,...
+        ...
+
+    The long-format member rows are aggregated into the same shape as
+    :func:`load_pathways_tsv` so the rest of the pipeline is unchanged:
+    one row per ``pathway_id`` with ``pathway_name`` set to the PathBank
+    id (the members file carries no human-readable pathway name),
+    ``n_compounds`` (the number of distinct HMDB accessions in the
+    pathway), and ``hmdb_ids`` (the sorted deduplicated accession list).
+    Rows without a valid ``hmdb_id`` are dropped -- the
+    feature -> HMDB -> pathway join is accession-based.
+    """
+    path = Path(pathway_members_file)
+    if not path.exists():
+        logger.error(f"Pathway members CSV not found at {pathway_members_file}")
+        return pd.DataFrame(columns=["smp_id", "pathway_name", "n_compounds", "hmdb_ids"])
+
+    df = pd.read_csv(path, dtype=str)
+    required = {"pathway_id", "hmdb_id"}
+    missing = required - set(df.columns)
+    if missing:
+        logger.error(f"Pathway members CSV {pathway_members_file} missing "
+                     f"columns: {missing}")
+        return pd.DataFrame(columns=["smp_id", "pathway_name", "n_compounds", "hmdb_ids"])
+
+    df = df.dropna(subset=["pathway_id"]).copy()
+    df["hmdb_id"] = df["hmdb_id"].astype(str).str.strip().str.upper()
+    df = df[df["hmdb_id"].str.match(r"^HMDB\d+$", na=False)]
+
+    if df.empty:
+        logger.error(f"Pathway members CSV {pathway_members_file} has no rows "
+                     f"with a valid HMDB accession.")
+        return pd.DataFrame(columns=["smp_id", "pathway_name", "n_compounds", "hmdb_ids"])
+
+    df = df.groupby("pathway_id", sort=True).agg(
+        hmdb_ids=("hmdb_id", lambda s: sorted(set(s))),
+        n_compounds=("hmdb_id", "nunique"),
+    ).reset_index()
+    df = df.rename(columns={"pathway_id": "smp_id"})
+    df["pathway_name"] = df["smp_id"]
+    logger.info(f"Loaded {len(df)} pathways from {pathway_members_file} "
+                f"({int(df['n_compounds'].sum())} HMDB-annotated members)")
+    return df[["smp_id", "pathway_name", "n_compounds", "hmdb_ids"]]
+
+
+def load_pathways(pathways_file: str) -> pd.DataFrame:
+    """Load a pathways file, auto-detecting its format.
+
+    Accepts either the wide SMPDB pathways TSV (columns ``smp_id``,
+    ``pathway_name``, ``n_compounds``, ``hmdb_ids``) or the long PathBank
+    pathway members CSV (one row per pathway member with a ``pathway_id``
+    and ``hmdb_id``); see :func:`load_pathways_tsv` and
+    :func:`load_pathway_members_csv`. Returns the internal wide shape
+    used by :func:`link_features_to_pathways`.
+    """
+    path = Path(pathways_file)
+    if not path.exists():
+        logger.error(f"Pathways file not found at {pathways_file}")
+        return pd.DataFrame(columns=["smp_id", "pathway_name", "n_compounds", "hmdb_ids"])
+
+    # sep=None + the python engine sniffs the delimiter (tab vs comma).
+    header = pd.read_csv(path, nrows=0, sep=None, engine="python")
+    cols = set(header.columns)
+    if {"pathway_id", "hmdb_id"} <= cols and "hmdb_ids" not in cols:
+        return load_pathway_members_csv(pathways_file)
+    if {"smp_id", "pathway_name", "n_compounds", "hmdb_ids"} <= cols:
+        return load_pathways_tsv(pathways_file)
+    logger.error(f"Unrecognized pathways file format: {pathways_file}. "
+                 f"Expected either the wide SMPDB TSV (smp_id/pathway_name/"
+                 f"n_compounds/hmdb_ids) or the long PathBank members CSV "
+                 f"(pathway_id/hmdb_id columns).")
+    return pd.DataFrame(columns=["smp_id", "pathway_name", "n_compounds", "hmdb_ids"])
 
 
 def _split_feature_name_and_hmdb(col: str) -> Optional[str]:
@@ -209,7 +290,7 @@ def link_features_to_pathways(feature_to_hmdb: pd.DataFrame,
 
     Args:
         feature_to_hmdb: output of :func:`match_features_to_hmdb`.
-        pathways: output of :func:`load_pathways_tsv`.
+        pathways: output of :func:`load_pathways` (or either loader).
 
     Returns:
         DataFrame with columns ``feature``, ``hmdb_id``, ``smp_id``,
