@@ -326,6 +326,12 @@ class ExtendedIsolationForestModel:
             # rows. X_scaled is a plain array for positional downstream use.
             self.scaler.fit(X[normal_mask])
             X_scaled = self.scaler.transform(X)
+        # Scalers return ndarrays, but the 'none' scaler (FunctionTransformer
+        # passthrough) returns its DataFrame input unchanged, and positional
+        # indexing below (X_scaled[train_fold_idx]) would then be interpreted
+        # as column labels. Coerce to a plain positional array.
+        if isinstance(X_scaled, pd.DataFrame):
+            X_scaled = X_scaled.to_numpy()
 
         # For unsupervised CV: we need custom logic
         # Split ALL samples (normals + abnormalities) into K folds
