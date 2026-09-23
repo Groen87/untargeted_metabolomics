@@ -286,7 +286,9 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
         return (pd.DataFrame(columns=score_cols),
                 pd.DataFrame(columns=ref_cols))
 
+    normal_mask = normal_mask[~normal_mask.index.duplicated(keep="first")]
     normal_mask = normal_mask.reindex(zscores.index, fill_value=False)
+    normal_positions = np.flatnonzero(normal_mask.to_numpy())
 
     kept_pathways = scored_coverage[["smp_id", "pathway_name"]].drop_duplicates()
     links = feature_to_pathway.merge(kept_pathways,
@@ -326,17 +328,17 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
         pathway_name = kept_pathways.loc[
             kept_pathways["smp_id"] == smp_id, "pathway_name"].iloc[0]
 
-        for sample_id in zscores.index:
+        for pos, sample_id in enumerate(zscores.index):
             score_rows.append({
                 "sample_id": sample_id,
                 "smp_id": smp_id,
                 "pathway_name": pathway_name,
-                "n_metabolites_used": int(usable.loc[sample_id]),
-                "z_stouffer": signed.loc[sample_id],
-                "z_stouffer_abs": absolute.loc[sample_id],
+                "n_metabolites_used": int(usable.iloc[pos]),
+                "z_stouffer": signed.iloc[pos],
+                "z_stouffer_abs": absolute.iloc[pos],
             })
 
-        normal_abs = absolute.loc[normal_mask].dropna()
+        normal_abs = absolute.iloc[normal_positions].dropna()
         ref_rows.append({
             "smp_id": smp_id,
             "pathway_name": pathway_name,
@@ -380,6 +382,7 @@ def flag_pathway_scores(pathway_scores: pd.DataFrame,
     if pathway_scores.empty:
         return pd.DataFrame(columns=flag_cols)
 
+    normal_mask = normal_mask[~normal_mask.index.duplicated(keep="first")]
     normal_mask = normal_mask.reindex(pathway_scores["sample_id"].unique(),
                                       fill_value=False)
     normal_scores = pathway_scores[pathway_scores["sample_id"].map(normal_mask)]
@@ -439,12 +442,10 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
             "top_excess": top["excess"],
         })
 
-    group_cols = [c for c in pathway_flags.columns if c != "sample_id"]
-    summary = (pathway_flags[group_cols]
-               .groupby(pathway_flags["sample_id"].values)
+    summary = (pathway_flags.drop(columns=["sample_id"])
+               .groupby(pathway_flags["sample_id"], sort=False)
                .apply(_agg)
-               .reset_index()
-               .rename(columns={"index": "sample_id"}))
+               .reset_index())
     n_flagged_samples = int(summary["flagged"].sum())
     logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
                 f"(>= {min_flagged_pathways} flagged pathway(s)).")

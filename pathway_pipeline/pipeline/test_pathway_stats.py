@@ -394,3 +394,48 @@ def test_summarize_sample_flags_empty_and_all_nan():
     assert (summary["n_flagged_pathways"] == 0).all()
     assert (~summary["flagged"].astype(bool)).all()
     assert summary["top_excess"].isna().all()
+
+
+# ---------------------------------------------------------------------------
+# Duplicate sample IDs (regression: real-data failure in STEP 7)
+# ---------------------------------------------------------------------------
+
+def test_stouffer_and_flagging_with_duplicate_sample_ids():
+    """Duplicated sample IDs must not break scalar lookups in the loops."""
+    samples = ["n1", "n2", "n3", "imd1", "imd1", "n4"]
+    zscores = pd.DataFrame({
+        "f1": [0.1, 0.2, -0.1, 4.0, 4.1, 0.0],
+        "f2": [0.0, -0.2, 0.1, 3.8, 3.9, 0.3],
+        "f3": [-0.1, 0.1, 0.0, 4.2, 4.0, -0.2],
+    }, index=samples)
+    links = pd.DataFrame([
+        {"feature": f"f{i}", "hmdb_id": f"H{i}", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": f"M{i}", "metabolite_name": f"m{i}"}
+        for i in (1, 2, 3)
+    ])
+    coverage = pd.DataFrame([{
+        "smp_id": "SMP1", "pathway_name": "P", "n_metabolites": 3,
+        "n_matched_metabolites": 3, "matched_metabolites": "H1;H2;H3",
+        "n_matched_features": 3, "matched_features": "f1;f2;f3", "coverage": 1.0,
+    }])
+    normal_mask = pd.Series([True, True, True, False, False, True], index=samples)
+
+    scores, reference = compute_stouffer_scores(zscores, links, coverage,
+                                                normal_mask, min_metabolites=3)
+    assert len(scores) == 6  # every row kept, duplicates included
+    # Normal |sum(z)| values: 0.2, 0.5, 0.2, 0.5 -> p50 of 0.2/sqrt(3) and
+    # 0.5/sqrt(3) interpolated = 0.35/sqrt(3).
+    assert reference["normal_z_stouffer_abs_p50"].iloc[0] == pytest.approx(
+        0.35 / np.sqrt(3), abs=1e-9)
+
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=50.0)
+    assert len(flags) == 6
+    # Both imd1 rows exceed the normals' p50 threshold.
+    assert flags[flags["sample_id"] == "imd1"]["flagged"].all()
+
+    summary = summarize_sample_flags(flags, min_flagged_pathways=1)
+    # Duplicated imd1 rows land in one decision row (grouped by sample_id).
+    assert len(summary) == 5  # n1, n2, n3, imd1 (merged), n4
+    imd_row = summary[summary["sample_id"] == "imd1"].iloc[0]
+    assert int(imd_row["n_scored_pathways"]) == 2  # both duplicate rows counted
+    assert bool(imd_row["flagged"])

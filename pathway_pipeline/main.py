@@ -79,6 +79,12 @@ def load_feature_matrix(input_file: str,
         df = df.set_index(patient_id_column)
     logger.info(f"Loaded {input_file}: {df.shape[0]} samples x {df.shape[1]} columns")
 
+    duplicates = df.index[df.index.duplicated()].unique().tolist()
+    if duplicates:
+        logger.warning(f"{len(duplicates)} sample IDs occur more than once "
+                       f"in the input; per-sample outputs will keep every "
+                       f"row. First 10 duplicated IDs: {duplicates[:10]}")
+
     nf = list(non_feature_columns)
     if age_column and age_column not in nf:
         nf = nf + [age_column]
