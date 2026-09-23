@@ -40,6 +40,8 @@ from pathway_pipeline.pipeline.pathway_stats import (
     analyze_flagged_normals,
     apply_normal_exclusions,
     classify_samples,
+    flag_metabolite_scores,
+    summarize_metabolite_flags,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
     compute_stouffer_scores,
@@ -404,6 +406,44 @@ def run_pipeline(input_file: str,
                 out / "flagged_normal_analysis.csv", index=False)
             logger.info(f"Wrote flagged_normal_analysis.csv to {out}")
 
+    metabolite_summary = None
+    if bool(config.get("run_metabolite_flags", True)):
+        _log_section("STEP 8c: Metabolite-level flags (report-only)")
+        metabolite_flags = flag_metabolite_scores(
+            zscores,
+            normal_mask=normal_mask,
+            threshold_percentile=float(
+                config.get("metabolite_flag_percentile", 99.0)),
+        )
+        metabolite_summary = summarize_metabolite_flags(
+            metabolite_flags, normal_mask=normal_mask)
+        flag_rule = str(config.get("metabolite_flag_rule", "report_only"))
+        if flag_rule != "report_only":
+            p_col = "metabolite_depth_p"
+            n_col = "n_flagged_metabolites"
+            merged = decisions_labeled.merge(
+                metabolite_summary[["sample_id", p_col, n_col]],
+                on="sample_id", how="left")
+            if p_col not in decisions_labeled.columns:
+                decisions_labeled[p_col] = merged[p_col]
+            decisions_labeled[n_col] = merged[n_col]
+            n_extra = int(((decisions_labeled[p_col] <= max_sample_p)
+                           & (decisions_labeled[n_col] >= 1)
+                           & (~decisions_labeled["flagged"])).sum())
+            logger.info(f"Metabolite depth alone would add {n_extra} "
+                        f"flagged samples (report_only keeps the "
+                        f"pathway decision unchanged).")
+        else:
+            merged = decisions_labeled.merge(
+                metabolite_summary, on="sample_id", how="left")
+            for col in ("max_metabolite_z", "n_flagged_metabolites",
+                        "metabolite_depth_p", "top_metabolite"):
+                if col in merged.columns:
+                    decisions_labeled[col] = merged[col]
+        if bool(config.get("save_flagging_outputs", True)):
+            metabolite_flags.to_csv(out / "metabolite_flags.csv", index=False)
+            logger.info(f"Wrote metabolite_flags.csv to {out}")
+
     if bool(config.get("save_flagging_outputs", True)):
         pathway_flags.to_csv(out / "pathway_flags.csv", index=False)
         decisions_labeled.to_csv(out / "sample_decisions.csv", index=False)
@@ -422,6 +462,7 @@ def run_pipeline(input_file: str,
         "pathway_reference": pathway_reference,
         "pathway_flags": pathway_flags,
         "sample_decisions": decisions_labeled,
+        "metabolite_summary": metabolite_summary,
     }
 
 

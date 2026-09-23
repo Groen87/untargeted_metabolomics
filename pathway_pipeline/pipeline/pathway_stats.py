@@ -446,6 +446,108 @@ def flag_pathway_scores(pathway_scores: pd.DataFrame,
     return flags
 
 
+def flag_metabolite_scores(zscores: pd.DataFrame,
+                           normal_mask: pd.Series,
+                           threshold_percentile: float = 99.0
+                           ) -> pd.DataFrame:
+    """Flag metabolite z-scores against each metabolite's own normal range.
+
+    Mirrors :func:`flag_pathway_scores` at the metabolite level: a metabolite
+    is flagged for a sample when its absolute z-score exceeds the
+    ``threshold_percentile`` percentile of that metabolite's absolute
+    z-scores over the reference normals. Per-metabolite calibration absorbs
+    noisy features (a metabolite with wide normal spread gets a wider range).
+
+    Args:
+        zscores: metabolite z-score matrix (samples x metabolites).
+        normal_mask: boolean Series marking the normal reference samples.
+        threshold_percentile: percentile of the normal |z| distribution used
+            as the per-metabolite threshold.
+
+    Returns:
+        Long-format flags: one row per (sample, metabolite) with
+        ``abs_z``, ``threshold``, ``excess``, ``flagged``.
+    """
+    out_cols = ["sample_id", "metabolite", "abs_z", "threshold",
+                "excess", "flagged"]
+    if zscores.empty:
+        return pd.DataFrame(columns=out_cols)
+    abs_z = zscores.abs()
+    index_name = abs_z.index.name or "sample_id"
+    abs_z = abs_z.rename_axis(index_name)
+    dedup = normal_mask[~normal_mask.index.duplicated(keep="first")]
+    normal_values = abs_z[dedup.reindex(abs_z.index, fill_value=False)]
+    with np.errstate(all="ignore"):
+        thresholds = normal_values.quantile(
+            threshold_percentile / 100.0, axis=0)
+    thresholds = thresholds.fillna(float("inf"))
+    flags = (abs_z.reset_index()
+             .melt(id_vars=index_name, var_name="metabolite",
+                   value_name="abs_z")
+             .rename(columns={index_name: "sample_id"}))
+    flags["threshold"] = flags["metabolite"].map(thresholds)
+    flags["excess"] = flags["abs_z"] / flags["threshold"]
+    flags["flagged"] = flags["excess"] > 1.0
+    n_flagged = int(flags["flagged"].sum())
+    logger.info(f"Flagged {n_flagged} (sample, metabolite) pairs at the "
+                f"{threshold_percentile}th normal percentile "
+                f"({flags['metabolite'].nunique()} metabolites scored).")
+    return flags[out_cols]
+
+
+def summarize_metabolite_flags(metabolite_flags: pd.DataFrame,
+                               normal_mask: pd.Series
+                               ) -> pd.DataFrame:
+    """Per-sample metabolite-depth summary (report-only).
+
+    The metabolite depth p-value is the fraction of reference normals whose
+    maximum metabolite |z| reaches at least the sample's maximum. It is the
+    metabolite-level analogue of the max_excess pathway rule: a sample with
+    one grossly elevated metabolite beats it; a sample with a broad mild
+    shift does not.
+
+    Args:
+        metabolite_flags: output of :func:`flag_metabolite_scores`.
+        normal_mask: boolean Series marking the normal reference samples.
+
+    Returns:
+        DataFrame with one row per sample: ``sample_id``,
+        ``max_metabolite_z``, ``n_flagged_metabolites``,
+        ``metabolite_depth_p``, ``top_metabolite``,
+        ``top_metabolite_z``.
+    """
+    out_cols = ["sample_id", "max_metabolite_z", "n_flagged_metabolites",
+                "metabolite_depth_p", "top_metabolite", "top_metabolite_z"]
+    if metabolite_flags.empty:
+        return pd.DataFrame(columns=out_cols)
+    dedup = normal_mask[~normal_mask.index.duplicated(keep="first")]
+    is_normal = dedup.reindex(metabolite_flags["sample_id"].unique(),
+                              fill_value=False)
+    normal_samples = [s for s, v in is_normal.items() if v]
+    normal_max = (metabolite_flags[metabolite_flags["sample_id"]
+                                   .isin(normal_samples)]
+                  .groupby("sample_id")["abs_z"].max())
+    logger.info(f"Metabolite-depth null: maximum |z| of {len(normal_max)} "
+                f"normals (median {float(normal_max.median()):.2f}, "
+                f"p95 {float(normal_max.quantile(0.95)):.2f}).")
+
+    def _agg(g):
+        top = g.loc[g["abs_z"].idxmax()]
+        max_z = float(top["abs_z"])
+        p = float((normal_max >= max_z).mean()) if len(normal_max) else float("nan")
+        return pd.Series({
+            "max_metabolite_z": max_z,
+            "n_flagged_metabolites": int(g["flagged"].sum()),
+            "metabolite_depth_p": p,
+            "top_metabolite": top["metabolite"],
+            "top_metabolite_z": max_z,
+        })
+
+    summary = (metabolite_flags.groupby("sample_id", sort=False)
+               .apply(_agg).reset_index())
+    return summary[out_cols]
+
+
 def summarize_sample_flags(pathway_flags: pd.DataFrame,
                             min_flagged_pathways: int = 1,
                             per_pathway_flag_rate: float = None,

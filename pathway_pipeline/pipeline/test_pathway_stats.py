@@ -20,6 +20,8 @@ from pathway_pipeline.pipeline.pathway_stats import (
     analyze_flagged_normals,
     apply_normal_exclusions,
     classify_samples,
+    flag_metabolite_scores,
+    summarize_metabolite_flags,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
     compute_stouffer_scores,
@@ -728,6 +730,67 @@ def test_summarize_sample_flags_max_excess_rule():
     depth_row = depth_rule.loc[depth_rule["sample_id"] == "depth"].iloc[0]
     assert depth_row["sample_p_value"] == 0.0
     assert depth_row["top_excess"] == pytest.approx(4.5)
+
+
+def test_flag_metabolite_scores_per_metabolite_thresholds():
+    """Each metabolite gets its own normal-calibrated threshold."""
+    rng = np.random.default_rng(3)
+    normals = [f"n{i}" for i in range(20)]
+    zscores = pd.DataFrame({
+        "m1": np.concatenate([np.abs(rng.normal(0, 0.5, 20)), [12.0]]),
+        "m2": np.concatenate([np.abs(rng.normal(0, 0.2, 20)), [0.25]]),
+    }, index=normals + ["p1"])
+    normal_mask = pd.Series([True] * 20 + [False], index=zscores.index)
+    flags = flag_metabolite_scores(zscores, normal_mask,
+                                   threshold_percentile=99.0)
+    # m1: noisy metabolite; the patient at |z| 12 flags with a huge excess
+    m1 = flags[flags["metabolite"] == "m1"]
+    p1_m1 = m1[m1["sample_id"] == "p1"].iloc[0]
+    assert bool(p1_m1["flagged"])
+    assert p1_m1["excess"] > 5.0
+    # with 20 normals the p99 sits just below the sample maximum, so at
+    # most the single most extreme normal can cross it
+    normal_m1 = m1[m1["sample_id"] != "p1"]
+    assert int(normal_m1["flagged"].sum()) <= 1
+    # m2: quiet metabolite; the patient's mild value stays under its p99
+    m2 = flags[flags["metabolite"] == "m2"]
+    p1_m2 = m2[m2["sample_id"] == "p1"].iloc[0]
+    assert not bool(p1_m2["flagged"])
+    # thresholds differ per metabolite (noisy m1 gets a wider range)
+    t1 = m1["threshold"].iloc[0]
+    t2 = m2["threshold"].iloc[0]
+    assert t1 > t2
+
+
+def test_summarize_metabolite_flags_depth():
+    """One grossly elevated metabolite beats the normals' max-|z| null."""
+    rows = []
+    for i in range(10):
+        for m in ("m1", "m2", "m3"):
+            rows.append({"sample_id": f"n{i}", "metabolite": m,
+                         "abs_z": 0.5 + 0.1 * i, "threshold": 1.0,
+                         "excess": 0.5 + 0.1 * i, "flagged": False})
+    # depth sample: one metabolite at |z| 12, rest quiet
+    rows += [
+        {"sample_id": "depth", "metabolite": "m1", "abs_z": 12.0,
+         "threshold": 1.0, "excess": 12.0, "flagged": True},
+        {"sample_id": "depth", "metabolite": "m2", "abs_z": 0.4,
+         "threshold": 1.0, "excess": 0.4, "flagged": False},
+        {"sample_id": "depth", "metabolite": "m3", "abs_z": 0.3,
+         "threshold": 1.0, "excess": 0.3, "flagged": False},
+    ]
+    flags = pd.DataFrame(rows)
+    normal_mask = pd.Series([True] * 10 + [False],
+                            index=[f"n{i}" for i in range(10)] + ["depth"])
+    summary = summarize_metabolite_flags(flags, normal_mask)
+    depth_row = summary[summary["sample_id"] == "depth"].iloc[0]
+    assert depth_row["max_metabolite_z"] == pytest.approx(12.0)
+    assert depth_row["n_flagged_metabolites"] == 1
+    assert depth_row["metabolite_depth_p"] == 0.0
+    assert depth_row["top_metabolite"] == "m1"
+    # no normal is flagged at sample level (their max |z| ~1.4 < null)
+    normals = summary[summary["sample_id"].str.startswith("n")]
+    assert (normals["metabolite_depth_p"] >= 0.1).all()
 
 
 def test_stouffer_max_abs_z_cap():

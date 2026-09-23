@@ -119,7 +119,8 @@ outputs/pathway_pipeline/
 ├── pathway_stouffer_reference.csv # per-pathway normal p50/p95/p99 of |Stouffer|
 ├── pathway_flags.csv          # per (sample, pathway) threshold/excess/flagged
 ├── sample_decisions.csv       # per-sample decision + p-value + evidence
-└── flagged_normal_analysis.csv # flagged normals: noise vs exclude candidates
+├── flagged_normal_analysis.csv # flagged normals: noise vs exclude candidates
+└── metabolite_flags.csv         # per (sample, metabolite) |z| flags
 ```
 
 ## Pathway Stouffer Scores (stage 3)
@@ -198,6 +199,20 @@ Every flagged normal is classified (`flagged_normal_analysis.csv`):
 - `exclude_candidate`: high excesses spread over metabolites -- a
   genuinely abnormal sample mislabeled as normal. Inspect it (batch, QC,
   diagnosis) and consider excluding it from the reference.
+
+### Metabolite-level flags (STEP 8c, report-only)
+
+`sample_decisions.csv` gains `max_metabolite_z`, `n_flagged_metabolites`,
+`metabolite_depth_p`, and `top_metabolite` (plus `metabolite_flags.csv` with
+every per-metabolite flag). A metabolite is flagged when its |z| exceeds the
+`metabolite_flag_percentile` percentile of that metabolite's own |z| among
+the reference normals -- per-metabolite calibration absorbs noisy features.
+The `metabolite_depth_p` is the fraction of normals whose maximum metabolite
+|z| reaches the sample's maximum: the metabolite-level analogue of the
+pathway max_excess rule. It catches IMDs with a single grossly elevated
+metabolite whose pathway Stouffer score is diluted by the pathway's other
+metabolites. These columns are **report-only**; the sample `flagged` decision
+still comes from the pathway rules alone.
 
 ## QC Diagnostics
 

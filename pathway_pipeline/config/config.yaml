@@ -61,20 +61,14 @@ normal_oordeel: 0
 
 # Manual reference exclusions: sample IDs removed from the normal reference
 # (z-score calibration, pathway thresholds, and the empirical null) but still
-# scored and reported in every output. First round from the 2026-09-23 STEP 8b
-# findings: 4 exclude_candidate normals plus flagged normals whose top
-# metabolite reaches |z| >= 10. A second round of 8 additions made every
-# operating point worse (excluding normals tightens the reference, which
-# re-inflates the remaining normals' z-scores -- a treadmill), so it was
-# reverted; keep the list at these 12 and treat STEP 8b as diagnostics only.
-# The "normals" are IMD-screened people, so mild systematic disturbances in a
-# subset of them are expected biology, handled by the depth-based
-# max_excess sample rule rather than by exclusions.
+# scored and reported in every output. The "normals" are IMD-screened people,
+# so mild broad disturbances are expected biology and stay in the reference
+# (the depth-based max_excess sample rule handles them). Only DEEP
+# disturbances are excluded: normals whose top metabolite reaches |z| >= 10
+# (range 11.6-37.8 on the 2026-09-23 run) are an undiagnosed IMD, a mislabel,
+# or a measurement artifact -- under every explanation they poison the
+# calibration of any threshold they touch.
 normal_exclude_ids:
-  - "25520744431"
-  - "26060502531"
-  - "25270693831"
-  - "26190182331"
   - "26060759731"
   - "25510121631"
   - "25520219137"
@@ -140,6 +134,20 @@ max_sample_p: 0.05
 # inspect and consider removing it from the reference).
 analyze_flagged_normals: true
 flagged_normals_top: 15
+
+# STEP 8c: metabolite-level flags (report-only; they never change the
+# sample decision). A metabolite is flagged when its |z| exceeds the
+# metabolite_flag_percentile percentile of that metabolite's |z| among the
+# reference normals -- per-metabolite calibration absorbs noisy features.
+# Per sample the metabolite depth p-value is the fraction of normals whose
+# maximum metabolite |z| reaches the sample's maximum; it catches IMDs with
+# a single grossly elevated metabolite whose pathway Stouffer score is
+# diluted by the pathway's other metabolites. When OR'd into the decision
+# later (metabolite_flag_rule), a sample flags on either pathway depth or
+# metabolite depth.
+run_metabolite_flags: true
+metabolite_flag_percentile: 99.0
+metabolite_flag_rule: report_only
 
 # ============================================================================
 # Output
