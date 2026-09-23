@@ -166,9 +166,7 @@ max_sample_p: 0.05
 # Per sample the metabolite depth p-value is the fraction of normals whose
 # maximum metabolite |z| reaches the sample's maximum; it catches IMDs with
 # a single grossly elevated metabolite whose pathway Stouffer score is
-# diluted by the pathway's other metabolites. When OR'd into the decision
-# later (metabolite_flag_rule), a sample flags on either pathway depth or
-# metabolite depth.
+# diluted by the pathway's other metabolites.
 run_metabolite_flags: true
 metabolite_flag_percentile: 99.0
 

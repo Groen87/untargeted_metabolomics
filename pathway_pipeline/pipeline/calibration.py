@@ -29,23 +29,35 @@ CLASSIFICATION_COLUMN = "Classification"
 OORDEEL_COLUMN = "Oordeel targeted"
 
 
-def assign_groups(metadata: pd.DataFrame) -> pd.Series:
+def assign_groups(metadata: pd.DataFrame,
+                  normal_mask: pd.Series = None,
+                  normal_classification: int = 0,
+                  normal_oordeel: int = 0) -> pd.Series:
     """Assign each sample a reporting group: normal, imd, or other.
 
-    Normals are ``Classification == 0`` AND ``Oordeel targeted == 0``; IMD
-    samples are ``Classification == 1`` AND ``Oordeel targeted == 1``. The
-    group is reporting/stratification-only evidence and is never used to
-    set thresholds.
+    Normals are the configured reference set (``Classification ==
+    normal_classification`` AND ``Oordeel targeted == normal_oordeel``;
+    defaults 0/0); IMD samples are ``Classification == 1`` AND
+    ``Oordeel targeted == 1``. The group is reporting/stratification-only
+    evidence and is never used to set thresholds.
+
+    Args:
+        metadata: frame holding the label columns (when present).
+        normal_mask: boolean Series marking the normal reference; when
+            given it overrides the label rule for the 'normal' group.
+        normal_classification: classification value marking normals.
+        normal_oordeel: oordeel value marking normals.
     """
     group = pd.Series("other", index=metadata.index)
     if {CLASSIFICATION_COLUMN, OORDEEL_COLUMN}.issubset(metadata.columns):
         cls = pd.to_numeric(metadata[CLASSIFICATION_COLUMN], errors="coerce")
         oor = pd.to_numeric(metadata[OORDEEL_COLUMN], errors="coerce")
         group[(cls == 1) & (oor == 1)] = "imd"
-        group[(cls == 0) & (oor == 0)] = "normal"
-    else:
-        logger.warning("Metadata lacks the label columns; every sample is "
-                       "grouped 'other'.")
+        if normal_mask is None:
+            group[(cls == normal_classification)
+                  & (oor == normal_oordeel)] = "normal"
+    if normal_mask is not None:
+        group[normal_mask.reindex(metadata.index, fill_value=False)] = "normal"
     return group
 
 

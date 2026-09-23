@@ -1,8 +1,11 @@
 # Pathway Pipeline
 
-A pathway-mapping pipeline for untargeted metabolomics, built on PathBank. The
-current scope is **feature engineering** (per-pathway statistics will be added
-in later stages):
+A pathway-based anomaly-detection pipeline for untargeted metabolomics, built
+on PathBank. It maps dataset features to HMDB metabolites and PathBank
+pathways, calibrates them against a clean normal reference, and flags samples
+whose pathway or metabolite disturbances exceed what normals reach — under a
+strict development/validation protocol (label-blind development QC, one-shot
+label-aware evaluation).
 
 1. **Matches** every feature column to an HMDB accession using the HMDB XML
    metabolite database (`hmdb_metabolites.xml`, a streaming name/synonym

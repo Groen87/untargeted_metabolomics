@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Main entry point for the pathway pipeline.
 
-Feature-engineering stage:
+Stages:
 
 1. Load the feature matrix CSV.
 2. Build the HMDB name index from the HMDB XML (``hmdb_metabolites.xml``).
 3. Match every feature column to one or more HMDB accessions
    (HMDB tag -> exact name -> loose name).
 4. Load the PathBank all-metabolites CSV (``pathbank_all_metabolites.csv``),
-   keeping only Metabolic and Disease pathways for Homo sapiens.
-5. Map the matched HMDB accessions to PathBank pathways and keep only
-   pathways where at least ``min_pathway_coverage`` (default 20%) of the
-   pathway's metabolites are mapped to features in the dataset.
-
-The pipeline stops here; the downstream per-pathway statistics will be added
-in later stages.
+   keeping only rows for the configured species, and keep pathways with
+   sufficient feature coverage (optionally curated by extraction-chemistry
+   keywords, ``exclude_pathway_keywords``).
+5. Split the cohort into frozen development/validation halves and clean
+   the calibration reference with leave-one-out hygiene.
+6-8. Z-score metabolites against the development normals, compute per-
+   pathway Stouffer scores, and flag samples against per-pathway normal
+   percentile thresholds.
+9. Label-blind development QC on the calibration reference.
+10. One-shot label-aware evaluation (only with ``run_evaluation``).
 """
 
 import argparse
@@ -137,22 +140,6 @@ def load_feature_matrix(input_file: str,
     return features, metadata, ages
 
 
-def _label_samples(metadata: pd.DataFrame, normal_mask: pd.Series) -> pd.Series:
-    """Assign each sample a review group: normal, imd, or other.
-
-    Normals are the configured reference set (Classification 0 and
-    Oordeel 0); IMD samples are Classification 1 and Oordeel 1. The group is
-    reporting-only evidence, never used to set thresholds.
-    """
-    group = pd.Series("other", index=metadata.index)
-    if {"Classification", "Oordeel targeted"}.issubset(metadata.columns):
-        cls = pd.to_numeric(metadata["Classification"], errors="coerce")
-        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
-        group[(cls == 1) & (oor == 1)] = "imd"
-    group[normal_mask.reindex(metadata.index, fill_value=False)] = "normal"
-    return group
-
-
 def run_pipeline(input_file: str,
                   output_dir: str = "outputs/pathway_pipeline",
                   config_path: str = None) -> dict:
@@ -252,7 +239,12 @@ def run_pipeline(input_file: str,
         normal_classification=int(config.get("normal_classification", 0)),
         normal_oordeel=int(config.get("normal_oordeel", 0)),
     )
-    sample_group = _label_samples(metadata, labeled_normal_mask)
+    sample_group = assign_groups(
+        metadata,
+        normal_mask=labeled_normal_mask,
+        normal_classification=int(config.get("normal_classification", 0)),
+        normal_oordeel=int(config.get("normal_oordeel", 0)),
+    )
 
     # ------------------------------------------------------------------
     # Cohort split (development vs validation) -- the split is part of
