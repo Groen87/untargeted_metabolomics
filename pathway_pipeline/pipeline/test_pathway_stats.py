@@ -643,6 +643,15 @@ def test_analyze_flagged_normals_classification():
 # z-cap
 # ---------------------------------------------------------------------------
 
+def test_apply_normal_exclusions_matches_integer_index():
+    """Config strings must match an integer-parsed sample-ID index."""
+    mask = pd.Series([True, True, True], index=[25270693831, 25510121631, 7])
+    updated = apply_normal_exclusions(
+        mask, exclude_ids=["25270693831", "7"])
+    assert updated.tolist() == [False, True, False]
+    assert int(updated.sum()) == 1
+
+
 def test_apply_normal_exclusions_removes_ids():
     mask = pd.Series([True, True, True, False], index=["a", "b", "c", "d"])
     updated = apply_normal_exclusions(mask, exclude_ids=["a", "c"])

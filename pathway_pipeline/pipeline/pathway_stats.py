@@ -583,16 +583,28 @@ def apply_normal_exclusions(normal_mask: pd.Series,
     """
     if exclude_ids is None:
         return normal_mask
-    exclude = [sid for sid in (str(x) for x in exclude_ids) if str(sid).strip()]
+    exclude = [sid for sid in (str(x).strip() for x in exclude_ids)
+               if sid]
     if not exclude:
         return normal_mask
-    in_index = [sid for sid in exclude if sid in normal_mask.index]
-    in_reference = [sid for sid in in_index if bool(normal_mask.loc[sid])]
-    missing = [sid for sid in exclude if sid not in normal_mask.index]
+    # Sample IDs may be parsed as integers by pandas while the config holds
+    # strings; compare on the string form of both sides.
+    index_str = pd.Series(normal_mask.index.astype(str).values,
+                          index=normal_mask.index)
+    id_to_label = {}
+    for label, s in index_str.items():
+        id_to_label.setdefault(s, label)
+    in_reference, missing, not_normal = [], [], []
+    for sid in exclude:
+        if sid not in id_to_label:
+            missing.append(sid)
+        elif not bool(normal_mask.loc[id_to_label[sid]]):
+            not_normal.append(sid)
+        else:
+            in_reference.append(id_to_label[sid])
     if missing:
         logger.warning(f"normal_exclude_ids: {len(missing)} ID(s) not in the "
                        f"dataset: {missing}")
-    not_normal = [sid for sid in in_index if not bool(normal_mask.loc[sid])]
     if not_normal:
         logger.warning(f"normal_exclude_ids: {len(not_normal)} ID(s) are not "
                        f"normal in the first place: {not_normal}")
