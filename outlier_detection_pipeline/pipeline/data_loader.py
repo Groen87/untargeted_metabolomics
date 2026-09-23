@@ -24,12 +24,48 @@ from pathlib import Path
 import pickle
 import hashlib
 
-from pathway_pipeline.pipeline.pathway_mapping import (
-    load_pathways_tsv,
-    match_features_to_hmdb,
-)
+from pathway_pipeline.pipeline.pathway_mapping import match_features_to_hmdb
 from pathway_pipeline.pipeline.hmdb_parser import build_name_index
 from pathway_pipeline.pipeline.name_utils import normalize_name, normalize_loose
+
+
+logger = logging.getLogger(__name__)
+
+
+def load_pathways_tsv(pathways_file: str) -> pd.DataFrame:
+    """Load the SMPDB-derived pathways TSV.
+
+    The expected structure is::
+
+        smp_id\tpathway_name\tn_compounds\thmdb_ids
+        SMP0000575\t11-beta-Hydroxylase Deficiency (CYP11B1)\t41\tHMDB0000015;HMDB0000016;...
+        ...
+
+    ``hmdb_ids`` is a ';'-separated list of HMDB accessions. Returns a
+    DataFrame with columns ``smp_id``, ``pathway_name``, ``n_compounds``,
+    and a list-typed ``hmdb_ids`` column (each row a list of accessions).
+    """
+    path = Path(pathways_file)
+    if not path.exists():
+        logger.error(f"Pathways TSV not found at {pathways_file}")
+        return pd.DataFrame(columns=["smp_id", "pathway_name", "n_compounds", "hmdb_ids"])
+
+    df = pd.read_csv(path, sep="\t", dtype=str)
+    required = {"smp_id", "pathway_name", "n_compounds", "hmdb_ids"}
+    missing = required - set(df.columns)
+    if missing:
+        logger.error(f"Pathways TSV {pathways_file} missing columns: {missing}")
+        return pd.DataFrame(columns=list(required))
+
+    df = df.dropna(subset=["smp_id", "pathway_name"]).copy()
+    df["n_compounds"] = pd.to_numeric(df["n_compounds"], errors="coerce")
+    # Split the ';'-separated accession list and strip whitespace/empties.
+    df["hmdb_ids"] = df["hmdb_ids"].fillna("").apply(
+        lambda s: [x.strip() for x in str(s).split(";") if x.strip()]
+    )
+    df = df.reset_index(drop=True)
+    logger.info(f"Loaded {len(df)} pathways from {pathways_file}")
+    return df[["smp_id", "pathway_name", "n_compounds", "hmdb_ids"]]
 
 
 # Greek symbols -> spelled-out English canonical token. Metabolomics data
@@ -167,8 +203,6 @@ def _normalize_loose(name: str) -> str:
     s = _normalize_name(name)
     s = _NON_ALNUM.sub('', s)
     return s
-
-logger = logging.getLogger(__name__)
 
 
 def _get_hmdb_cache_path(endogenous_file: str) -> Path:

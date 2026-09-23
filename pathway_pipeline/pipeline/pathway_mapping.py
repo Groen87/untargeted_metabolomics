@@ -1,15 +1,16 @@
 """Pathway mapping preprocessing: feature column -> HMDB accession -> pathways.
 
-This is the first stage of the pathway pipeline. It produces the three
-annotation tables the later per-pathway shift statistics consume:
+This is the feature-engineering stage of the pathway pipeline. It produces the
+annotation tables the later per-pathway statistics will consume:
 
 1. ``feature_to_hmdb.csv`` -- every input feature column mapped to one (or
    more) HMDB accessions, with the match method that resolved it.
 2. ``feature_to_pathway.csv`` -- every (feature, pathway) link, exploding the
    one-to-many relationship between a feature's HMDB accessions and the
    pathways each accession participates in.
-3. ``pathway_coverage.csv`` -- one row per pathway with the count and list of
-   matched features, plus the pathway's total compound count from the TSV.
+3. ``pathway_coverage.csv`` -- one row per pathway with the matched
+   metabolites/features and the fraction of the pathway's metabolites that are
+   mapped to dataset features.
 
 Feature columns come in three shapes (mirroring the outlier-detection
 pipeline):
@@ -21,15 +22,17 @@ pipeline):
   (primary name + synonyms), with a loose (non-alphanumeric-stripped) fallback
   that catches hyphenation/spacing differences.
 
-A plain name that resolves to several HMDB accessions is linked to ALL of
-them (and therefore to the union of their pathways); ambiguity is recorded in
-the mapping tables so the user can inspect it. A feature that matches nothing
-is reported but excluded from the pathway coverage.
+Pathway data comes from the PathBank all-metabolites CSV
+(``pathbank_all_metabolites.csv``), which lists one row per (pathway,
+metabolite) pair with the metabolite's HMDB ID. Only ``Metabolic`` and
+``Disease`` pathways for ``Homo sapiens`` are kept. A pathway is retained only
+when at least ``min_coverage`` (default 20%) of its listed metabolites are
+mapped to features in the dataset.
 """
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -39,40 +42,66 @@ from .name_utils import normalize_name, normalize_loose
 logger = logging.getLogger(__name__)
 
 
-def load_pathways_tsv(pathways_file: str) -> pd.DataFrame:
-    """Load the SMPDB-derived pathways TSV.
+PATHBANK_SPECIES = "Homo sapiens"
+PATHBANK_SUBJECTS = ("Metabolic", "Disease")
 
-    The expected structure is::
 
-        smp_id\tpathway_name\tn_compounds\thmdb_ids
-        SMP0000575\t11-beta-Hydroxylase Deficiency (CYP11B1)\t41\tHMDB0000015;HMDB0000016;...
-        ...
+def load_pathbank_pathways(pathbank_file: str) -> pd.DataFrame:
+    """Load the PathBank all-metabolites CSV into a per-(pathway, metabolite) table.
 
-    ``hmdb_ids`` is a ';'-separated list of HMDB accessions. Returns a
-    DataFrame with columns ``smp_id``, ``pathway_name``, ``n_compounds``,
-    and a list-typed ``hmdb_ids`` column (each row a list of accessions).
+    The expected structure is one row per (pathway, metabolite) pair with the
+    columns ``PathBank ID``, ``Pathway Name``, ``Pathway Subject``, ``Species``,
+    ``Metabolite ID``, ``Metabolite Name``, and ``HMDB ID``. Only ``Metabolic``
+    and ``Disease`` pathways for ``Homo sapiens`` are kept; rows without an
+    HMDB ID cannot link to the dataset and are dropped.
+
+    Returns a DataFrame with the columns ``smp_id``, ``pathway_name``,
+    ``pathway_subject``, ``species``, ``metabolite_id``, ``metabolite_name``,
+    and ``hmdb_id`` (one row per (pathway, metabolite) pair).
     """
-    path = Path(pathways_file)
+    path = Path(pathbank_file)
     if not path.exists():
-        logger.error(f"Pathways TSV not found at {pathways_file}")
-        return pd.DataFrame(columns=["smp_id", "pathway_name", "n_compounds", "hmdb_ids"])
+        logger.error(f"PathBank all-metabolites CSV not found at {pathbank_file}")
+        return pd.DataFrame(columns=["smp_id", "pathway_name", "pathway_subject",
+                                     "species", "metabolite_id",
+                                     "metabolite_name", "hmdb_id"])
 
-    df = pd.read_csv(path, sep="\t", dtype=str)
-    required = {"smp_id", "pathway_name", "n_compounds", "hmdb_ids"}
-    missing = required - set(df.columns)
+    df = pd.read_csv(path, dtype=str)
+    rename = {
+        "PathBank ID": "smp_id",
+        "Pathway Name": "pathway_name",
+        "Pathway Subject": "pathway_subject",
+        "Species": "species",
+        "Metabolite ID": "metabolite_id",
+        "Metabolite Name": "metabolite_name",
+        "HMDB ID": "hmdb_id",
+    }
+    missing = [src for src in rename if src not in df.columns]
     if missing:
-        logger.error(f"Pathways TSV {pathways_file} missing columns: {missing}")
-        return pd.DataFrame(columns=list(required))
+        logger.error(f"PathBank CSV {pathbank_file} missing columns: {missing}")
+        return pd.DataFrame(columns=list(rename.values()))
 
-    df = df.dropna(subset=["smp_id", "pathway_name"]).copy()
-    df["n_compounds"] = pd.to_numeric(df["n_compounds"], errors="coerce")
-    # Split the ';'-separated accession list and strip whitespace/empties.
-    df["hmdb_ids"] = df["hmdb_ids"].fillna("").apply(
-        lambda s: [x.strip() for x in str(s).split(";") if x.strip()]
+    df = df.rename(columns=rename)
+    n_raw = len(df)
+
+    df["species"] = df["species"].fillna("").str.strip()
+    df["pathway_subject"] = df["pathway_subject"].fillna("").str.strip()
+    df["hmdb_id"] = df["hmdb_id"].fillna("").str.strip().str.upper()
+
+    keep = (
+        (df["species"] == PATHBANK_SPECIES)
+        & (df["pathway_subject"].isin(PATHBANK_SUBJECTS))
+        & (df["hmdb_id"] != "")
     )
-    df = df.reset_index(drop=True)
-    logger.info(f"Loaded {len(df)} pathways from {pathways_file}")
-    return df[["smp_id", "pathway_name", "n_compounds", "hmdb_ids"]]
+    df = df.loc[keep, list(rename.values())].copy()
+    df = df.drop_duplicates().reset_index(drop=True)
+
+    logger.info(
+        f"Loaded {n_raw} rows from {pathbank_file}; kept {len(df)} "
+        f"({PATHBANK_SPECIES} {PATHBANK_SUBJECTS} rows with an HMDB ID) across "
+        f"{df['smp_id'].nunique()} pathways."
+    )
+    return df
 
 
 def _split_feature_name_and_hmdb(col: str) -> Optional[str]:
@@ -202,95 +231,124 @@ def link_features_to_pathways(feature_to_hmdb: pd.DataFrame,
                                pathways: pd.DataFrame) -> pd.DataFrame:
     """Explode feature -> HMDB -> pathway links into a long table.
 
-    Joins each matched HMDB accession against the pathways TSV (a pathway row
-    matches if the accession is in its ``hmdb_ids`` list), producing one row
-    per (feature, pathway) link. Unmatched features are excluded. A feature
-    whose accession sits in several pathways yields several rows.
+    Joins each matched HMDB accession against the PathBank metabolite table
+    (a pathway matches if the accession appears as one of its metabolite
+    HMDB IDs), producing one row per (feature, pathway) link. Unmatched
+    features are excluded. A feature whose accession sits in several pathways
+    yields several rows.
 
     Args:
         feature_to_hmdb: output of :func:`match_features_to_hmdb`.
-        pathways: output of :func:`load_pathways_tsv`.
+        pathways: output of :func:`load_pathbank_pathways`.
 
     Returns:
         DataFrame with columns ``feature``, ``hmdb_id``, ``smp_id``,
-        ``pathway_name``, ``n_compounds``.
+        ``pathway_name``, ``metabolite_id``, ``metabolite_name``.
     """
+    empty = pd.DataFrame(columns=["feature", "hmdb_id", "smp_id",
+                                  "pathway_name", "metabolite_id",
+                                  "metabolite_name"])
     matched = feature_to_hmdb.dropna(subset=["hmdb_id"]).copy()
     if matched.empty or pathways.empty:
         logger.info("No matched features or no pathways; feature->pathway table empty.")
-        return pd.DataFrame(columns=["feature", "hmdb_id", "smp_id",
-                                      "pathway_name", "n_compounds"])
+        return empty
 
-    # Build accession -> list of (smp_id, pathway_name, n_compounds) once.
-    acc_to_pathways: Dict[str, List[tuple]] = {}
+    # Build accession -> list of (pathway, metabolite) rows once.
+    acc_to_pathways: Dict[str, List[Tuple[str, str, str, str]]] = {}
     for _, prow in pathways.iterrows():
-        for acc in prow["hmdb_ids"]:
-            acc_to_pathways.setdefault(acc, []).append(
-                (prow["smp_id"], prow["pathway_name"], prow["n_compounds"])
-            )
+        acc_to_pathways.setdefault(prow["hmdb_id"], []).append(
+            (prow["smp_id"], prow["pathway_name"],
+             prow["metabolite_id"], prow["metabolite_name"])
+        )
 
     rows: List[Dict] = []
     for _, mrow in matched.iterrows():
         acc = mrow["hmdb_id"]
-        for smp_id, pname, ncomp in acc_to_pathways.get(acc, []):
+        for smp_id, pname, met_id, met_name in acc_to_pathways.get(acc, []):
             rows.append({
                 "feature": mrow["feature"],
                 "hmdb_id": acc,
                 "smp_id": smp_id,
                 "pathway_name": pname,
-                "n_compounds": ncomp,
+                "metabolite_id": met_id,
+                "metabolite_name": met_name,
             })
 
     links = pd.DataFrame(rows, columns=["feature", "hmdb_id", "smp_id",
-                                         "pathway_name", "n_compounds"])
+                                         "pathway_name", "metabolite_id",
+                                         "metabolite_name"])
     logger.info(f"Built {len(links)} feature->pathway links across "
                 f"{links['smp_id'].nunique() if len(links) else 0} pathways.")
     return links
 
 
 def pathway_coverage(feature_to_pathway: pd.DataFrame,
-                      min_pathway_size: int = 3) -> pd.DataFrame:
-    """Summarize, per pathway, the matched features and coverage.
+                      pathways: pd.DataFrame,
+                      min_coverage: float = 0.20) -> pd.DataFrame:
+    """Summarize, per pathway, the matched metabolites and their coverage.
+
+    A pathway's total metabolite count is the number of distinct HMDB IDs
+    listed for it in the PathBank table (after the species/subject filters).
+    ``coverage`` is the fraction of those metabolites that are mapped to
+    features in the dataset. Only pathways with ``coverage >= min_coverage``
+    are returned.
 
     Args:
         feature_to_pathway: output of :func:`link_features_to_pathways`.
-        min_pathway_size: drop pathways with fewer matched features than this.
+        pathways: output of :func:`load_pathbank_pathways`; used for the
+            per-pathway total metabolite counts.
+        min_coverage: keep pathways where at least this fraction of the
+            pathway's metabolites are mapped to dataset features.
 
     Returns:
-        DataFrame with one row per pathway and columns ``smp_id``,
-        ``pathway_name``, ``n_compounds`` (total compounds in the pathway from
-        the TSV), ``n_matched_features`` (number of distinct dataset features
-        mapped to the pathway), ``matched_features`` (';'-joined list), and
-        ``coverage`` (n_matched_features / n_compounds).
+        DataFrame with one row per kept pathway and columns ``smp_id``,
+        ``pathway_name``, ``n_metabolites`` (total distinct HMDB IDs listed in
+        PathBank), ``n_matched_metabolites``, ``matched_metabolites``
+        (';'-joined HMDB IDs), ``n_matched_features``, ``matched_features``
+        (';'-joined dataset feature columns), and ``coverage``.
     """
-    if feature_to_pathway.empty:
-        return pd.DataFrame(columns=["smp_id", "pathway_name", "n_compounds",
-                                      "n_matched_features", "matched_features",
-                                      "coverage"])
+    out_cols = ["smp_id", "pathway_name", "n_metabolites",
+                "n_matched_metabolites", "matched_metabolites",
+                "n_matched_features", "matched_features", "coverage"]
+    if feature_to_pathway.empty or pathways.empty:
+        return pd.DataFrame(columns=out_cols)
 
+    # Distinct HMDB IDs per pathway from the PathBank table.
+    pw_totals = (
+        pathways.groupby(["smp_id", "pathway_name"])["hmdb_id"]
+        .agg(lambda s: sorted(set(s)))
+        .rename("metabolites")
+        .reset_index()
+    )
+    pw_totals["n_metabolites"] = pw_totals["metabolites"].str.len()
+
+    # Distinct matched HMDB IDs (and their dataset features) per pathway.
     grouped = (
         feature_to_pathway
-        .groupby(["smp_id", "pathway_name", "n_compounds"], dropna=False)["feature"]
-        .agg(lambda s: sorted(set(s)))
-        .reset_index(name="matched_features")
+        .groupby(["smp_id", "pathway_name"])
+        .agg(matched_metabolites=("hmdb_id", lambda s: sorted(set(s))),
+             matched_features=("feature", lambda s: sorted(set(s))))
+        .reset_index()
     )
+    grouped["n_matched_metabolites"] = grouped["matched_metabolites"].str.len()
     grouped["n_matched_features"] = grouped["matched_features"].str.len()
+    grouped["matched_metabolites"] = grouped["matched_metabolites"].str.join(";")
     grouped["matched_features"] = grouped["matched_features"].str.join(";")
-    grouped["n_compounds"] = pd.to_numeric(grouped["n_compounds"], errors="coerce")
-    grouped["coverage"] = grouped.apply(
-        lambda r: (r["n_matched_features"] / r["n_compounds"])
-        if pd.notna(r["n_compounds"]) and r["n_compounds"] > 0 else float("nan"),
-        axis=1,
-    )
-    grouped = grouped.sort_values("n_matched_features", ascending=False)
-    before = len(grouped)
-    dropped_rows = grouped[grouped["n_matched_features"] < min_pathway_size]
-    grouped = grouped[grouped["n_matched_features"] >= min_pathway_size].reset_index(drop=True)
-    dropped = before - len(grouped)
+
+    coverage = pw_totals.merge(grouped, on=["smp_id", "pathway_name"], how="left")
+    coverage["n_matched_metabolites"] = coverage["n_matched_metabolites"].fillna(0).astype(int)
+    coverage["n_matched_features"] = coverage["n_matched_features"].fillna(0).astype(int)
+    coverage["matched_metabolites"] = coverage["matched_metabolites"].fillna("")
+    coverage["matched_features"] = coverage["matched_features"].fillna("")
+    coverage["coverage"] = coverage["n_matched_metabolites"] / coverage["n_metabolites"]
+
+    before = len(coverage)
+    dropped_rows = coverage[coverage["coverage"] < min_coverage]
+    coverage = coverage[coverage["coverage"] >= min_coverage].copy()
+    coverage = coverage.sort_values("coverage", ascending=False).reset_index(drop=True)
+    dropped = before - len(coverage)
     if dropped:
-        dropped_names = sorted(dropped_rows["pathway_name"].unique())
-        logger.info(f"Dropped {dropped} pathways with fewer than "
-                    f"{min_pathway_size} matched features; {len(grouped)} remain.")
-        logger.info(f"Dropped pathways: {dropped_names}")
-    return grouped[["smp_id", "pathway_name", "n_compounds",
-                    "n_matched_features", "matched_features", "coverage"]]
+        logger.info(f"Dropped {dropped} pathways with coverage < {min_coverage:.0%}; "
+                    f"{len(coverage)} remain.")
+        logger.debug(f"Dropped pathways: {sorted(dropped_rows['pathway_name'].unique())}")
+    return coverage[out_cols]

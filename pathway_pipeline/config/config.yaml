@@ -1,5 +1,7 @@
+# ============================================================================
 # Pathway Pipeline Configuration
-# This is a CLEAN configuration for the new pathway analysis
+# Feature-engineering stage: feature -> HMDB -> PathBank pathway mapping
+# ============================================================================
 
 # ============================================================================
 # Input/Output
@@ -11,14 +13,10 @@ output_dir: "outputs/pathway_pipeline"
 # Data Configuration
 # ============================================================================
 patient_id_column: null
-
 non_feature_columns:
   - "Oordeel targeted"
   - "Classification"
-
-# Classification scheme:
-#   class1_imd: normals = Class 0 AND Oordeel 0; IMD = Class 1 AND Oordeel 1
-classification_scheme: class1_imd
+age_column: null
 
 # ============================================================================
 # HMDB Database
@@ -28,186 +26,18 @@ use_hmdb_cache: true
 min_name_length: 3
 
 # ============================================================================
-# Pathways
+# PathBank Pathways
 # ============================================================================
-pathways_file: "data/pathways.tsv"
-min_pathway_size: 3
+# PathBank all-metabolites CSV: one row per (pathway, metabolite) pair with the
+# metabolite's HMDB ID. Only Metabolic and Disease pathways for Homo sapiens
+# are used.
+pathbank_file: "data/pathbank_all_metabolites.csv"
 
-# ============================================================================
-# Clean Pathway Analysis (NEW)
-# ============================================================================
-# This is the NEW clean implementation that replaces the buggy enhanced pipeline
-run_stats: true
-
-# Age adjustment (optional)
-age_column: null
-age_adjustment_method: ols
-age_loess_frac: 0.5
-iqr_scale: true
-
-# Clean pathway analysis parameters
-# These control the NEW implementation in pathway_analysis_clean.py
-min_detection: 0.80           # Target: flag >80% of IMDs
-max_contamination: 0.05       # Target: flag <5% of normals
-min_flagged_pathways: 1      # IMDs typically have 1-2 extreme pathways
-n_thresholds: 20              # Number of percentiles to test for optimal threshold
-
-# ============================================================================
-# Enhanced Three-Statistic Pathway Flagging
-# ============================================================================
-# In addition to the classic absolute-Stouffer analysis, flag samples using:
-#   1. Correlation-adjusted Stouffer (global disturbance): directional
-#      Stouffer's Z divided by sqrt(1' Sigma 1), with Sigma (the pathway
-#      feature correlation matrix) estimated on the reference controls via
-#      Ledoit-Wolf shrinkage. Corrects the independence assumption.
-#   2. Top-k max-z with empirical null (localized block): mean of the k
-#      largest |z| in a pathway, p-valued against a bootstrap null built
-#      from the controls' own top-k statistics.
-#   3. Substrate:product ratio z-scores (block-specific): robust
-#      median/IQR z of log10(sum(substrate)/sum(product)) against controls.
-# A sample is flagged when any pathway's combined p survives BH-FDR across
-# pathways at enhanced_target_fdr.
-use_enhanced_flagging: false   # Set true to enable (runs alongside classic analysis)
-enhanced_target_fdr: 0.05     # BH-FDR level across pathways per sample
-enhanced_topk_k: 3            # k for the top-k statistic
-enhanced_n_boot: 1000        # bootstrap resamples for the top-k empirical null
-
-# Substrate:product ratio specs. Each entry:
-#   name:       output ratio name
-#   numerator:  list of feature names (summed) -- substrate(s)
-#   denominator: list of feature names (summed) -- product(s)
-#   pathway:    optional pathway_name to attach the ratio flag to; when
-#               omitted the ratio forms its own test
-# Feature names must match the z-score columns exactly.
-# Example (propionyl-CoA carboxylase block):
-# ratio_z_specs:
-#   - name: "ratio_C3_C2"
-#     numerator: ["Propionylcarnitine.HMDB0000842"]
-#     denominator: ["L-Acetylcarnitine.HMDB0000201"]
-#     pathway: "Proprionyl-CoA carboxylase deficiency"
-# ratio_z_specs: []
-
-# ============================================================================
-# Anomaly Detection (NEW)
-# ============================================================================
-# Train anomaly detector on NORMAL samples only, test on ALL samples
-# This is the correct approach for low prevalence (2% IMDs in production)
-use_anomaly_detection: true
-
-# Anomaly detection method: 'lof', 'iforest', or 'mahalanobis'
-# - lof: Local Outlier Factor (good for heterogeneous IMDs affecting different pathways)
-# - iforest: Isolation Forest (fast, good general performance)
-# - mahalanobis: Mahalanobis distance (parametric, assumes Gaussian distribution)
-anomaly_scorer: lof
-
-# Anomaly detection parameters
-anomaly_contamination: 0.02    # Expected IMD rate in production (2%)
-anomaly_n_neighbors: 20         # For LOF: number of neighbors
-anomaly_n_estimators: 100       # For IForest: number of trees
-anomaly_percentile: 99.0       # Percentile for thresholding (kept for backward compatibility)
-anomaly_random_state: 42       # Random seed for reproducibility
-anomaly_train_ratio: 0.8      # Ratio of normals to use for training (default 80/20 split)
-
-# Optional PCA dimensionality reduction before the anomaly detector.
-# PCA is fit on TRAINING NORMALS ONLY (after scaling) and the same projection
-# is applied to validation/production samples -- no leakage from held-out data.
-# With ~300 pathway features and few training normals, PCA can stabilize
-# LOF/Mahalanobis; keep it off when you have plenty of samples per pathway.
-anomaly_use_pca: false
-# Number of components: a float in (0, 1] = fraction of variance to preserve
-# (components chosen automatically, e.g. 0.95); an int = exact number.
-anomaly_pca_components: 0.95
-
-# Fused multi-view anomaly detection (NEW)
-# When enabled, trains one detector per feature view and combines the
-# control-calibrated scores with max() before threshold optimization:
-#   - pathway_zsummary: per-pathway z-score summaries (signed mean z, mean |z|,
-#     max |z|, top-k |z|) -- preserves magnitude/direction instead of p-values
-#   - metabolite_z: metabolite-level z-scores (same basis the enhanced
-#     flagging uses)
-# Each view is scaled (and optionally PCA-reduced, see anomaly_use_pca) on
-# TRAINING NORMALS only; per-view raw scores are converted to z-scores using
-# the training-normal score distribution so views are comparable, then fused
-# with max(). This adds detections among samples the pathway view misses
-# while the control calibration keeps the false-positive rate in check.
-use_fused_anomaly_detection: true
-# Include the per-pathway z-summary view (set false for metabolite-only; the
-# metabolite view had the higher ROC-AUC in practice)
-fused_include_pathway_view: true
-# Include the metabolite-level z-score view (set false for pathway-only)
-fused_include_metabolite_view: true
-
-# Per-view PCA (recommended: reduce the high-dimensional metabolite view;
-# keep the low-dimensional pathway view raw since LOF works well there).
-# A float in (0, 1] = fraction of variance to preserve; an int = exact
-# number of components; null/absent = no PCA for that view.
-# PCA is fit on TRAINING NORMALS only (no leakage).
-fused_pca_pathway_view: null      # e.g. 0.95 or 10
-fused_pca_metabolite_view: 0.95    # strongly recommended for LOF here
-
-# Per-view anomaly scorer (overrides anomaly_scorer for that view):
-# 'lof', 'iforest', or 'mahalanobis'. Recommended: lof for the pathway
-# view (local density in low dimensions), iforest for the metabolite view
-# (handles high dimensions better than distance-based methods).
-fused_scorer_pathway_view: lof
-fused_scorer_metabolite_view: iforest
-
-# Threshold optimization (NEW: threshold is now optimized on validation set)
-# Optimization metric: 'f1', 'precision', 'recall', or 'youden'
-anomaly_optimization_metric: f1
-anomaly_max_contamination: 0.05  # Max acceptable normal contamination rate
-anomaly_min_detection: 0.80     # Min acceptable IMD detection rate
-
-# ============================================================================
-# Legacy parameters (kept for compatibility, not used in clean pipeline)
-# ============================================================================
-normal_classification: 0
-outlier_classifications:
-  - 1
-  - 2
-  - 3
-
-flag_percentile: 99
-metabolite_override_threshold: 6.0
-
-zmed_threshold: 2.0
-flagged_fraction_threshold: 0.5
-signed_extreme_threshold: 2.5
-severe_zmed_threshold: 3.0
-severe_flagged_fraction_threshold: 0.7
-severe_signed_extreme_threshold: 4.0
-
-min_severe_pathways: 3
-min_moderate_pathways: 8
-min_severe_zmed: 5.0
-min_moderate_zmed: 3.5
-
-global_anomaly_top_k: 10
-global_threshold: null
-
-run_threshold_tuning: false
-tuning_metric: f1
-tuning_prevalence: 0.02
-tuning_override_grid: [4.0, 5.0, 6.0, 8.0, 10.0]
-tuning_moderate_zmed_grid: [1.5, 2.0, 2.5, 3.0]
-tuning_severe_zmed_grid: [2.5, 3.0, 3.5, 4.0]
-tuning_signed_extreme_grid: [2.5, 3.0, 4.0]
-
-suppress_numpy_warnings: true
-
-# ============================================================================
-# Enhanced statistics (DEPRECATED - not used)
-# ============================================================================
-use_enhanced_stats: false
+# Keep only pathways where at least this fraction of the pathway's metabolites
+# are mapped to features in the dataset (0.20 = 20%).
+min_pathway_coverage: 0.20
 
 # ============================================================================
 # Output
 # ============================================================================
 save_mapping_outputs: true
-
-# ============================================================================
-# Visualization (optional)
-# ============================================================================
-generate_imd_visualizations: false
-visualization_top_n: 15
-visualization_dpi: 150
