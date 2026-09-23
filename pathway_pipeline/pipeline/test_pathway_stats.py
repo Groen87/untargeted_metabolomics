@@ -17,8 +17,6 @@ sys.path.insert(0, str(ROOT))
 from pathway_pipeline.main import load_feature_matrix
 from pathway_pipeline.pipeline.pathway_stats import (
     _binomial_sf,
-    analyze_flagged_normals,
-    apply_normal_exclusions,
     classify_samples,
     flag_metabolite_scores,
     summarize_metabolite_flags,
@@ -591,87 +589,9 @@ def test_summarize_sample_flags_empirical_rule():
     assert bool(shifted["flagged"])
 
 
-def test_analyze_flagged_normals_classification():
-    """Flagged normals get classified with top metabolites and overlap."""
-    samples = ["n1", "n2", "n_bad"]
-    zscores = pd.DataFrame({
-        "f1": [0.1, 0.1, 8.0],
-        "f2": [0.2, 0.2, 7.5],
-        "f3": [0.1, 0.1, 9.0],
-        "f4": [0.0, 0.0, 0.1],
-        "f5": [0.0, 0.0, 0.1],
-        "f6": [0.0, 0.0, 0.1],
-    }, index=samples)
-    links = pd.DataFrame([
-        {"feature": f"f{i}", "hmdb_id": f"H{i}", "smp_id": "SMP1",
-         "pathway_name": "P1", "metabolite_id": f"M{i}",
-         "metabolite_name": f"m{i}"}
-        for i in (1, 2, 3)
-    ] + [
-        {"feature": f"f{i}", "hmdb_id": f"H{i}", "smp_id": "SMP2",
-         "pathway_name": "P2", "metabolite_id": f"M{i}",
-         "metabolite_name": f"m{i}"}
-        for i in (4, 5, 6)
-    ])
-    rows = []
-    for s in samples:
-        for pw in ("SMP1", "SMP2"):
-            flagged = s == "n_bad"
-            rows.append({
-                "sample_id": s, "smp_id": pw, "pathway_name": pw,
-                "n_metabolites_used": 3,
-                "z_stouffer": 3.0 if flagged else 0.1,
-                "z_stouffer_abs": 3.0 if flagged else 0.1,
-                "threshold": 1.0,
-                "excess": 3.0 if flagged else 0.1,
-                "flagged": flagged,
-            })
-    flags = pd.DataFrame(rows)
-    normal_mask = pd.Series([True, True, True], index=samples)
-
-    report = analyze_flagged_normals(flags, zscores, links, normal_mask,
-                                     top=5)
-    assert report["sample_id"].tolist() == ["n_bad"]
-    bad = report.iloc[0]
-    assert bad["classification"] in ("exclude_candidate", "correlated_noise")
-    assert int(bad["n_flagged_pathways"]) == 2
-    assert set(report.columns) == {
-        "sample_id", "n_flagged_pathways", "max_excess",
-        "n_top_metabolites", "pathway_overlap", "concentration",
-        "classification", "reason"}
 
 
-# ---------------------------------------------------------------------------
-# z-cap
-# ---------------------------------------------------------------------------
 
-def test_apply_normal_exclusions_matches_integer_index():
-    """Config strings must match an integer-parsed sample-ID index."""
-    mask = pd.Series([True, True, True], index=[25270693831, 25510121631, 7])
-    updated = apply_normal_exclusions(
-        mask, exclude_ids=["25270693831", "7"])
-    assert updated.tolist() == [False, True, False]
-    assert int(updated.sum()) == 1
-
-
-def test_apply_normal_exclusions_removes_ids():
-    mask = pd.Series([True, True, True, False], index=["a", "b", "c", "d"])
-    updated = apply_normal_exclusions(mask, exclude_ids=["a", "c"])
-    assert updated.tolist() == [False, True, False, False]
-    assert int(updated.sum()) == 1
-
-
-def test_apply_normal_exclusions_handles_missing_and_nonnormal():
-    mask = pd.Series([True, True, False], index=["a", "b", "c"])
-    updated = apply_normal_exclusions(mask, exclude_ids=["zzz", "c", None, ""])
-    assert updated.tolist() == [True, True, False]
-    assert int(updated.sum()) == 2
-
-
-def test_apply_normal_exclusions_none_keeps_mask():
-    mask = pd.Series([True, True], index=["a", "b"])
-    updated = apply_normal_exclusions(mask, exclude_ids=None)
-    assert updated.tolist() == [True, True]
 
 
 def _depth_vs_breadth_flags(n_pathways=40, n_breadth=20):

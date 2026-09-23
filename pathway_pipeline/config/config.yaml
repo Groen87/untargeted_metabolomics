@@ -75,24 +75,23 @@ min_reference_scale: 0.08
 normal_classification: 0
 normal_oordeel: 0
 
-# Manual reference exclusions: sample IDs removed from the normal reference
-# (z-score calibration, pathway thresholds, and the empirical null) but still
-# scored and reported in every output. The "normals" are IMD-screened people,
-# so mild broad disturbances are expected biology and stay in the reference
-# (the depth-based max_excess sample rule handles them). Only DEEP
-# disturbances are excluded: normals whose top metabolite reaches |z| >= 10
-# (range 11.6-37.8 on the 2026-09-23 run) are an undiagnosed IMD, a mislabel,
-# or a measurement artifact -- under every explanation they poison the
-# calibration of any threshold they touch.
-normal_exclude_ids:
-  - "26060759731"
-  - "25510121631"
-  - "25520219137"
-  - "25481322931"
-  - "26201404133"
-  - "25391527231"
-  - "26220671831"
-  - "26130980531"
+# Automated reference hygiene (label-blind): a candidate normal whose
+# leave-one-out max metabolite |z| exceeds this depth is excluded from the
+# calibration reference (it cannot mask its own disturbance; the peers'
+# median/IQR are computed without it). Replaces hand-picked exclusion lists.
+reference_hygiene:
+  enable: true
+  max_depth: 10.0
+
+# Frozen cohort split (part of the configuration): every sample is assigned
+# once, deterministically, to the development or the validation half.
+# Calibration uses development normals only. The validation half is scored
+# but never calibrates anything; its metrics are read once per frozen
+# config version (run_evaluation).
+validation_split:
+  enable: true
+  seed: 20260923
+  fraction: 0.5
 
 # Minimum number of usable matched metabolites for a pathway to stay in the
 # scoring set after the z-score stage (Stouffer on k < 3 is dominated by a
@@ -144,13 +143,6 @@ min_flagged_pathways: 1
 sample_rule: max_excess
 max_sample_p: 0.05
 
-# STEP 8b: classify every flagged normal as correlated_noise (a few shared
-# metabolites drive many overlapping pathway flags; keep it in the
-# reference) or exclude_candidate (high excesses spread over metabolites;
-# inspect and consider removing it from the reference).
-analyze_flagged_normals: true
-flagged_normals_top: 15
-
 # STEP 8c: metabolite-level flags (report-only; they never change the
 # sample decision). A metabolite is flagged when its |z| exceeds the
 # metabolite_flag_percentile percentile of that metabolite's |z| among the
@@ -163,14 +155,27 @@ flagged_normals_top: 15
 # metabolite depth.
 run_metabolite_flags: true
 metabolite_flag_percentile: 99.0
-metabolite_flag_rule: report_only
 
-# Demoted artifact features: kept in the z-score/report outputs but never
-# scored (no Stouffer contribution, no metabolite flags). Demote -- don't
-# delete -- features that flag normals as often as IMD patients (Section 3
-# of the QC report: thiamine monophosphate 16 imd/20 normal flags,
-# Reduced Glutathione oxidation-labile, Urocanic acid, biotin degradation
-# product); they stay reviewable and can be re-promoted later.
+# STEP 9: label-blind development QC (calibration check, noise floor,
+# diverging duplicates, threshold stability, pathway redundancy). Iterate
+# freely on this output; IMD labels are never read.
+run_development_qc: true
+development_qc_bootstrap: 200
+
+# STEP 10: one-shot label-aware evaluation of the frozen config. Enable
+# only when the configuration is frozen. Reading the validation metrics
+# and then changing the config invalidates the validation half.
+run_evaluation: false
+evaluate_dev_half: false
+
+# Demoted artifact features, justified by CHEMISTRY/ANALYTICAL PRIORS ONLY
+# (an allowed evidence budget -- no group/disease counts informed this
+# list): thiamine monophosphate is a noise-floor feature (reference IQR
+# 0.054, below the scale floor anyway); Reduced Glutathione is
+# oxidation-labile (a classic pre-analytical artifact); the
+# hexahydro-2-oxo-thieno compound is a biotin degradation product;
+# Urocanic acid is light- and heat-labile. Kept in the reports, never
+# scored; re-promote by removing an entry.
 demoted_features:
   - "thiamine monophosphate"
   - "Reduced Glutathione"

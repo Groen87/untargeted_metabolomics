@@ -371,7 +371,6 @@ def test_run_pipeline_wires_floor_overrides_demotion_and_weights(tmp_path):
         "sample_rule": "max_excess",
         "max_sample_p": 0.5,
         "run_metabolite_flags": True,
-        "analyze_flagged_normals": False,
         "save_mapping_outputs": True,
         "save_zscore_outputs": True,
         "save_stouffer_outputs": True,

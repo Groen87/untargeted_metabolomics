@@ -29,7 +29,13 @@ pathway_pipeline/
     ├── name_utils.py             # Canonical name normalization (Greek folding)
     ├── hmdb_parser.py            # Streaming HMDB XML -> name index (+ cache)
     ├── pathway_mapping.py        # feature -> HMDB -> PathBank pathway mapping
-    └── test_pathway_pipeline.py  # Unit tests (synthetic inputs)
+    ├── pathway_stats.py          # z-scores, Stouffer, flagging, summaries
+    ├── calibration.py            # Cohort split + leave-one-out reference hygiene
+    ├── develop.py                # Label-blind development QC (STEP 9)
+    ├── evaluate.py              # One-shot label-aware evaluation (STEP 10)
+    ├── test_pathway_pipeline.py  # Unit tests (synthetic inputs)
+    ├── test_pathway_stats.py     # Unit tests for the statistics layer
+    └── test_calibration.py      # Unit tests for calibration/evaluation
 ```
 
 ## Input Files
@@ -93,6 +99,43 @@ feature is turned into a robust z-score against the **normal reference set**
 z_i(s) = (x_i(s) - median_i) / IQR_i      (medians/IQRs over normals only)
 ```
 
+The scientific protocol splits the available evidence into three budgets,
+enforced by the pipeline structure:
+
+1. **Normal-reference statistics** (medians, IQRs, per-pathway percentile
+   thresholds, null distributions): free to use, but computed on
+   **development-half normals only** (see the cohort split below).
+2. **IMD labels**: evaluation only, read once per frozen configuration
+   version on the validation half (STEP 10). Never during calibration.
+3. **External chemistry knowledge** (known artifact compounds, HMDB name
+   collisions): free to use, documented in `config.yaml`.
+
+### Cohort split (development vs validation, STEP 5)
+
+Every sample is assigned exactly once, deterministically, to a **development**
+or **validation** half (`stratified_split`, seeded permutation stratified by
+reporting group; `validation_split.seed` and `.fraction` in `config.yaml`,
+part of the frozen configuration). Calibration uses development normals
+only; validation samples are scored like any other sample but never
+contribute to any median, IQR, threshold, or null. The assignment is written
+to `cohort_split.csv` and appears as the `validation` column in
+`sample_decisions.csv`.
+
+### Automated reference hygiene (STEP 5)
+
+Hand-picked reference exclusions are replaced by a pre-specified,
+label-blind rule (`reference_hygiene` in `config.yaml`): a candidate normal
+is excluded from the calibration reference when its **leave-one-out** max
+metabolite |z| (computed against the other candidate normals' median/IQR,
+so it cannot mask its own disturbance by inflating the reference spread)
+exceeds `reference_hygiene.max_depth` (default 10). The check iterates:
+when an exclusion tightens the peer reference enough to push another
+borderline candidate past the threshold, that candidate is excluded in the
+next round, until no new candidate crosses (capped at 10 rounds). The
+per-candidate LOO depths are written to `reference_hygiene.csv`. Excluded
+samples keep their scores and group label everywhere; they only leave the
+calibration reference.
+
 Features whose reference scale is zero (flat in the normals) or that have no
 normal values at all are dropped (`dropped_features.csv`, with the reason) --
 they cannot be calibrated and would dilute pathway scores. After the drop,
@@ -111,6 +154,8 @@ outputs/pathway_pipeline/
 ├── feature_to_hmdb.csv        # feature -> HMDB accession(s) + match method
 ├── feature_to_pathway.csv     # (feature, pathway) links
 ├── pathway_coverage.csv       # per-pathway matched metabolites/features + coverage
+├── cohort_split.csv           # per-sample development/validation assignment
+├── reference_hygiene.csv      # per-candidate-normal LOO depth + exclusion
 ├── metabolite_zscores.csv      # per-sample robust z-scores (normals reference)
 ├── reference_stats.csv         # per-feature median/scale/normal-value counts
 ├── dropped_features.csv        # features dropped before z-scoring, with reason
@@ -118,8 +163,9 @@ outputs/pathway_pipeline/
 ├── pathway_stouffer_scores.csv # per (sample, pathway) signed + absolute Stouffer
 ├── pathway_stouffer_reference.csv # per-pathway normal p50/p95/p99 of |Stouffer|
 ├── pathway_flags.csv          # per (sample, pathway) threshold/excess/flagged
-├── sample_decisions.csv       # per-sample decision + p-value + evidence
-├── flagged_normal_analysis.csv # flagged normals: noise vs exclude candidates
+├── sample_decisions.csv       # per-sample decision + p-value + evidence + half
+├── development_qc_noise_floor.csv # noise-floor features (STEP 9)
+├── evaluation_summary.csv     # one-shot validation metrics (STEP 10)
 └── metabolite_flags.csv         # per (sample, metabolite) |z| flags
 ```
 
@@ -171,34 +217,10 @@ A sample is flagged when it passes the count rule AND
 `sample_p_value <= max_sample_p` (default 0.05) under the chosen null.
 `sample_decisions.csv` reports the per-sample p-value together with the
 Classification/Oordeel group (`normal` = Class 0 + Oordeel 0, `imd` =
-Class 1 + Oordeel 1, `other`) -- a **reporting-only**
-detection-vs-contamination summary. Thresholds are never tuned against
-the IMD labels; tuning would have to happen inside cross-validation.
-
-### Manual reference exclusions (`normal_exclude_ids`)
-
-Sample IDs listed under `normal_exclude_ids` in `config.yaml` are removed
-from the **normal reference only**: they no longer contribute to the z-score
-medians/IQRs, the per-pathway flag thresholds, or the empirical null, but
-they keep their z-scores, Stouffer scores, flags, and sample decisions, and
-they still report under group `normal` in the group summary. Use this for
-normals that STEP 8b identifies as `exclude_candidate`, or whose top metabolite
-reaches implausible |z| values (mislabeled, undiagnosed IMD, or measurement
-artifact). The config ships pre-filled with the 12 problematic normals from
-the 2026-09-23 run; review `flagged_normal_analysis.csv` after each run and
-keep the list current. IDs missing from the dataset (or not labeled normal)
-are logged with a warning so a stale entry cannot silently do nothing.
-
-### Flagged-normal analysis (STEP 8b)
-
-Every flagged normal is classified (`flagged_normal_analysis.csv`):
-
-- `correlated_noise`: a few metabolites drive most of the flagged pathways
-  (high pathway overlap / metabolite concentration). Consistent with a
-  mild shared-metabolite shift: keep the sample in the reference.
-- `exclude_candidate`: high excesses spread over metabolites -- a
-  genuinely abnormal sample mislabeled as normal. Inspect it (batch, QC,
-  diagnosis) and consider excluding it from the reference.
+Class 1 + Oordeel 1, `other`) and the development/validation half -- a
+**reporting-only** detection-vs-contamination summary. Thresholds are
+never tuned against the IMD labels; the development/validation protocol
+below is what keeps the flagging method scientifically valid.
 
 ### Metabolite-level flags (STEP 8c, report-only)
 
@@ -214,32 +236,53 @@ metabolite whose pathway Stouffer score is diluted by the pathway's other
 metabolites. These columns are **report-only**; the sample `flagged` decision
 still comes from the pathway rules alone.
 
-## QC Diagnostics
+## Development QC (STEP 9, label-blind)
 
-`qc_report.py` audits the pipeline outputs for measurement-suspect features,
-metabolites, and pathways (usage: `python -m pathway_pipeline.qc_report
---outputs <output-dir> --input <feature-matrix>`):
+`run_development_qc: true` runs every diagnostic on the calibration
+reference and measurement/chemistry properties only -- IMD labels are
+never read here, so iterating on this output cannot leak disease signal
+into any choice:
 
-1. **Noise-floor features**: spike + tight IQR in the reference normals --
-   z-magnifiers that manufacture huge z-scores from small absolute changes.
-2. **Diverging duplicates**: metabolites backed by multiple dataset features
-   whose IQRs differ >2x; the averaged z is dominated by the noisiest one.
-3. **Flag concentration by group**: metabolites flagging normals as often
-   as IMD patients are artifact-suspect; those flagging mostly patients are
-   working as intended.
-4. **Pathway calibration**: pathways flagging >=3 normals, and the hottest
-   feature behind each pathway's flags.
+1. **Calibration verification**: the reference normals' z-scores must have
+   median ~0 and IQR ~1 by construction; deviations mean a wrong reference
+   subset or a stale reference.
+2. **Noise-floor features**: value spikes with razor-thin reference IQR --
+   z-magnifiers that manufacture huge z-scores from small absolute changes
+   (`development_qc_noise_floor.csv`).
+3. **Diverging duplicates**: metabolites backed by multiple dataset features
+   whose reference IQRs differ >2x; the averaged z is dominated by the
+   noisiest twin, or the features are not the same compound (fix with
+   `feature_hmdb_overrides`).
+4. **Threshold stability**: bootstrap resampling of the reference shows how
+   much each pathway's 99th-percentile threshold wobbles; an unstable
+   threshold produces borderline flags that flip on reference resampling.
+5. **Pathway redundancy**: pathway pairs whose scored-metabolite sets are
+   near-identical (Jaccard >= 0.8) -- they produce duplicate flags and
+   inflate multiplicity; pruning is label-blind.
 
-`qc_extremes.py` reports where extreme z-scores concentrate among the
-normals (per-feature = unstable feature, per-sample = QC-suspect sample) and
-verifies the calibration (per-feature median ~0, IQR ~1):
+Acting on the output (adding an override or demotion, changing a
+threshold) is a human decision that creates a **new frozen configuration
+version**.
 
-```bash
-python -m pathway_pipeline.qc_extremes \
-    --zscores outputs/pathway_pipeline/metabolite_zscores.csv \
-    --input data/merged_data_with_classification.csv \
-    --threshold 10.0 --top 10
-```
+## Evaluation (STEP 10, label-aware, one-shot)
+
+`run_evaluation` stays `false` during development. When the configuration
+is frozen -- no further changes in response to its numbers -- flip it to
+`true` for exactly one run:
+
+- Sensitivity and specificity with **exact (Clopper-Pearson)** confidence
+  intervals, on the validation half (and optionally the development half
+  via `evaluate_dev_half`, for sanity checking only).
+- **ROC-AUC** of the continuous anomaly score (max pathway excess) with a
+  bootstrap CI, IMD vs normal.
+- Flag-resolution evidence per flagged sample, and a per-group breakdown
+  (the `other` group is reported but not part of the primary metrics).
+
+Results are written to `evaluation_summary.csv`. Reading the validation
+metrics and then changing the configuration invalidates the validation
+half -- the act of iterating on validation numbers, not any single
+number, is what breaks it. If the numbers motivate changes, freeze a new
+configuration version and re-evaluate once.
 
 ## Usage
 
@@ -252,5 +295,5 @@ python -m pathway_pipeline.main --config my_config.yaml
 ## Testing
 
 ```bash
-python -m pytest pathway_pipeline/pipeline/test_pathway_pipeline.py -q
+python -m pytest pathway_pipeline/pipeline/ -q
 ```

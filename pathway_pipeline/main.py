@@ -37,8 +37,6 @@ from pathway_pipeline.pipeline.pathway_mapping import (
 from pathway_pipeline.pipeline.pathway_stats import (
     CLASSIFICATION_COLUMN,
     OORDEEL_COLUMN,
-    analyze_flagged_normals,
-    apply_normal_exclusions,
     classify_samples,
     flag_metabolite_scores,
     summarize_metabolite_flags,
@@ -48,6 +46,13 @@ from pathway_pipeline.pipeline.pathway_stats import (
     flag_pathway_scores,
     summarize_sample_flags,
 )
+from pathway_pipeline.pipeline.calibration import (
+    assign_groups,
+    leave_one_out_hygiene,
+    stratified_split,
+)
+from pathway_pipeline.pipeline.develop import run_development_qc
+from pathway_pipeline.pipeline.evaluate import summarize_evaluation
 
 
 logging.basicConfig(
@@ -241,9 +246,43 @@ def run_pipeline(input_file: str,
         normal_classification=int(config.get("normal_classification", 0)),
         normal_oordeel=int(config.get("normal_oordeel", 0)),
     )
-    exclude_ids = config.get("normal_exclude_ids") or []
-    normal_mask = apply_normal_exclusions(labeled_normal_mask,
-                                          exclude_ids=exclude_ids)
+    sample_group = _label_samples(metadata, labeled_normal_mask)
+
+    # ------------------------------------------------------------------
+    # Cohort split (development vs validation) -- the split is part of
+    # the frozen configuration and must never be re-drawn per experiment.
+    # ------------------------------------------------------------------
+    split_enabled = bool(config.get("validation_split.enable", True))
+    validation_mask = None
+    if split_enabled:
+        validation_mask = stratified_split(
+            sample_group,
+            seed=int(config.get("validation_split.seed", 20260923)),
+            validation_fraction=float(
+                config.get("validation_split.fraction", 0.5)),
+        )
+
+    # Calibration uses DEVELOPMENT normals only; validation samples are
+    # scored but never calibrate anything.
+    dev_mask = pd.Series(True, index=metadata.index)
+    if validation_mask is not None:
+        dev_mask = ~validation_mask
+    normal_mask = labeled_normal_mask & dev_mask
+
+    # Automated reference hygiene: leave-one-out depth against peers
+    # replaces hand-picked exclusions. The rule is pre-specified and uses
+    # no disease labels.
+    hygiene = None
+    if bool(config.get("reference_hygiene.enable", True)):
+        pathway_features = sorted(
+            set(coverage["matched_features"].str.split(";").explode().dropna())
+        ) if not coverage.empty else []
+        hygiene_mask, hygiene = leave_one_out_hygiene(
+            features[pathway_features],
+            normal_mask=normal_mask,
+            max_depth=float(config.get("reference_hygiene.max_depth", 10.0)),
+        )
+        normal_mask = hygiene_mask
     if not normal_mask.any():
         logger.error("No normal reference samples; cannot compute z-scores.")
         return {
@@ -391,7 +430,7 @@ def run_pipeline(input_file: str,
 
     min_flagged_pathways = int(config.get("min_flagged_pathways", 1))
     max_sample_p = float(config.get("max_sample_p", 0.05))
-    sample_rule = str(config.get("sample_rule", "empirical"))
+    sample_rule = str(config.get("sample_rule", "max_excess"))
     sample_decisions = summarize_sample_flags(
         pathway_flags,
         min_flagged_pathways=min_flagged_pathways,
@@ -401,38 +440,28 @@ def run_pipeline(input_file: str,
         sample_rule=sample_rule,
     )
 
-    sample_group = _label_samples(metadata, labeled_normal_mask)
     decisions_labeled = sample_decisions.merge(
         sample_group.rename("group"), left_on="sample_id", right_index=True,
         how="left")
     decisions_labeled["group"] = decisions_labeled["group"].fillna("other")
-
-    if not decisions_labeled.empty:
-        group_counts = (decisions_labeled
-                        .groupby("group")
-                        .agg(n_samples=("flagged", "size"),
-                             n_flagged=("flagged", "sum"))
-                        .reset_index())
-        for _, r in group_counts.iterrows():
-            logger.info(f"Group '{r['group']}': {int(r['n_flagged'])} of "
-                        f"{int(r['n_samples'])} samples flagged.")
-
-    if bool(config.get("analyze_flagged_normals", True)):
-        _log_section("STEP 8b: Analyze flagged normals "
-                     "(correlated noise vs exclude candidates)")
-        flagged_normal_report = analyze_flagged_normals(
-            pathway_flags,
-            zscores=zscores_scored,
-            feature_to_pathway=feature_to_pathway,
-            normal_mask=normal_mask,
-            max_abs_z=max_abs_z,
-            top=int(config.get("flagged_normals_top", 15)),
-        )
+    if validation_mask is not None:
+        decisions_labeled["validation"] = (
+            decisions_labeled["sample_id"].map(validation_mask))
+        decisions_labeled["validation"] = (
+            decisions_labeled["validation"].fillna(False).astype(bool))
         if bool(config.get("save_flagging_outputs", True)):
-            flagged_normal_report.to_csv(
-                out / "flagged_normal_analysis.csv", index=False)
-            logger.info(f"Wrote flagged_normal_analysis.csv to {out}")
+            split_table = pd.DataFrame({
+                "sample_id": metadata.index,
+                "group": sample_group,
+                "validation": validation_mask,
+            })
+            split_table.to_csv(out / "cohort_split.csv", index=False)
+            logger.info(f"Wrote cohort_split.csv to {out}")
 
+    # ------------------------------------------------------------------
+    # STEP 8c: metabolite-level depth evidence (report-only, label-blind
+    # calibration -- thresholds come from the reference normals only).
+    # ------------------------------------------------------------------
     metabolite_summary = None
     if bool(config.get("run_metabolite_flags", True)):
         _log_section("STEP 8c: Metabolite-level flags (report-only)")
@@ -444,43 +473,93 @@ def run_pipeline(input_file: str,
         )
         metabolite_summary = summarize_metabolite_flags(
             metabolite_flags, normal_mask=normal_mask)
-        flag_rule = str(config.get("metabolite_flag_rule", "report_only"))
-        if flag_rule != "report_only":
-            p_col = "metabolite_depth_p"
-            n_col = "n_flagged_metabolites"
-            merged = decisions_labeled.merge(
-                metabolite_summary[["sample_id", p_col, n_col]],
-                on="sample_id", how="left")
-            if p_col not in decisions_labeled.columns:
-                decisions_labeled[p_col] = merged[p_col]
-            decisions_labeled[n_col] = merged[n_col]
-            n_extra = int(((decisions_labeled[p_col] <= max_sample_p)
-                           & (decisions_labeled[n_col] >= 1)
-                           & (~decisions_labeled["flagged"])).sum())
-            logger.info(f"Metabolite depth alone would add {n_extra} "
-                        f"flagged samples (report_only keeps the "
-                        f"pathway decision unchanged).")
-        else:
-            merged = decisions_labeled.merge(
-                metabolite_summary, on="sample_id", how="left")
-            for col in ("max_metabolite_z", "n_flagged_metabolites",
-                        "metabolite_depth_p", "top_metabolite"):
-                if col in merged.columns:
-                    decisions_labeled[col] = merged[col]
+        merged = decisions_labeled.merge(
+            metabolite_summary, on="sample_id", how="left")
+        for col in ("max_metabolite_z", "n_flagged_metabolites",
+                    "metabolite_depth_p", "top_metabolite"):
+            if col in merged.columns:
+                decisions_labeled[col] = merged[col]
         if bool(config.get("save_flagging_outputs", True)):
             metabolite_flags.to_csv(out / "metabolite_flags.csv", index=False)
             logger.info(f"Wrote metabolite_flags.csv to {out}")
+
+    # ------------------------------------------------------------------
+    # STEP 9: label-blind development QC. Every check runs on the
+    # calibration reference (development normals) or on measurement
+    # properties; IMD labels are never read here.
+    # ------------------------------------------------------------------
+    dev_qc = None
+    if bool(config.get("run_development_qc", True)):
+        _log_section("STEP 9: Development QC (label-blind)")
+        dev_qc = run_development_qc(
+            zscores=zscores_scored,
+            reference_stats=reference_stats,
+            reference_mask=normal_mask,
+            features=features,
+            feature_to_hmdb=feature_to_hmdb,
+            pathway_scores=pathway_scores,
+            pathway_flags=pathway_flags,
+            feature_to_pathway=feature_to_pathway,
+            percentile=threshold_percentile,
+            n_bootstrap=int(config.get("development_qc_bootstrap", 200)),
+            output_csv=str(out / "development_qc_noise_floor.csv"),
+        )
+
+    # ------------------------------------------------------------------
+    # STEP 10: evaluation. Explicit and one-shot: metrics are computed on
+    # the halves defined by the frozen split, and -- unless
+    # evaluate_dev_half is set -- the pipeline logs ONLY the half
+    # requested. Reading these numbers and then changing the config
+    # invalidates the validation half.
+    # ------------------------------------------------------------------
+    evaluation = None
+    if bool(config.get("run_evaluation", False)):
+        _log_section("STEP 10: Evaluation (label-aware, frozen config)")
+        dev_half = None
+        val_half = None
+        if validation_mask is not None:
+            dev_half = ~validation_mask
+            val_half = validation_mask
+        metrics = {}
+        if bool(config.get("evaluate_dev_half", False)) and dev_half is not None:
+            metrics["development"] = summarize_evaluation(
+                decisions_labeled, pathway_flags, half="development",
+                validation_mask=dev_half)
+        if val_half is not None:
+            metrics["validation"] = summarize_evaluation(
+                decisions_labeled, pathway_flags, half="validation",
+                validation_mask=val_half)
+        elif dev_half is None:
+            # No split: evaluate everything (single-cohort mode).
+            metrics["all"] = summarize_evaluation(
+                decisions_labeled, pathway_flags, half="all")
+        evaluation = metrics
+        if bool(config.get("save_flagging_outputs", True)):
+            frames = []
+            for name, m in metrics.items():
+                g = m["group_summary"].copy()
+                g["half"] = name
+                frames.append(g)
+            if frames:
+                pd.concat(frames).to_csv(
+                    out / "evaluation_summary.csv", index=False)
+                logger.info(f"Wrote evaluation_summary.csv to {out}")
 
     if bool(config.get("save_flagging_outputs", True)):
         pathway_flags.to_csv(out / "pathway_flags.csv", index=False)
         decisions_labeled.to_csv(out / "sample_decisions.csv", index=False)
         logger.info(f"Wrote pathway_flags.csv, sample_decisions.csv to {out}")
+        if hygiene is not None and not hygiene.empty:
+            hygiene.to_csv(out / "reference_hygiene.csv", index=False)
+            logger.info(f"Wrote reference_hygiene.csv to {out}")
 
     return {
         "feature_to_hmdb": feature_to_hmdb,
         "feature_to_pathway": feature_to_pathway,
         "pathway_coverage": coverage,
         "normal_mask": normal_mask,
+        "validation_mask": validation_mask,
+        "sample_group": sample_group,
         "zscores": zscores,
         "reference_stats": reference_stats,
         "dropped_features": dropped_features,
@@ -490,6 +569,8 @@ def run_pipeline(input_file: str,
         "pathway_flags": pathway_flags,
         "sample_decisions": decisions_labeled,
         "metabolite_summary": metabolite_summary,
+        "development_qc": dev_qc,
+        "evaluation": evaluation,
     }
 
 
