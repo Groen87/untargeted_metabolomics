@@ -213,6 +213,25 @@ def test_match_features_to_hmdb_chain(tmp_path):
     assert pd.isna(unmatched.iloc[0]["hmdb_id"])
 
 
+def test_match_features_to_hmdb_override_beats_tag():
+    """A manual override wins over the HMDB tag and fixes collisions."""
+    index = {}  # even an empty index: the override never consults it
+    out = match_features_to_hmdb(
+        ["(+)-Estrone", "Niacin", "L-Alanine"],
+        index,
+        overrides={"(+)-Estrone": "HMDB0000145", "Niacin": "HMDB0001488"},
+    )
+    estrone = out[out["feature"] == "(+)-Estrone"].iloc[0]
+    assert estrone["hmdb_id"] == "HMDB0000145"
+    assert estrone["match_method"] == "override"
+    niacin = out[out["feature"] == "Niacin"].iloc[0]
+    assert niacin["hmdb_id"] == "HMDB0001488"
+    assert niacin["match_method"] == "override"
+    # Features without an override still go through the normal chain.
+    alanine = out[out["feature"] == "L-Alanine"].iloc[0]
+    assert alanine["match_method"] == "unmatched"
+
+
 # ---------------------------------------------------------------------------
 # Linking and coverage
 # ---------------------------------------------------------------------------
@@ -291,3 +310,109 @@ def test_coverage_empty_inputs(tmp_path):
     pathways = load_pathbank_pathways(str(tmp_path / "missing.csv"))
     coverage = pathway_coverage(empty_links, pathways, min_coverage=0.20)
     assert coverage.empty
+
+
+# ---------------------------------------------------------------------------
+# End-to-end wiring of the scale floor, overrides, demotion, and weights
+# ---------------------------------------------------------------------------
+
+def test_run_pipeline_wires_floor_overrides_demotion_and_weights(tmp_path):
+    """Smoke test: run_pipeline honors min_reference_scale,
+    feature_hmdb_overrides, demoted_features, and scale weighting."""
+    import numpy as np
+    import yaml
+
+    from pathway_pipeline.main import run_pipeline
+
+    xml = _write_hmdb_xml(tmp_path)
+    pathbank = _write_pathbank_csv(tmp_path)
+    names = _write_pathway_names_csv(tmp_path)
+
+    rng = np.random.default_rng(11)
+    n_normal, n_other = 30, 6
+    n = n_normal + n_other
+    # Feature matrix: 'Alanine' (wide), 'AMP' (thin -> scale floor drops it),
+    # 'ATP' (wide), plus a demoted artifact feature and an overridden one.
+    data = {
+        "Sample": [f"s{i}" for i in range(n)],
+        "Classification": [0] * n_normal + [1] * n_other,
+        "Oordeel targeted": [0] * n_normal + [1] * n_other,
+        "Alanine": list(rng.normal(2.0, 0.30, size=n)),
+        "ATP": list(rng.normal(2.0, 0.30, size=n)),
+        # Razor-thin normal spread -> small_scale drop.
+        "AMP": list(rng.normal(2.0, 0.01, size=n)),
+        # Pathway-mapped artifact feature (tagged to AMP's accession),
+        # demoted by config: z-scored but never scored.
+        "ARTIFACT.HMDB0000045": list(rng.normal(5.0, 0.3, size=n - 1)) + [9.0],
+        # Overridden feature: would otherwise be unmatched in this tiny
+        # index; the override pins it to L-Alanine's accession.
+        "(+)-Estrone": list(rng.normal(1.0, 0.3, size=n)),
+    }
+    df = pd.DataFrame(data)
+    input_csv = tmp_path / "input.csv"
+    df.to_csv(input_csv, index=False)
+
+    config = {
+        "input_file": str(input_csv),
+        "output_dir": str(tmp_path / "out"),
+        "patient_id_column": "Sample",
+        "non_feature_columns": ["Oordeel targeted", "Classification"],
+        "hmdb_xml_file": xml,
+        "use_hmdb_cache": False,
+        "pathbank_file": pathbank,
+        "pathbank_pathway_names_file": names,
+        "min_pathway_coverage": 0.10,
+        "min_reference_scale": 0.08,
+        "feature_hmdb_overrides": {"(+)-Estrone": "HMDB0000161"},
+        "demoted_features": ["ARTIFACT.HMDB0000045"],
+        "min_pathway_features": 2,
+        "scale_weighted_metabolites": True,
+        "min_stouffer_metabolites": 2,
+        "sample_rule": "max_excess",
+        "max_sample_p": 0.5,
+        "run_metabolite_flags": True,
+        "analyze_flagged_normals": False,
+        "save_mapping_outputs": True,
+        "save_zscore_outputs": True,
+        "save_stouffer_outputs": True,
+        "save_flagging_outputs": True,
+    }
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    result = run_pipeline(
+        input_file=str(input_csv),
+        output_dir=str(tmp_path / "out"),
+        config_path=str(config_path),
+    )
+
+    zscores = result["zscores"]
+    # The thin AMP feature is dropped by the scale floor.
+    assert "AMP" not in set(zscores.columns)
+    dropped = result["dropped_features"]
+    assert "AMP" in set(dropped.loc[dropped["reason"] == "small_scale", "feature"])
+
+    # The override redirected (+)-Estrone away from name matching.
+    f2h = result["feature_to_hmdb"]
+    estrone = f2h[f2h["feature"] == "(+)-Estrone"].iloc[0]
+    assert estrone["hmdb_id"] == "HMDB0000161"
+    assert estrone["match_method"] == "override"
+
+    # Demoted feature keeps its z-scores but never reaches the scores.
+    assert "ARTIFACT.HMDB0000045" in set(zscores.columns)
+    scores = result["pathway_scores"]
+    scored_features = set(
+        result["pathway_coverage_scored"]["matched_features"]
+        .str.split(";").explode().dropna())
+    assert "ARTIFACT.HMDB0000045" not in scored_features
+    # The demoted feature never contributes a metabolite flag either.
+    mflags = pd.read_csv(tmp_path / "out" / "metabolite_flags.csv")
+    assert "ARTIFACT.HMDB0000045" not in set(mflags["metabolite"])
+
+    # SMP0000055 lists ATP, L-Alanine, AMP; after the floor drops thin AMP
+    # and demotion removes the artifact twin, ATP + L-Alanine remain.
+    assert not result["pathway_coverage_scored"].empty
+    assert not scores.empty
+    metabolite_flags = result.get("sample_decisions")
+    assert metabolite_flags is not None

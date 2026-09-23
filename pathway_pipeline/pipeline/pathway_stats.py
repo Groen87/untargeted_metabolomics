@@ -65,7 +65,8 @@ def classify_samples(metadata: pd.DataFrame,
 
 def compute_metabolite_zscores(features: pd.DataFrame,
                                normal_mask: pd.Series,
-                               iqr_scale: bool = True
+                               iqr_scale: bool = True,
+                               min_reference_scale: float = None
                                ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Compute robust z-scores for every feature column.
 
@@ -80,6 +81,10 @@ def compute_metabolite_zscores(features: pd.DataFrame,
         normal_mask: boolean Series marking the normal reference samples.
         iqr_scale: scale by the normals' IQR (default) or by their standard
             deviation when false.
+        min_reference_scale: drop features whose reference scale is below
+            this floor (in the feature's log10 units); a razor-thin normal
+            spread turns trivial absolute shifts into huge z-scores
+            (noise-floor z-magnifiers). None disables the floor.
 
     Returns:
         Tuple ``(zscores, reference_stats, dropped_features)``:
@@ -90,7 +95,7 @@ def compute_metabolite_zscores(features: pd.DataFrame,
           ``feature``, ``median``, ``scale``, ``n_normal_values``,
           ``p_normal_missing``.
         - ``dropped_features``: per dropped feature with columns ``feature``
-          and ``reason`` ('no_normal_values' / 'zero_scale').
+          and ``reason`` ('no_normal_values' / 'zero_scale' / 'small_scale').
     """
     if features.empty:
         empty_stats = pd.DataFrame(columns=["feature", "median", "scale",
@@ -128,15 +133,20 @@ def compute_metabolite_zscores(features: pd.DataFrame,
             dropped_rows.append({"feature": col, "reason": "no_normal_values"})
         elif not np.isfinite(scales[col]) or scales[col] == 0:
             dropped_rows.append({"feature": col, "reason": "zero_scale"})
+        elif min_reference_scale is not None and scales[col] < min_reference_scale:
+            dropped_rows.append({"feature": col, "reason": "small_scale"})
         else:
             keep.append(col)
 
     dropped = pd.DataFrame(dropped_rows, columns=["feature", "reason"])
     if len(dropped):
+        n_small = int((dropped["reason"] == "small_scale").sum())
         logger.info(f"Dropped {len(dropped)} features before z-scoring "
                     f"({int((dropped['reason'] == 'zero_scale').sum())} zero-scale, "
                     f"{int((dropped['reason'] == 'no_normal_values').sum())} without "
-                    f"normal values).")
+                    f"normal values"
+                    + (f", {n_small} below the {min_reference_scale} scale "
+                       f"floor" if n_small else "") + ").")
 
     zscores = (numeric[keep] - medians[keep]) / scales[keep]
 
@@ -243,7 +253,9 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
                              scored_coverage: pd.DataFrame,
                              normal_mask: pd.Series,
                              min_metabolites: int = 3,
-                             max_abs_z: float = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                             max_abs_z: float = None,
+                             feature_scale_weights: Dict[str, float] = None
+                             ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Compute per-pathway Stouffer scores for every sample.
 
     For each pathway P with usable metabolites (features deduplicated per
@@ -270,6 +282,12 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
         max_abs_z: cap on |z| applied before the Stouffer sum (a single
             artifact feature can otherwise dominate a whole pathway); None
             disables the cap.
+        feature_scale_weights: optional feature -> weight map (typically
+            the reference scale squared). When given, features mapping to
+            the same metabolite (HMDB ID) are combined as a weighted
+            average instead of a plain mean, so a razor-thin duplicate
+            feature (a noise-floor z-magnifier) cannot dominate the
+            metabolite's z. Missing features get weight 1.
 
     Returns:
         Tuple ``(scores, reference)``:
@@ -290,6 +308,8 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
     if zscores.empty or scored_coverage.empty:
         return (pd.DataFrame(columns=score_cols),
                 pd.DataFrame(columns=ref_cols))
+
+    weights = feature_scale_weights or {}
 
     if max_abs_z is not None and max_abs_z > 0:
         zscores = zscores.clip(lower=-max_abs_z, upper=max_abs_z)
@@ -321,7 +341,16 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
         for hmdb_id, feats in metabolites.items():
             feats = [f for f in feats if f in zscores.columns]
             if feats:
-                metabolite_z.append(zscores[feats].mean(axis=1))
+                if len(feats) == 1 or not weights:
+                    metabolite_z.append(zscores[feats].mean(axis=1))
+                else:
+                    sub = zscores[feats]
+                    w = pd.Series({f: float(weights.get(f, 1.0))
+                                   for f in feats})
+                    present_w = sub.notna().mul(w, axis=1).sum(axis=1)
+                    weighted = (sub.fillna(0.0).mul(w, axis=1).sum(axis=1)
+                                / present_w.where(present_w > 0))
+                    metabolite_z.append(weighted)
                 metabolite_names.append(hmdb_id)
         if len(metabolite_z) < min_metabolites:
             continue

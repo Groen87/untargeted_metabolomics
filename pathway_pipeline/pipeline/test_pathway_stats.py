@@ -822,3 +822,121 @@ def test_stouffer_max_abs_z_cap():
     assert s1_capped == pytest.approx((10.0 + 0.2 + 0.1) / np.sqrt(3))
     assert s1_uncapped == pytest.approx((20.0 + 0.2 + 0.1) / np.sqrt(3))
     assert s1_capped < s1_uncapped
+
+
+# ---------------------------------------------------------------------------
+# Noise-floor scale floor, scale^2 metabolite weighting, demoted features
+# ---------------------------------------------------------------------------
+
+def test_compute_metabolite_zscores_scale_floor():
+    """Features with a reference IQR below the floor are dropped."""
+    rng = np.random.default_rng(1)
+    n = 40
+    df = pd.DataFrame({
+        "wide": rng.normal(5.0, 0.5, size=n),
+        "thin": rng.normal(5.0, 0.01, size=n),  # IQR ~ 0.013 < 0.08
+    }, index=[f"s{i}" for i in range(n)])
+    mask = pd.Series([True] * n, index=df.index)
+    zscores, reference_stats, dropped = compute_metabolite_zscores(
+        df, mask, iqr_scale=True, min_reference_scale=0.08)
+    assert list(dropped.loc[dropped["feature"] == "thin", "reason"]) == ["small_scale"]
+    assert list(zscores.columns) == ["wide"]
+    assert set(reference_stats["feature"]) == {"wide"}
+    # Floor disabled keeps the thin feature.
+    zscores2, _, dropped2 = compute_metabolite_zscores(
+        df, mask, iqr_scale=True, min_reference_scale=None)
+    assert list(zscores2.columns) == ["wide", "thin"]
+    assert dropped2.empty
+
+
+def test_stouffer_scale_squared_weights_duplicate_features():
+    """A razor-thin duplicate feature cannot dominate the metabolite's z:
+    scale^2 weights make the wide feature carry the metabolite."""
+    samples = ["s1", "s2"]
+    zscores = pd.DataFrame({
+        "f_wide": [1.0, -1.0],
+        "f_thin": [15.0, -15.0],  # noise-inflated twin
+        "f3": [0.5, -0.5],
+        "f4": [-0.5, 0.5],
+    }, index=samples)
+    links = pd.DataFrame([
+        {"feature": "f_wide", "hmdb_id": "H1", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M1", "metabolite_name": "m1"},
+        {"feature": "f_thin", "hmdb_id": "H1", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M1", "metabolite_name": "m1"},
+        {"feature": "f3", "hmdb_id": "H2", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M2", "metabolite_name": "m2"},
+        {"feature": "f4", "hmdb_id": "H3", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M3", "metabolite_name": "m3"},
+    ])
+    coverage = pd.DataFrame([{
+        "smp_id": "SMP1", "pathway_name": "P", "n_metabolites": 3,
+        "n_matched_metabolites": 3, "matched_metabolites": "H1;H2;H3",
+        "n_matched_features": 4, "matched_features": "f_wide;f_thin;f3;f4",
+        "coverage": 1.0,
+    }])
+    normal_mask = pd.Series([True, False], index=samples)
+    weights = {"f_wide": 0.3 ** 2, "f_thin": 0.05 ** 2, "f3": 1.0, "f4": 1.0}
+    weighted, _ = compute_stouffer_scores(
+        zscores, links, coverage, normal_mask, min_metabolites=3,
+        feature_scale_weights=weights)
+    plain, _ = compute_stouffer_scores(
+        zscores, links, coverage, normal_mask, min_metabolites=3)
+    s1_w = weighted[weighted["sample_id"] == "s1"].iloc[0]["z_stouffer"]
+    s1_p = plain[plain["sample_id"] == "s1"].iloc[0]["z_stouffer"]
+    # Weighted H1 z is dominated by the wide feature (weight ratio 36:1).
+    h1_weighted = (0.09 * 1.0 + 0.0025 * 15.0) / (0.09 + 0.0025)
+    assert s1_w == pytest.approx((h1_weighted + 0.5 - 0.5) / np.sqrt(3))
+    # Plain mean drags H1 halfway to the noise twin.
+    h1_plain = (1.0 + 15.0) / 2
+    assert s1_p == pytest.approx((h1_plain + 0.5 - 0.5) / np.sqrt(3))
+    assert abs(s1_w) < abs(s1_p)
+
+
+def test_stouffer_weighted_handles_nan_in_one_duplicate():
+    """A missing value in one duplicate uses the remaining ones only."""
+    zscores = pd.DataFrame({
+        "f_a": [1.0, 2.0],
+        "f_b": [np.nan, -2.0],
+        "f3": [0.5, 0.5],
+        "f4": [0.5, 0.5],
+    }, index=["s1", "s2"])
+    links = pd.DataFrame([
+        {"feature": "f_a", "hmdb_id": "H1", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M1", "metabolite_name": "m1"},
+        {"feature": "f_b", "hmdb_id": "H1", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M1", "metabolite_name": "m1"},
+        {"feature": "f3", "hmdb_id": "H2", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M2", "metabolite_name": "m2"},
+        {"feature": "f4", "hmdb_id": "H3", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M3", "metabolite_name": "m3"},
+    ])
+    coverage = pd.DataFrame([{
+        "smp_id": "SMP1", "pathway_name": "P", "n_metabolites": 3,
+        "n_matched_metabolites": 3, "matched_metabolites": "H1;H2;H3",
+        "n_matched_features": 4, "matched_features": "f_a;f_b;f3;f4",
+        "coverage": 1.0,
+    }])
+    normal_mask = pd.Series([True, False], index=zscores.index)
+    scores, _ = compute_stouffer_scores(
+        zscores, links, coverage, normal_mask, min_metabolites=3,
+        feature_scale_weights={"f_a": 1.0, "f_b": 1.0})
+    s1 = scores[scores["sample_id"] == "s1"].iloc[0]
+    # s1's H1 comes only from f_a (f_b is NaN): z = 1.0.
+    assert s1["n_metabolites_used"] == 3
+    assert s1["z_stouffer"] == pytest.approx((1.0 + 0.5 + 0.5) / np.sqrt(3))
+
+
+def test_flag_metabolite_scores_ignores_demoted_features():
+    """Demoted artifact features never produce metabolite flags."""
+    rng = np.random.default_rng(3)
+    n = 40
+    df = pd.DataFrame({
+        "good": rng.normal(0.0, 1.0, size=n),
+        "artifact": np.concatenate([rng.normal(0.0, 0.05, size=n - 1), [50.0]]),
+    }, index=[f"s{i}" for i in range(n)])
+    mask = pd.Series([True] * n, index=df.index)
+    flags_all = flag_metabolite_scores(df, mask)
+    flags_scored = flag_metabolite_scores(df[["good"]], mask)
+    assert "artifact" in set(flags_all["metabolite"])
+    assert set(flags_scored["metabolite"]) == {"good"}

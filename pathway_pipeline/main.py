@@ -187,6 +187,7 @@ def run_pipeline(input_file: str,
         feature_columns=list(features.columns),
         name_index=name_index,
         min_name_length=min_name_length,
+        overrides=config.get("feature_hmdb_overrides", None),
     )
 
     _log_section("STEP 4: Load PathBank pathways and link features to pathways")
@@ -264,7 +265,23 @@ def run_pipeline(input_file: str,
         features_scored,
         normal_mask=normal_mask,
         iqr_scale=bool(config.get("iqr_scale", True)),
+        min_reference_scale=(
+            float(config.get("min_reference_scale"))
+            if config.get("min_reference_scale", None) is not None else None),
     )
+
+    # Demoted artifact features stay in the z-score output for transparency
+    # but never contribute to pathway Stouffer sums, metabolite flags, or
+    # the reference calibration of downstream thresholds.
+    demoted_features = [f for f in config.get_list("demoted_features")
+                        if f in zscores.columns]
+    if demoted_features:
+        logger.info(f"Demoting {len(demoted_features)} artifact features "
+                    f"(excluded from scoring, kept in the reports): "
+                    f"{demoted_features}")
+        zscores_scored = zscores.drop(columns=demoted_features)
+    else:
+        zscores_scored = zscores
 
     if bool(config.get("save_zscore_outputs", True)):
         zscores.to_csv(out / "metabolite_zscores.csv")
@@ -281,7 +298,7 @@ def run_pipeline(input_file: str,
     scored_coverage = filter_pathways_for_scoring(
         coverage,
         feature_to_pathway,
-        available_features=zscores.columns,
+        available_features=zscores_scored.columns,
         min_pathway_features=min_pathway_features,
     )
     logger.info(f"{len(scored_coverage)} pathways remain with >= "
@@ -312,13 +329,23 @@ def run_pipeline(input_file: str,
     min_metabolites = int(config.get("min_stouffer_metabolites", 3))
     max_abs_z = config.get("max_abs_z", None)
     max_abs_z = float(max_abs_z) if max_abs_z is not None else None
+    # Scale^2 weights: under a constant absolute analytical error the noise
+    # variance of a feature's z is (error/scale)^2, so the wider-scale
+    # duplicate feature of a metabolite is the trustworthy one.
+    feature_scale_weights = None
+    if bool(config.get("scale_weighted_metabolites", True)) \
+            and not reference_stats.empty:
+        feature_scale_weights = {
+            row["feature"]: float(row["scale"]) ** 2
+            for _, row in reference_stats.iterrows()}
     pathway_scores, pathway_reference = compute_stouffer_scores(
-        zscores,
+        zscores_scored,
         feature_to_pathway=feature_to_pathway,
         scored_coverage=scored_coverage,
         normal_mask=normal_mask,
         min_metabolites=min_metabolites,
         max_abs_z=max_abs_z,
+        feature_scale_weights=feature_scale_weights,
     )
 
     if bool(config.get("save_stouffer_outputs", True)):
@@ -395,7 +422,7 @@ def run_pipeline(input_file: str,
                      "(correlated noise vs exclude candidates)")
         flagged_normal_report = analyze_flagged_normals(
             pathway_flags,
-            zscores=zscores,
+            zscores=zscores_scored,
             feature_to_pathway=feature_to_pathway,
             normal_mask=normal_mask,
             max_abs_z=max_abs_z,
@@ -410,7 +437,7 @@ def run_pipeline(input_file: str,
     if bool(config.get("run_metabolite_flags", True)):
         _log_section("STEP 8c: Metabolite-level flags (report-only)")
         metabolite_flags = flag_metabolite_scores(
-            zscores,
+            zscores_scored,
             normal_mask=normal_mask,
             threshold_percentile=float(
                 config.get("metabolite_flag_percentile", 99.0)),

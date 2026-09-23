@@ -212,12 +212,17 @@ def _split_feature_name_and_hmdb(col: str) -> Optional[str]:
 
 def match_features_to_hmdb(feature_columns: List[str],
                             name_index: Dict[str, Set[str]],
-                            min_name_length: int = 3
+                            min_name_length: int = 3,
+                            overrides: Dict[str, str] = None
                             ) -> pd.DataFrame:
     """Match every feature column to one or more HMDB accessions.
 
     Matching priority (first hit wins; the method is recorded):
 
+    0. **Manual override**: the exact feature name is a key of
+       ``overrides`` (from the ``feature_hmdb_overrides`` config). Used to
+       fix name collisions the automatic chain resolves wrongly (e.g. a
+       feature named 'Niacin' landing on the nicotinamide accession).
     1. **HMDB tag**: the column contains a trailing HMDB accession (bare
        ``HMDB########`` or ``Name.HMDB########``). The tagged accession is
        taken authoritatively -- the name index is NOT consulted -- because the
@@ -237,13 +242,15 @@ def match_features_to_hmdb(feature_columns: List[str],
         name_index: normalized-name -> {HMDB accessions} from
             :func:`hmdb_parser.build_name_index`.
         min_name_length: skip names shorter than this for name-based matching.
+        overrides: optional exact feature name -> HMDB accession map applied
+            before the automatic chain.
 
     Returns:
         DataFrame with columns ``feature``, ``hmdb_id`` (one row per matched
-        accession), ``match_method`` ('hmdb_tag' / 'name_exact' / 'name_loose'),
-        and ``n_hmdb_ids`` (number of accessions matched for the feature).
-        Features that match nothing get a single row with hmdb_id NaN and
-        match_method 'unmatched'.
+        accession), ``match_method`` ('override' / 'hmdb_tag' / 'name_exact' /
+        'name_loose'), and ``n_hmdb_ids`` (number of accessions matched for
+        the feature). Features that match nothing get a single row with
+        hmdb_id NaN and match_method 'unmatched'.
     """
     if not name_index:
         logger.warning("HMDB name index is empty; no feature can be matched by name.")
@@ -261,6 +268,7 @@ def match_features_to_hmdb(feature_columns: List[str],
                 loose_index[loose] = set(accs)
 
     rows: List[Dict] = []
+    n_override = 0
     n_tagged = 0
     n_exact = 0
     n_loose = 0
@@ -270,9 +278,13 @@ def match_features_to_hmdb(feature_columns: List[str],
         hmdb_ids: Set[str] = set()
         method = "unmatched"
 
+        # 0) Manual override -- highest priority, fixes known collisions.
+        if overrides and col in overrides:
+            hmdb_ids = {str(overrides[col]).strip().upper()}
+            method = "override"
+            n_override += 1
         # 1) HMDB tag -- authoritative, ignore the name index.
-        tagged = _split_feature_name_and_hmdb(col)
-        if tagged:
+        elif (tagged := _split_feature_name_and_hmdb(col)):
             hmdb_ids = {tagged}
             method = "hmdb_tag"
             n_tagged += 1
@@ -308,7 +320,8 @@ def match_features_to_hmdb(feature_columns: List[str],
                     "n_hmdb_ids": len(hmdb_ids),
                 })
 
-    logger.info(f"Feature -> HMDB matching: {n_tagged} by HMDB tag, {n_exact} by "
+    logger.info(f"Feature -> HMDB matching: {n_override} by manual override, "
+                f"{n_tagged} by HMDB tag, {n_exact} by "
                 f"exact name, {n_loose} by loose name, {n_unmatched} unmatched "
                 f"(of {len(feature_columns)} features).")
     return pd.DataFrame(rows, columns=["feature", "hmdb_id", "match_method", "n_hmdb_ids"])

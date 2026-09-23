@@ -25,6 +25,15 @@ hmdb_xml_file: "data/hmdb_metabolites.xml"
 use_hmdb_cache: true
 min_name_length: 3
 
+# Manual fixes for name->HMDB collisions the automatic matching chain
+# resolves wrongly. Keys are exact feature column names; values are HMDB
+# accessions. 'Niacin' is a primary name of both nicotinic acid
+# (HMDB0001488) and nicotinamide (HMDB0001406) in the HMDB index; pin the
+# plain-named feature to nicotinic acid.
+feature_hmdb_overrides:
+  "Niacin": "HMDB0001488"
+  "(+)-Estrone": "HMDB0000145"
+
 # ============================================================================
 # PathBank Pathways
 # ============================================================================
@@ -53,6 +62,13 @@ min_pathway_coverage: 0.20
 #   z = (x - median_i) / IQR_i   (medians/IQRs over normals only)
 run_zscores: true
 iqr_scale: true
+
+# Noise-floor z-magnifiers: features whose reference IQR is below this many
+# log10 units are dropped before z-scoring. The instrument barely resolves
+# such features in normals, so trivial absolute shifts explode into huge
+# z-scores (e.g. 2'-dCMP, Hydroxymethylbilane, thiamine monophosphate).
+# null disables the floor.
+min_reference_scale: 0.08
 
 # Normal reference definition: Classification == normal_classification AND
 # Oordeel targeted == normal_oordeel.
@@ -148,6 +164,25 @@ flagged_normals_top: 15
 run_metabolite_flags: true
 metabolite_flag_percentile: 99.0
 metabolite_flag_rule: report_only
+
+# Demoted artifact features: kept in the z-score/report outputs but never
+# scored (no Stouffer contribution, no metabolite flags). Demote -- don't
+# delete -- features that flag normals as often as IMD patients (Section 3
+# of the QC report: thiamine monophosphate 16 imd/20 normal flags,
+# Reduced Glutathione oxidation-labile, Urocanic acid, biotin degradation
+# product); they stay reviewable and can be re-promoted later.
+demoted_features:
+  - "thiamine monophosphate"
+  - "Reduced Glutathione"
+  - "Urocanic acid.HMDB0000301"
+  - "hexahydro-2-oxo-1h-thieno(3,4-d)imidazole-4-pentanoic acid"
+
+# Combine features mapping to the same metabolite (HMDB ID) with scale^2
+# weights instead of a plain mean: under a constant absolute analytical
+# error the noise variance of a feature's z is (error/scale)^2, so the
+# wider-scale duplicate is the trustworthy one and a razor-thin duplicate
+# cannot dominate the metabolite's z.
+scale_weighted_metabolites: true
 
 # ============================================================================
 # Output
