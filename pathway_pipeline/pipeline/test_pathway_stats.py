@@ -435,11 +435,28 @@ def test_stouffer_and_flagging_with_duplicate_sample_ids():
     assert flags[flags["sample_id"] == "imd1"]["flagged"].all()
 
     summary = summarize_sample_flags(flags, min_flagged_pathways=1)
-    # Duplicated imd1 rows land in one decision row (grouped by sample_id).
+    # Duplicate imd1 rows merge into one decision row (grouped by sample_id).
     assert len(summary) == 5  # n1, n2, n3, imd1 (merged), n4
     imd_row = summary[summary["sample_id"] == "imd1"].iloc[0]
     assert int(imd_row["n_scored_pathways"]) == 2  # both duplicate rows counted
     assert bool(imd_row["flagged"])
+
+
+def test_load_feature_matrix_drops_duplicate_rows(tmp_path):
+    """True duplicates: only the first occurrence of each sample ID is kept."""
+    df = pd.DataFrame({
+        "Classification": [0, 0, 1, 1],
+        "Oordeel targeted": [0, 0, 1, 1],
+        "A": [1.0, 1.0, 9.0, 8.8],
+    }, index=["s1", "s1", "imd1", "imd1"])
+    csv = tmp_path / "dups.csv"
+    df.to_csv(csv)
+
+    features, metadata, ages = load_feature_matrix(
+        str(csv), non_feature_columns=["Oordeel targeted", "Classification"])
+    assert features.index.tolist() == ["s1", "imd1"]
+    assert features["A"].tolist() == [1.0, 9.0]  # first occurrence kept
+    assert metadata.index.tolist() == ["s1", "imd1"]
 
 
 # ---------------------------------------------------------------------------
