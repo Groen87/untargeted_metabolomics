@@ -46,6 +46,26 @@ pathbank_pathway_names_file: "data/pathbank_pathways.csv"
 min_pathway_coverage: 0.20
 
 # ============================================================================
+# Z-scores (stage 2)
+# ============================================================================
+# Values must already be log10-transformed upstream. Z-scores are computed for
+# pathway-mapped features only, using the normal samples as reference:
+#   z = (x - median_i) / IQR_i   (medians/IQRs over normals only)
+run_zscores: true
+iqr_scale: true
+
+# Normal reference definition: Classification == normal_classification AND
+# Oordeel targeted == normal_oordeel.
+normal_classification: 0
+normal_oordeel: 0
+
+# Minimum number of usable matched metabolites for a pathway to stay in the
+# scoring set after the z-score stage (Stouffer on k < 3 is dominated by a
+# single outlier).
+min_pathway_features: 3
+
+# ============================================================================
 # Output
 # ============================================================================
 save_mapping_outputs: true
+save_zscore_outputs: true

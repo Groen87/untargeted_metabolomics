@@ -83,6 +83,24 @@ A pathway is kept only when the fraction of its PathBank-listed metabolites
 `min_pathway_coverage` (default `0.20`, i.e. 20%). Pathways below the
 threshold are dropped and logged.
 
+## Metabolite Z-Scores (stage 2)
+
+Values must already be log10-transformed upstream. Every pathway-mapped
+feature is turned into a robust z-score against the **normal reference set**
+(samples with `Classification == 0` AND `Oordeel targeted == 0`):
+
+```
+z_i(s) = (x_i(s) - median_i) / IQR_i      (medians/IQRs over normals only)
+```
+
+Features whose reference scale is zero (flat in the normals) or that have no
+normal values at all are dropped (`dropped_features.csv`, with the reason) --
+they cannot be calibrated and would dilute pathway scores. After the drop,
+pathway coverage is recomputed over the surviving features and pathways with
+fewer than `min_pathway_features` (default 3) usable matched metabolites are
+removed (`pathway_coverage_scored.csv`): a Stouffer score over fewer than 3
+metabolites is dominated by a single outlier.
+
 ## Outputs
 
 Outputs are written to `outputs/pathway_pipeline/`:
@@ -90,9 +108,13 @@ Outputs are written to `outputs/pathway_pipeline/`:
 ```
 outputs/pathway_pipeline/
 ├── pathway_pipeline.log
-├── feature_to_hmdb.csv       # feature -> HMDB accession(s) + match method
-├── feature_to_pathway.csv    # (feature, pathway) links
-└── pathway_coverage.csv      # per-pathway matched metabolites/features + coverage
+├── feature_to_hmdb.csv        # feature -> HMDB accession(s) + match method
+├── feature_to_pathway.csv     # (feature, pathway) links
+├── pathway_coverage.csv       # per-pathway matched metabolites/features + coverage
+├── metabolite_zscores.csv     # per-sample robust z-scores (normals reference)
+├── reference_stats.csv        # per-feature median/scale/normal-value counts
+├── dropped_features.csv       # features dropped before z-scoring, with reason
+└── pathway_coverage_scored.csv # coverage recomputed over calibrated features
 ```
 
 ## Usage

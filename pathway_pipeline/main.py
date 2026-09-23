@@ -33,6 +33,11 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     link_features_to_pathways,
     pathway_coverage,
 )
+from pathway_pipeline.pipeline.pathway_stats import (
+    classify_samples,
+    compute_metabolite_zscores,
+    filter_pathways_for_scoring,
+)
 
 
 logging.basicConfig(
@@ -164,12 +169,83 @@ def run_pipeline(input_file: str,
                         f"{int(r['n_matched_metabolites'])}/{int(r['n_metabolites'])} "
                         f"metabolites ({r['coverage']:.1%})")
 
-    logger.info("Feature engineering complete; stopping before pathway statistics "
+    # ------------------------------------------------------------------
+    # Stage 2: z-scores against the normal reference
+    # ------------------------------------------------------------------
+    if not bool(config.get("run_zscores", True)):
+        logger.info("run_zscores is false; stopping after the mapping outputs.")
+        return {
+            "feature_to_hmdb": feature_to_hmdb,
+            "feature_to_pathway": feature_to_pathway,
+            "pathway_coverage": coverage,
+        }
+
+    _log_section("STEP 5: Compute metabolite z-scores (normals as reference)")
+    normal_mask = classify_samples(
+        metadata,
+        normal_classification=int(config.get("normal_classification", 0)),
+        normal_oordeel=int(config.get("normal_oordeel", 0)),
+    )
+    if not normal_mask.any():
+        logger.error("No normal reference samples; cannot compute z-scores.")
+        return {
+            "feature_to_hmdb": feature_to_hmdb,
+            "feature_to_pathway": feature_to_pathway,
+            "pathway_coverage": coverage,
+        }
+
+    # Only features mapped to a kept pathway can contribute to pathway scores;
+    # keep the whole matrix out of scope here.
+    pathway_features = sorted(
+        set(coverage["matched_features"].str.split(";").explode().dropna())
+    ) if not coverage.empty else []
+    logger.info(f"Z-scoring {len(pathway_features)} pathway-mapped features "
+                f"(of {features.shape[1]} total).")
+    features_scored = features[pathway_features]
+
+    zscores, reference_stats, dropped_features = compute_metabolite_zscores(
+        features_scored,
+        normal_mask=normal_mask,
+        iqr_scale=bool(config.get("iqr_scale", True)),
+    )
+
+    if bool(config.get("save_zscore_outputs", True)):
+        zscores.to_csv(out / "metabolite_zscores.csv")
+        reference_stats.to_csv(out / "reference_stats.csv", index=False)
+        dropped_features.to_csv(out / "dropped_features.csv", index=False)
+        logger.info(f"Wrote metabolite_zscores.csv, reference_stats.csv, "
+                    f"dropped_features.csv to {out}")
+
+    # ------------------------------------------------------------------
+    # Stage 2b: restrict pathways to calibrated features
+    # ------------------------------------------------------------------
+    _log_section("STEP 6: Restrict pathways to calibrated features")
+    min_pathway_features = int(config.get("min_pathway_features", 3))
+    scored_coverage = filter_pathways_for_scoring(
+        coverage,
+        feature_to_pathway,
+        available_features=zscores.columns,
+        min_pathway_features=min_pathway_features,
+    )
+    logger.info(f"{len(scored_coverage)} pathways remain with >= "
+                f"{min_pathway_features} usable matched metabolites.")
+
+    if bool(config.get("save_zscore_outputs", True)) and not scored_coverage.empty:
+        scored_coverage.to_csv(out / "pathway_coverage_scored.csv", index=False)
+        logger.info("Wrote pathway_coverage_scored.csv to "
+                    f"{out}")
+
+    logger.info("Z-score stage complete; stopping before Stouffer scores "
                 "(to be added in the next stage).")
     return {
         "feature_to_hmdb": feature_to_hmdb,
         "feature_to_pathway": feature_to_pathway,
         "pathway_coverage": coverage,
+        "normal_mask": normal_mask,
+        "zscores": zscores,
+        "reference_stats": reference_stats,
+        "dropped_features": dropped_features,
+        "pathway_coverage_scored": scored_coverage,
     }
 
 
