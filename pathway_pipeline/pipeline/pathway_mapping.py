@@ -46,9 +46,67 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SPECIES = "Homo sapiens"
 
+_PATHWAY_ID_COLUMNS = ("smp id", "pathway_id", "smpid", "pathbank id")
+_PATHWAY_NAME_COLUMNS = ("pathway name", "pathway_name", "name")
+
+
+def load_pathway_names(names_file: str) -> Dict[str, str]:
+    """Load pathway names from the PathBank pathways description CSV.
+
+    Accepts the PathBank pathways CSV layouts (``SMP ID`` / ``Name`` in the
+    official download, or lowercase ``pathway_id`` / ``pathway_name``);
+    columns are matched case- and punctuation-insensitively.
+
+    Args:
+        names_file: path to ``pathbank_pathways.csv``.
+
+    Returns:
+        Dict mapping SMP ID (e.g. ``SMP0000055``) to pathway name. Empty dict
+        when the file is missing or has no recognizable columns (callers then
+        fall back to the SMP ID as the name).
+    """
+    path = Path(names_file)
+    if not path.exists():
+        logger.warning(f"Pathway names CSV not found at {names_file}; "
+                       f"pathways will be named by their SMP ID.")
+        return {}
+
+    df = pd.read_csv(path, dtype=str)
+    cols = {str(c).strip().lower().replace(" ", "_"): c for c in df.columns}
+    cols.update({str(c).strip().lower(): c for c in df.columns})
+
+    def find_col(candidates):
+        for cand in candidates:
+            if cand in cols:
+                return cols[cand]
+            cand2 = cand.replace(" ", "_")
+            if cand2 in cols:
+                return cols[cand2]
+        return None
+
+    id_col = find_col(_PATHWAY_ID_COLUMNS)
+    name_col = find_col(_PATHWAY_NAME_COLUMNS)
+    if id_col is None or name_col is None:
+        logger.warning(f"Pathway names CSV {names_file} has no recognizable "
+                       f"SMP-ID / name columns (found: {list(df.columns)}); "
+                       f"pathways will be named by their SMP ID.")
+        return {}
+
+    names = (
+        df[[id_col, name_col]]
+        .dropna()
+        .assign(**{id_col: df[id_col].str.strip().str.upper(),
+                   name_col: df[name_col].str.strip()})
+        .drop_duplicates(subset=[id_col])
+    )
+    mapping = dict(zip(names[id_col], names[name_col]))
+    logger.info(f"Loaded {len(mapping)} pathway names from {names_file}")
+    return mapping
+
 
 def load_pathbank_pathways(pathbank_file: str,
-                             species: str = DEFAULT_SPECIES) -> pd.DataFrame:
+                             species: str = DEFAULT_SPECIES,
+                             pathway_names_file: str = None) -> pd.DataFrame:
     """Load the PathBank primary-pathways metabolites CSV into a per-(pathway,
     metabolite) table.
 
@@ -57,12 +115,17 @@ def load_pathbank_pathways(pathbank_file: str,
     ``species``, and ``relation`` (plus unused chemical-identifier columns).
     Only rows whose ``species`` matches ``species`` are kept; rows without an
     HMDB ID cannot link to the dataset and are dropped. The file carries no
-    pathway name, so ``pathway_name`` is filled with the ``pathway_id``.
+    pathway name; ``pathway_name`` is filled from ``pathway_names_file`` (the
+    PathBank pathways description CSV) when given, otherwise with the
+    ``pathway_id``.
 
     Args:
         pathbank_file: path to ``pathbank_all_metabolites.csv``.
         species: species to keep (default ``'Homo sapiens'``). Matched exactly
             (after whitespace stripping) against the CSV's ``species`` column.
+        pathway_names_file: optional path to ``pathbank_pathways.csv``
+            (SMP ID -> pathway name). Pathways missing from it fall back to
+            their SMP ID.
 
     Returns:
         DataFrame with the columns ``smp_id``, ``pathway_name`` (equal to
@@ -110,7 +173,12 @@ def load_pathbank_pathways(pathbank_file: str,
 
     df = df[df["species"] == species].copy()
     df = df[df["hmdb_id"] != ""].copy()
-    df["pathway_name"] = df["smp_id"]
+    pathway_names = load_pathway_names(pathway_names_file) if pathway_names_file else {}
+    df["pathway_name"] = df["smp_id"].map(pathway_names).fillna(df["smp_id"])
+    n_unnamed = int(df.loc[df["pathway_name"] == df["smp_id"], "smp_id"].nunique())
+    if pathway_names_file and n_unnamed:
+        logger.warning(f"{n_unnamed} pathways not found in {pathway_names_file}; "
+                       f"they keep their SMP ID as name.")
     df = df[out_columns].drop_duplicates().reset_index(drop=True)
 
     logger.info(

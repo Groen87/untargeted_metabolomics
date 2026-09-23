@@ -18,6 +18,7 @@ from pathway_pipeline.pipeline.name_utils import normalize_name, normalize_loose
 from pathway_pipeline.pipeline.hmdb_parser import build_name_index
 from pathway_pipeline.pipeline.pathway_mapping import (
     load_pathbank_pathways,
+    load_pathway_names,
     match_features_to_hmdb,
     link_features_to_pathways,
     pathway_coverage,
@@ -77,6 +78,18 @@ def _write_pathbank_csv(tmp_path):
     return str(p)
 
 
+PATHWAY_NAMES_CSV = """pathway_id,pathbank_id,smpdb_id,name,subject,description,category,species,tier,curation_status,curation_note
+SMP0000055,PW000001,SMP0000055,Alanine Metabolism,Metabolic,"A description.",Metabolic,Homo sapiens,stouffer,auto-included,
+SMP0000002,PW000002,SMP0000002,Mouse Pathway,Metabolic,"A description.",Metabolic,Mus musculus,stouffer,auto-included,
+"""
+
+
+def _write_pathway_names_csv(tmp_path):
+    p = tmp_path / "pathbank_pathways.csv"
+    p.write_text(PATHWAY_NAMES_CSV, encoding="utf-8")
+    return str(p)
+
+
 # ---------------------------------------------------------------------------
 # Name normalization
 # ---------------------------------------------------------------------------
@@ -111,13 +124,45 @@ def test_build_name_index_names_and_accessions(tmp_path):
 def test_load_pathbank_pathways_filters_species(tmp_path):
     csv_path = _write_pathbank_csv(tmp_path)
     pathways = load_pathbank_pathways(csv_path)
-    # Only the Homo sapiens rows with an HMDB ID survive; pathway_name mirrors smp_id.
+    # Only the Homo sapiens rows with an HMDB ID survive; without a names file
+    # pathway_name falls back to the smp_id.
     assert set(pathways["smp_id"]) == {"SMP0000055"}
     assert len(pathways) == 4
     assert set(pathways["hmdb_id"]) == {
         "HMDB0000538", "HMDB0000161", "HMDB0000045", "HMDB9999999"
     }
     assert (pathways["pathway_name"] == pathways["smp_id"]).all()
+
+
+def test_load_pathbank_pathways_with_names_file(tmp_path):
+    csv_path = _write_pathbank_csv(tmp_path)
+    names_path = _write_pathway_names_csv(tmp_path)
+    pathways = load_pathbank_pathways(csv_path, pathway_names_file=names_path)
+    # Every SMP0000055 row is named 'Alanine Metabolism'.
+    assert (pathways["pathway_name"] == "Alanine Metabolism").all()
+
+    # Switching species picks up the mouse pathway and its name.
+    pathways = load_pathbank_pathways(csv_path, species="Mus musculus",
+                                      pathway_names_file=names_path)
+    assert set(pathways["pathway_name"]) == {"Mouse Pathway"}
+
+
+def test_load_pathway_names_fallbacks(tmp_path):
+    # Missing file -> empty mapping (callers fall back to SMP IDs).
+    assert load_pathway_names(str(tmp_path / "missing.csv")) == {}
+
+    # Unrecognizable columns -> empty mapping, no crash.
+    bad = tmp_path / "bad.csv"
+    bad.write_text("foo,bar\n1,2\n", encoding="utf-8")
+    assert load_pathway_names(str(bad)) == {}
+
+    # Names file that lacks one pathway: that pathway keeps its SMP ID
+    # (checked via load_pathbank_pathways warning path).
+    partial = tmp_path / "partial.csv"
+    partial.write_text("pathway_id,name\nSMP0000055,Alanine Metabolism\n",
+                       encoding="utf-8")
+    names = load_pathway_names(str(partial))
+    assert names == {"SMP0000055": "Alanine Metabolism"}
 
 
 def test_load_pathbank_pathways_missing_file(tmp_path):
@@ -196,6 +241,7 @@ def test_link_features_and_coverage_min_20_percent(tmp_path):
     # 3 of 4 pathway metabolites mapped -> 75% coverage, kept.
     assert len(coverage) == 1
     row = coverage.iloc[0]
+    assert row["smp_id"] == "SMP0000055"
     assert row["pathway_name"] == "SMP0000055"
     assert row["n_metabolites"] == 4
     assert row["n_matched_metabolites"] == 3
@@ -218,6 +264,24 @@ def test_coverage_drops_pathways_under_threshold(tmp_path):
 
     coverage_50 = pathway_coverage(links, pathways, min_coverage=0.50)
     assert coverage_50.empty     # 25% < 50% -> dropped
+
+
+def test_coverage_with_pathway_names(tmp_path):
+    csv_path = _write_pathbank_csv(tmp_path)
+    names_path = _write_pathway_names_csv(tmp_path)
+    pathways = load_pathbank_pathways(csv_path, pathway_names_file=names_path)
+
+    feature_to_hmdb = pd.DataFrame([
+        {"feature": "Alanine", "hmdb_id": "HMDB0000161",
+         "match_method": "name_exact", "n_hmdb_ids": 1},
+        {"feature": "ATP", "hmdb_id": "HMDB0000538",
+         "match_method": "name_exact", "n_hmdb_ids": 1},
+        {"feature": "AMP", "hmdb_id": "HMDB0000045",
+         "match_method": "name_exact", "n_hmdb_ids": 1},
+    ])
+    links = link_features_to_pathways(feature_to_hmdb, pathways)
+    coverage = pathway_coverage(links, pathways, min_coverage=0.20)
+    assert coverage.iloc[0]["pathway_name"] == "Alanine Metabolism"
 
 
 def test_coverage_empty_inputs(tmp_path):

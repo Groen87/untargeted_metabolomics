@@ -51,9 +51,12 @@ pathway_pipeline/
   SMP0000055,Adenosine triphosphate,PW_C000414,HMDB0000538,C00002,...,Homo sapiens,pathbank,direct_member,...
   ```
   Only rows matching the configured `pathbank_species` (default
-  `Homo sapiens`) are used. The file carries no pathway name, so pathways are
-  identified (and named) by their `pathway_id` (e.g. `SMP0000055`), and a
-  pathway's metabolite set is the distinct set of its `hmdb_id` values. A
+  `Homo sapiens`) are used. The file carries no pathway name, so pathway
+  names come from the PathBank pathways description CSV
+  (`pathbank_pathway_names_file`, default `data/pathbank_pathways.csv`:
+  `pathway_id,pathbank_id,smpdb_id,name,subject,description,...`); a pathway
+  missing from it falls back to its `pathway_id` (e.g. `SMP0000055`) as name.
+  A pathway's metabolite set is the distinct set of its `hmdb_id` values. A
   species that matches nothing in the CSV fails fast with a logged error
   listing the available values.
 

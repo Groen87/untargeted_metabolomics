@@ -133,7 +133,11 @@ def run_pipeline(input_file: str,
     _log_section("STEP 4: Load PathBank pathways and link features to pathways")
     pathbank_file = config.get("pathbank_file", "data/pathbank_all_metabolites.csv")
     pathbank_species = config.get("pathbank_species", "Homo sapiens")
-    pathways = load_pathbank_pathways(pathbank_file, species=pathbank_species)
+    pathway_names_file = config.get("pathbank_pathway_names_file",
+                                    "data/pathbank_pathways.csv")
+    pathways = load_pathbank_pathways(pathbank_file,
+                                      species=pathbank_species,
+                                      pathway_names_file=pathway_names_file)
     feature_to_pathway = link_features_to_pathways(feature_to_hmdb, pathways)
     min_coverage = float(config.get("min_pathway_coverage", 0.20))
     coverage = pathway_coverage(feature_to_pathway, pathways,
