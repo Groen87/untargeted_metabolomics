@@ -7,9 +7,9 @@ in later stages):
 1. **Matches** every feature column to an HMDB accession using the HMDB XML
    metabolite database (`hmdb_metabolites.xml`, a streaming name/synonym
    index).
-2. **Loads** the PathBank all-metabolites CSV
-   (`pathbank_all_metabolites.csv`), keeping only **Metabolic** and
-   **Disease** pathways for **Homo sapiens**.
+2. **Loads** the PathBank primary-pathways metabolites CSV
+   (`pathbank_all_metabolites.csv`), keeping only rows for the configured
+   **species** (default `Homo sapiens`).
 3. **Maps** the matched HMDB accessions to PathBank pathways and keeps only
    pathways where **at least 20%** (configurable) of the pathway's metabolites
    are mapped to features in the dataset.
@@ -43,17 +43,19 @@ pathway_pipeline/
   Each `<metabolite>` element carries an `<accession>`, a primary `<name>`,
   and zero or more `<synonyms>`. The file is streamed with `iterparse` and the
   resulting name index is cached to disk.
-- **PathBank all-metabolites CSV** (`data/pathbank_all_metabolites.csv`): one
-  row per (pathway, metabolite) pair:
+- **PathBank primary-pathways metabolites CSV**
+  (`data/pathbank_all_metabolites.csv`): one row per (pathway, metabolite)
+  pair, primary pathways only:
   ```
-  PathBank ID,Pathway Name,Pathway Subject,Species,Metabolite ID,Metabolite Name,HMDB ID,...
-  SMP0000055,Alanine Metabolism,Metabolic,Homo sapiens,PW_C000105,L-Alanine,HMDB0000161,...
+  pathway_id,metabolite_name,metabolite_id,hmdb_id,kegg_id,chebi_id,formula,smiles,iupac_name,inchi_key,species,source,relation,expected_direction,weight,msi_level,plasma_observable,measured
+  SMP0000055,Adenosine triphosphate,PW_C000414,HMDB0000538,C00002,...,Homo sapiens,pathbank,direct_member,...
   ```
   Only rows matching the configured `pathbank_species` (default
-  `Homo sapiens`) and `pathbank_pathway_subjects` (default
-  `[Metabolic, Disease]`) are used, and a pathway's metabolite set is the
-  distinct set of its `HMDB ID` values. A filter value that matches nothing in
-  the CSV fails fast with a logged error listing the available values.
+  `Homo sapiens`) are used. The file carries no pathway name, so pathways are
+  identified (and named) by their `pathway_id` (e.g. `SMP0000055`), and a
+  pathway's metabolite set is the distinct set of its `hmdb_id` values. A
+  species that matches nothing in the CSV fails fast with a logged error
+  listing the available values.
 
 ## Feature -> HMDB Matching
 

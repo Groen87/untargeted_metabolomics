@@ -61,15 +61,13 @@ def _write_hmdb_xml(tmp_path):
     return str(p)
 
 
-PATHBANK_CSV = """PathBank ID,Pathway Name,Pathway Subject,Species,Metabolite ID,Metabolite Name,HMDB ID,KEGG ID
-SMP0000055,Alanine Metabolism,Metabolic,Homo sapiens,PW_C000414,Adenosine triphosphate,HMDB0000538,C00002
-SMP0000055,Alanine Metabolism,Metabolic,Homo sapiens,PW_C000105,L-Alanine,HMDB0000161,C00041
-SMP0000055,Alanine Metabolism,Metabolic,Homo sapiens,PW_C000032,Adenosine monophosphate,HMDB0000045,C00020
-SMP0000055,Alanine Metabolism,Metabolic,Homo sapiens,PW_C000999,Unmapped metabolite,HMDB9999999,C99999
-SMP0000001,Protein Synthesis,Genetic,Homo sapiens,PW_C000105,L-Alanine,HMDB0000161,C00041
-SMP0000002,Mouse Pathway,Metabolic,Mus musculus,PW_C000105,L-Alanine,HMDB0000161,C00041
-SMP0000003,Drug Pathway,Drug,Human,PW_C000105,L-Alanine,HMDB0000161,C00041
-SMP0000004,No HMDB,Metabolic,Homo sapiens,PW_C000105,L-Alanine,,C00041
+PATHBANK_CSV = """pathway_id,metabolite_name,metabolite_id,hmdb_id,kegg_id,chebi_id,formula,smiles,iupac_name,inchi_key,species,source,relation,expected_direction,weight,msi_level,plasma_observable,measured
+SMP0000055,Adenosine triphosphate,PW_C000414,HMDB0000538,C00002,15422.0,C10H16N5O13P3,SMILES,ATP-IUPAC,KEY,Homo sapiens,pathbank,direct_member,,1.0,1.0,,
+SMP0000055,L-Alanine,PW_C000105,HMDB0000161,C00041,16977.0,C3H7NO2,SMILES,Alanine-IUPAC,KEY,Homo sapiens,pathbank,direct_member,,1.0,1.0,,
+SMP0000055,Adenosine monophosphate,PW_C000032,HMDB0000045,C00020,16027.0,C10H14N5O7P,SMILES,AMP-IUPAC,KEY,Homo sapiens,pathbank,direct_member,,1.0,1.0,,
+SMP0000055,Unmapped metabolite,PW_C000999,HMDB9999999,C99999,,FORMULA,SMILES,IUPAC,KEY,Homo sapiens,pathbank,direct_member,,1.0,1.0,,
+SMP0000002,L-Alanine,PW_C000105,HMDB0000161,C00041,16977.0,C3H7NO2,SMILES,Alanine-IUPAC,KEY,Mus musculus,pathbank,direct_member,,1.0,1.0,,
+SMP0000004,L-Alanine,PW_C000105,,C00041,16977.0,C3H7NO2,SMILES,Alanine-IUPAC,KEY,Homo sapiens,pathbank,direct_member,,1.0,1.0,,
 """
 
 
@@ -110,15 +108,16 @@ def test_build_name_index_names_and_accessions(tmp_path):
 # PathBank loading
 # ---------------------------------------------------------------------------
 
-def test_load_pathbank_pathways_filters_species_and_subject(tmp_path):
+def test_load_pathbank_pathways_filters_species(tmp_path):
     csv_path = _write_pathbank_csv(tmp_path)
     pathways = load_pathbank_pathways(csv_path)
-    # Only the Metabolic Homo sapiens rows with an HMDB ID survive.
+    # Only the Homo sapiens rows with an HMDB ID survive; pathway_name mirrors smp_id.
     assert set(pathways["smp_id"]) == {"SMP0000055"}
     assert len(pathways) == 4
     assert set(pathways["hmdb_id"]) == {
         "HMDB0000538", "HMDB0000161", "HMDB0000045", "HMDB9999999"
     }
+    assert (pathways["pathway_name"] == pathways["smp_id"]).all()
 
 
 def test_load_pathbank_pathways_missing_file(tmp_path):
@@ -126,27 +125,15 @@ def test_load_pathbank_pathways_missing_file(tmp_path):
     assert pathways.empty
 
 
-def test_load_pathbank_pathways_selectable_filters(tmp_path):
+def test_load_pathbank_pathways_selectable_species(tmp_path):
     csv_path = _write_pathbank_csv(tmp_path)
-    # Only Metabolic subject, no Disease rows in the fixture, but the mouse
-    # Metabolic row must appear when the species is switched.
-    pathways = load_pathbank_pathways(csv_path, species="Mus musculus",
-                                      pathway_subjects="Metabolic")
+    # Switching the species picks up the mouse row.
+    pathways = load_pathbank_pathways(csv_path, species="Mus musculus")
     assert set(pathways["smp_id"]) == {"SMP0000002"}
     assert set(pathways["hmdb_id"]) == {"HMDB0000161"}
 
-    # Single-string subject behaves the same as a one-element list; the mouse
-    # pathway stays excluded by the (default) species filter.
-    pathways = load_pathbank_pathways(csv_path,
-                                      pathway_subjects=["Metabolic"])
-    assert set(pathways["smp_id"]) == {"SMP0000055"}
-
     # Unknown species -> empty with an error logged (fail fast).
     pathways = load_pathbank_pathways(csv_path, species="Arabidopsis thaliana")
-    assert pathways.empty
-
-    # Unknown subject -> empty with an error logged (fail fast).
-    pathways = load_pathbank_pathways(csv_path, pathway_subjects=["Signaling"])
     assert pathways.empty
 
 
@@ -209,7 +196,7 @@ def test_link_features_and_coverage_min_20_percent(tmp_path):
     # 3 of 4 pathway metabolites mapped -> 75% coverage, kept.
     assert len(coverage) == 1
     row = coverage.iloc[0]
-    assert row["pathway_name"] == "Alanine Metabolism"
+    assert row["pathway_name"] == "SMP0000055"
     assert row["n_metabolites"] == 4
     assert row["n_matched_metabolites"] == 3
     assert row["coverage"] == pytest.approx(0.75)
