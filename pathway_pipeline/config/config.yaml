@@ -79,6 +79,18 @@ normal_exclude_ids:
   - "25391527231"
   - "26220671831"
   - "26130980531"
+  # Round 2 (2026-09-23, surfaced after the first 12 were excluded and the
+  # thresholds tightened): top-|z| >= 10 normals, the new exclude_candidate,
+  # the |z| 9.9 normal driving 42 pathway flags, the coordinated |z| ~7.8
+  # triple, and the 45-flag systematic shifter.
+  - "25470348033"
+  - "25491609731"
+  - "25461045933"
+  - "25391530731"
+  - "26121371231"
+  - "26171712831"
+  - "25451852935"
+  - "25360259032"
 
 # Minimum number of usable matched metabolites for a pathway to stay in the
 # scoring set after the z-score stage (Stouffer on k < 3 is dominated by a
