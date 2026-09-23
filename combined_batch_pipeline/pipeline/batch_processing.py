@@ -289,6 +289,7 @@ def merge_batch_results(
     bridge_min_batches: int = 8,
     bridge_max_factor: float = 2.0,
     apply_robust_scaler: bool = False,
+    apply_log10: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Merge processed batch results into a single DataFrame.
@@ -299,6 +300,11 @@ def merge_batch_results(
         apply_robust_scaler: Whether to RobustScale merged_data_for_analysis.csv
             per feature (median/IQR, robust to outliers), matching the scaling
             step of final_corrected_data_for_analysis.csv
+        apply_log10: Whether to log10-transform merged_data_for_analysis.csv
+            after bridge-QC alignment and before the optional RobustScaler.
+            Zeros are first replaced with half the per-feature minimum
+            non-zero value (as in the final-output path) so no feature hits
+            log10(0). merged_data.csv itself stays on the linear scale.
         
     Returns:
         Tuple of:
@@ -378,6 +384,28 @@ def merge_batch_results(
             cleaned_non_qc_columns.append(sample_id)
         
         merged_data_no_qc.columns = cleaned_non_qc_columns
+
+        # Log10-transform the analysis data: after bridge-QC alignment,
+        # before the optional RobustScaler, so merged_data_for_analysis.csv
+        # is on the log10 scale (RobustScaler statistics are also computed
+        # on log values). Zeros are replaced with half the per-feature
+        # minimum non-zero value first, exactly like the final-output path
+        # in main.py, so no feature hits log10(0) = -inf. Togglable via the
+        # config key `apply_log10_merged` (default true).
+        if apply_log10:
+            logger.info("Replacing zeros with half the minimum non-zero value per feature...")
+            for feature in merged_data_no_qc.index:
+                row = merged_data_no_qc.loc[feature]
+                non_zero_values = row[row > 0]
+                if len(non_zero_values) > 0:
+                    min_non_zero = non_zero_values.min()
+                    half_min = min_non_zero / 2.0
+                    merged_data_no_qc.loc[feature, row == 0] = half_min
+            logger.info("Applying log10 transformation...")
+            merged_data_no_qc = np.log10(merged_data_no_qc)
+            logger.info("Log10 transformation complete.")
+        else:
+            logger.info("apply_log10_merged is false; keeping the linear scale.")
 
         # Optional RobustScaler on the analysis-ready merged data: per feature
         # (median/IQR, robust to outliers), the same scaling the final

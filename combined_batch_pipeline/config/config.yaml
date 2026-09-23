@@ -38,6 +38,13 @@ combat_parametric: true
 apply_robust_scaler_final: true
 apply_robust_scaler_merged: false
 
+# Log10-transform merged_data_for_analysis.csv after the bridge-QC
+# alignment, before the optional RobustScaler. Zeros are first replaced with
+# half the per-feature minimum non-zero value (same as the final-output
+# path) so no feature hits log10(0). merged_data.csv (input to ComBat) stays
+# on the linear scale.
+apply_log10_merged: true
+
 # ============================================================================
 # Feature Filtering Configuration
 # ============================================================================

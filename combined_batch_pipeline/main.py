@@ -347,6 +347,7 @@ def run_full_pipeline(
         bridge_min_batches=int(config.get('bridge_qc_min_batches', 8)),
         bridge_max_factor=float(config.get('bridge_qc_max_factor', 2.0)),
         apply_robust_scaler=config.get('apply_robust_scaler_merged', False),
+        apply_log10=config.get('apply_log10_merged', True),
     )
     
     logger.info(f"Merged data shape: {merged_data.shape}")
