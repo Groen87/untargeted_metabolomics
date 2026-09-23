@@ -346,6 +346,7 @@ def run_full_pipeline(
         bridge_patterns=config.get('bridge_qc_patterns', ['QC3', 'QC4', 'blauw']),
         bridge_min_batches=int(config.get('bridge_qc_min_batches', 8)),
         bridge_max_factor=float(config.get('bridge_qc_max_factor', 2.0)),
+        apply_robust_scaler=config.get('apply_robust_scaler_merged', False),
     )
     
     logger.info(f"Merged data shape: {merged_data.shape}")
@@ -563,16 +564,22 @@ def run_full_pipeline(
     else:
         logger.info("No feature_ratios configured; skipping ratio feature step.")
     
-    # Apply RobustScaler (less sensitive to outliers) per feature
-    logger.info("Applying RobustScaler (scaling per feature, robust to outliers)...")
-    scaler = RobustScaler()
-    corrected_data_no_qc_scaled = scaler.fit_transform(corrected_data_no_qc.T)
-    corrected_data_no_qc = pd.DataFrame(
-        corrected_data_no_qc_scaled.T,
-        index=corrected_data_no_qc.index,
-        columns=corrected_data_no_qc.columns
-    )
-    logger.info("RobustScaler complete.")
+    # Apply RobustScaler (less sensitive to outliers) per feature.
+    # Togglable via the config key `apply_robust_scaler_final` (default true,
+    # the historical behaviour). When disabled the final
+    # final_corrected_data_for_analysis.csv keeps the log10 scale.
+    if config.get('apply_robust_scaler_final', True):
+        logger.info("Applying RobustScaler (scaling per feature, robust to outliers)...")
+        scaler = RobustScaler()
+        corrected_data_no_qc_scaled = scaler.fit_transform(corrected_data_no_qc.T)
+        corrected_data_no_qc = pd.DataFrame(
+            corrected_data_no_qc_scaled.T,
+            index=corrected_data_no_qc.index,
+            columns=corrected_data_no_qc.columns
+        )
+        logger.info("RobustScaler complete.")
+    else:
+        logger.info("apply_robust_scaler_final is false; skipping RobustScaler.")
     
     # 4. Transpose (rows become columns, columns become rows)
     corrected_data_for_analysis = corrected_data_no_qc.T

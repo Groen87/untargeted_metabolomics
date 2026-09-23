@@ -288,6 +288,7 @@ def merge_batch_results(
     bridge_patterns: Optional[List[str]] = None,
     bridge_min_batches: int = 8,
     bridge_max_factor: float = 2.0,
+    apply_robust_scaler: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Merge processed batch results into a single DataFrame.
@@ -295,6 +296,9 @@ def merge_batch_results(
     Args:
         batch_results: Dictionary mapping batch names to (data, metadata) tuples
         output_dir: Optional directory to save merged files
+        apply_robust_scaler: Whether to RobustScale merged_data_for_analysis.csv
+            per feature (median/IQR, robust to outliers), matching the scaling
+            step of final_corrected_data_for_analysis.csv
         
     Returns:
         Tuple of:
@@ -374,6 +378,22 @@ def merge_batch_results(
             cleaned_non_qc_columns.append(sample_id)
         
         merged_data_no_qc.columns = cleaned_non_qc_columns
+
+        # Optional RobustScaler on the analysis-ready merged data: per feature
+        # (median/IQR, robust to outliers), the same scaling the final
+        # corrected data can get. Disabled by default; enable with the config
+        # key `apply_robust_scaler_merged`.
+        if apply_robust_scaler:
+            from sklearn.preprocessing import RobustScaler
+            logger.info("Applying RobustScaler to merged data (scaling per feature, robust to outliers)...")
+            scaler = RobustScaler()
+            merged_data_no_qc_scaled = scaler.fit_transform(merged_data_no_qc.T)
+            merged_data_no_qc = pd.DataFrame(
+                merged_data_no_qc_scaled.T,
+                index=merged_data_no_qc.index,
+                columns=merged_data_no_qc.columns
+            )
+            logger.info("RobustScaler complete.")
         
         # 4. Transpose (rows become columns, columns become rows)
         merged_data_for_analysis = merged_data_no_qc.T

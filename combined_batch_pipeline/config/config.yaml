@@ -23,6 +23,22 @@ combat_gamma: 0.5
 combat_parametric: true
 
 # ============================================================================
+# RobustScaler Configuration
+# ============================================================================
+# RobustScaler (median/IQR per feature, robust to outliers) is applied at the
+# end of the pipeline on the log10-transformed data. Each output has its own
+# toggle:
+#
+# apply_robust_scaler_final : final_corrected_data_for_analysis.csv
+#     (default true = the historical behaviour; false keeps the log10 scale)
+# apply_robust_scaler_merged : merged_data_for_analysis.csv
+#     (default false; the merged analysis file is normally written unscaled.
+#     Set true to RobustScale it per feature, like the final file.)
+
+apply_robust_scaler_final: true
+apply_robust_scaler_merged: false
+
+# ============================================================================
 # Feature Filtering Configuration
 # ============================================================================
 # All filters are applied in order and are configurable.
