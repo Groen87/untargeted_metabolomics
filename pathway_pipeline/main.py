@@ -77,7 +77,9 @@ def load_feature_matrix(input_file: str,
     Keeps every configured non-feature column in a separate metadata frame
     and, when age_column is set and present, returns a numeric ages Series.
     """
-    df = pd.read_csv(input_file, index_col=0 if patient_id_column is None else None)
+    df = pd.read_csv(input_file,
+                      index_col=0 if patient_id_column is None else None,
+                      low_memory=False)
     if patient_id_column is not None:
         df = df.set_index(patient_id_column)
     logger.info(f"Loaded {input_file}: {df.shape[0]} samples x {df.shape[1]} columns")
