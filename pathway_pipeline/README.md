@@ -150,11 +150,18 @@ flags are expected for *every* sample, so the sample decision combines a
 count rule (`min_flagged_pathways`, default 1) with a null model for the
 flagged-pathway count (`sample_rule`):
 
-- `empirical` (default): the null is the observed flagged-pathway count
+- `empirical`: the null is the observed flagged-pathway count
   distribution of the normals themselves. PathBank pathways share
   metabolites, so flags are correlated and the binomial null is
   anti-conservative (on real data it flagged 16% of normals at p=0.05);
   the empirical distribution absorbs the correlation automatically.
+  Measures **breadth**.
+- `max_excess` (default): the null is the observed distribution of each
+  normal's *maximum* pathway excess. A sample is flagged when its single
+  most extreme pathway exceeds what (1 - `max_sample_p`) of normals reach.
+  Measures **depth**: classic IMD blocks a few pathways profoundly, while
+  the screened "normals" shift many pathways mildly -- this separates
+  exactly those two patterns.
 - `binomial`: Binomial(n_scored_pathways, 1 - percentile); only valid when
   pathway flags are near-independent.
 - `none`: count rule only.

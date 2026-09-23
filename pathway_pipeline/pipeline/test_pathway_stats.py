@@ -672,6 +672,64 @@ def test_apply_normal_exclusions_none_keeps_mask():
     assert updated.tolist() == [True, True]
 
 
+def _depth_vs_breadth_flags(n_pathways=40, n_breadth=20):
+    """Breadth normals flag many pathways at low excess; a depth sample flags
+    few pathways at high excess."""
+    rows = []
+    for i in range(n_breadth):
+        for pw in range(12):
+            rows.append({
+                "sample_id": f"breadth_{i}", "smp_id": f"SMP{pw}",
+                "pathway_name": f"P{pw}", "n_metabolites_used": 5,
+                "z_stouffer": 1.0, "z_stouffer_abs": 1.0,
+                "threshold": 0.9, "excess": 1.3, "flagged": True,
+            })
+        for pw in range(12, n_pathways):
+            rows.append({
+                "sample_id": f"breadth_{i}", "smp_id": f"SMP{pw}",
+                "pathway_name": f"P{pw}", "n_metabolites_used": 5,
+                "z_stouffer": 0.5, "z_stouffer_abs": 0.5,
+                "threshold": 0.9, "excess": 0.5, "flagged": False,
+            })
+    for pw in (3, 7):
+        rows.append({
+            "sample_id": "depth", "smp_id": f"SMP{pw}",
+            "pathway_name": f"P{pw}", "n_metabolites_used": 5,
+            "z_stouffer": 4.0, "z_stouffer_abs": 4.0,
+            "threshold": 0.9, "excess": 4.5, "flagged": True,
+        })
+    return pd.DataFrame(rows)
+
+
+def test_summarize_sample_flags_max_excess_rule():
+    """The depth rule flags profound few-pathway shifts, not mild breadth."""
+    flags = _depth_vs_breadth_flags()
+    normal_mask = pd.Series(
+        [True] * 20 + [False],
+        index=[f"breadth_{i}" for i in range(20)] + ["depth"])
+
+    count_rule = summarize_sample_flags(flags, min_flagged_pathways=1,
+                                        normal_mask=normal_mask,
+                                        sample_rule="empirical")
+    depth_rule = summarize_sample_flags(flags, min_flagged_pathways=1,
+                                        normal_mask=normal_mask,
+                                        sample_rule="max_excess")
+
+    # The count rule is blind both ways: the breadth normals ARE the null,
+    # and the depth sample flags fewer pathways than all of them (p = 1.0).
+    assert not count_rule["flagged"].any()
+    depth_count = count_rule.loc[count_rule["sample_id"] == "depth"].iloc[0]
+    assert depth_count["sample_p_value"] == pytest.approx(1.0)
+    # The depth rule flags the depth sample; no breadth normal clears it.
+    assert bool(depth_rule.loc[depth_rule["sample_id"] == "depth",
+                               "flagged"].iloc[0])
+    assert not depth_rule.loc[
+        depth_rule["sample_id"].str.startswith("breadth"), "flagged"].any()
+    depth_row = depth_rule.loc[depth_rule["sample_id"] == "depth"].iloc[0]
+    assert depth_row["sample_p_value"] == 0.0
+    assert depth_row["top_excess"] == pytest.approx(4.5)
+
+
 def test_stouffer_max_abs_z_cap():
     """A single extreme feature cannot dominate the pathway sum."""
     samples = ["s1", "s2"]

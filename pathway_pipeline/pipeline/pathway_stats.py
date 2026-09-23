@@ -457,15 +457,20 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
 
     With 200+ pathways per sample, a few chance pathway flags are expected
     for every sample. The decision combines the count rule (at least
-    ``min_flagged_pathways`` flagged) with a null model for the
-    flagged-pathway count:
+    ``min_flagged_pathways`` flagged) with a null model:
 
-    - ``sample_rule='empirical'`` (default): the null is the observed
-      flagged-pathway count distribution of the NORMAL samples. PathBank
-      pathways share metabolites, so flags are correlated and the binomial
-      null is anti-conservative; the empirical distribution absorbs that
-      correlation automatically. ``sample_p_value`` is the fraction of
-      normals with at least as many flagged pathways.
+    - ``sample_rule='empirical'``: the null is the observed flagged-pathway
+      count distribution of the NORMAL samples. PathBank pathways share
+      metabolites, so flags are correlated and the binomial null is
+      anti-conservative; the empirical distribution absorbs that correlation
+      automatically. ``sample_p_value`` is the fraction of normals with at
+      least as many flagged pathways. Measures breadth.
+    - ``sample_rule='max_excess'``: the null is the observed distribution of
+      each normal's maximum pathway excess. ``sample_p_value`` is the
+      fraction of normals whose most extreme pathway reaches at least the
+      sample's maximum excess. Measures depth: a sample disturbing a few
+      pathways profoundly beats it, a sample shifting many pathways mildly
+      does not.
     - ``sample_rule='binomial'``: the null is
       Binomial(n_scored_pathways, per_pathway_flag_rate); valid only when
       pathway flags are (near-)independent.
@@ -478,8 +483,9 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
             (typically 1 - threshold_percentile/100).
         max_sample_p: p-value cutoff for the null rules (default 0.05).
         normal_mask: boolean Series (sample_id -> is-normal); required by
-            the empirical rule (falls back with a warning when absent).
-        sample_rule: 'empirical', 'binomial', or 'none'.
+            the empirical and max_excess rules (falls back with a warning
+            when absent).
+        sample_rule: 'empirical', 'max_excess', 'binomial', or 'none'.
 
     Returns:
         DataFrame with one row per sample: ``sample_id``,
@@ -494,9 +500,9 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
         return pd.DataFrame(columns=out_cols)
 
     sample_rule = str(sample_rule).lower()
-    if sample_rule == "empirical":
+    if sample_rule in ("empirical", "max_excess"):
         if normal_mask is None or not normal_mask.any():
-            logger.warning("Empirical sample rule needs normal samples; "
+            logger.warning(f"{sample_rule} sample rule needs normal samples; "
                            "falling back to the count rule.")
             sample_rule = "none"
     elif sample_rule == "binomial" and per_pathway_flag_rate is None:
@@ -507,6 +513,7 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
     flagged_counts = pathway_flags.groupby("sample_id")["flagged"].sum()
 
     normal_counts = None
+    normal_max_excess = None
     if sample_rule == "empirical":
         dedup = normal_mask[~normal_mask.index.duplicated(keep="first")]
         is_normal = dedup.reindex(flagged_counts.index, fill_value=False)
@@ -515,6 +522,19 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
                     f"{len(normal_counts)} normals (median "
                     f"{float(normal_counts.median()):.1f}, p99 "
                     f"{float(normal_counts.quantile(0.99)):.1f}).")
+    if sample_rule == "max_excess":
+        excess = pathway_flags.dropna(subset=["excess"])
+        if excess.empty:
+            max_excess_by_sample = pd.Series(dtype=float)
+        else:
+            max_excess_by_sample = excess.groupby("sample_id")["excess"].max()
+        dedup = normal_mask[~normal_mask.index.duplicated(keep="first")]
+        is_normal = dedup.reindex(max_excess_by_sample.index, fill_value=False)
+        normal_max_excess = max_excess_by_sample[is_normal.to_numpy()]
+        logger.info(f"Max-excess null: maximum pathway excess of "
+                    f"{len(normal_max_excess)} normals (median "
+                    f"{float(normal_max_excess.median()):.2f}, p95 "
+                    f"{float(normal_max_excess.quantile(0.95)):.2f}).")
 
     def _agg(g):
         candidates = g.dropna(subset=["excess"])
@@ -526,6 +546,12 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
         n_scored = int(g["flagged"].sum() + (~g["flagged"].astype(bool)).sum())
         if sample_rule == "empirical":
             p_value = float((normal_counts >= n_flagged).mean())
+        elif sample_rule == "max_excess":
+            if normal_max_excess.empty or not candidates.empty:
+                p_value = float(
+                    (normal_max_excess >= float(top["excess"])).mean())
+            else:
+                p_value = float("nan")
         elif sample_rule == "binomial":
             p_value = _binomial_sf(n_flagged, n_scored, per_pathway_flag_rate)
         else:
@@ -554,6 +580,10 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
         logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
                     f"(>= {min_flagged_pathways} flagged pathway(s) AND "
                     f"empirical p <= {max_sample_p} against the normals).")
+    elif sample_rule == "max_excess":
+        logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
+                    f"(>= {min_flagged_pathways} flagged pathway(s) AND "
+                    f"max-excess p <= {max_sample_p} against the normals).")
     elif sample_rule == "binomial":
         logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
                     f"(>= {min_flagged_pathways} flagged pathway(s) AND "

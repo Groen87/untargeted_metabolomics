@@ -61,11 +61,15 @@ normal_oordeel: 0
 
 # Manual reference exclusions: sample IDs removed from the normal reference
 # (z-score calibration, pathway thresholds, and the empirical null) but still
-# scored and reported in every output. Pre-filled from STEP 8b findings on the
-# 2026-09-23 run: 4 exclude_candidate normals plus flagged normals whose top
-# metabolite reaches |z| >= 10 (a "normal" with a metabolite at |z| 30 is a
-# mislabel, an undiagnosed IMD, or a measurement artifact). Review and update
-# after each flagged_normal_analysis.csv.
+# scored and reported in every output. First round from the 2026-09-23 STEP 8b
+# findings: 4 exclude_candidate normals plus flagged normals whose top
+# metabolite reaches |z| >= 10. A second round of 8 additions made every
+# operating point worse (excluding normals tightens the reference, which
+# re-inflates the remaining normals' z-scores -- a treadmill), so it was
+# reverted; keep the list at these 12 and treat STEP 8b as diagnostics only.
+# The "normals" are IMD-screened people, so mild systematic disturbances in a
+# subset of them are expected biology, handled by the depth-based
+# max_excess sample rule rather than by exclusions.
 normal_exclude_ids:
   - "25520744431"
   - "26060502531"
@@ -79,18 +83,6 @@ normal_exclude_ids:
   - "25391527231"
   - "26220671831"
   - "26130980531"
-  # Round 2 (2026-09-23, surfaced after the first 12 were excluded and the
-  # thresholds tightened): top-|z| >= 10 normals, the new exclude_candidate,
-  # the |z| 9.9 normal driving 42 pathway flags, the coordinated |z| ~7.8
-  # triple, and the 45-flag systematic shifter.
-  - "25470348033"
-  - "25491609731"
-  - "25461045933"
-  - "25391530731"
-  - "26121371231"
-  - "26171712831"
-  - "25451852935"
-  - "25360259032"
 
 # Minimum number of usable matched metabolites for a pathway to stay in the
 # scoring set after the z-score stage (Stouffer on k < 3 is dominated by a
@@ -123,20 +115,23 @@ max_abs_z: 15.0
 # pathways are flagged. The Classification/Oordeel groups are joined for a
 # reporting-only detection-vs-contamination summary; thresholds are never
 # tuned against them.
-# sample_rule sets the null for the flagged-pathway count of a sample:
-#   empirical (default) - the observed count distribution of the normals;
-#     PathBank pathways share metabolites so flags are correlated and the
-#     binomial null is anti-conservative (it flagged 16% of normals at
-#     p=0.05). The empirical distribution absorbs the correlation.
-#   binomial           - Binomial(n_scored_pathways, 1 - percentile);
-#     only valid when pathway flags are near-independent.
-#   none               - count rule only (min_flagged_pathways).
+# sample_rule sets the null a sample must beat to be flagged:
+#   empirical  - flagged-pathway COUNT distribution of the normals. Measures
+#     breadth: a sample must flag more pathways than most normals do.
+#   max_excess  - distribution of each normal's MAXIMUM pathway excess.
+#     Measures depth: a sample is flagged when its single most extreme
+#     pathway exceeds what (1 - max_sample_p) of normals reach. Classic IMD
+#     blocks a few pathways profoundly, while the screened "normals" shift
+#     many pathways mildly -- a depth rule separates exactly those.
+#   binomial    - Binomial(n_scored_pathways, 1 - percentile); only valid
+#     when pathway flags are near-independent.
+#   none        - count rule only (min_flagged_pathways).
 # A sample is flagged when it passes the count rule AND sample_p_value <=
 # max_sample_p under the chosen null.
 run_flagging: true
 flag_threshold_percentile: 99.0
 min_flagged_pathways: 1
-sample_rule: empirical
+sample_rule: max_excess
 max_sample_p: 0.05
 
 # STEP 8b: classify every flagged normal as correlated_noise (a few shared
