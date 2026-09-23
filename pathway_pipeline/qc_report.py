@@ -72,8 +72,24 @@ def main():
     decisions = pd.read_csv(f"{out_dir}/sample_decisions.csv")
 
     meta = pd.read_csv(args.input, index_col=0, low_memory=False)
+    # Mirror the pipeline's load-time hygiene: the raw CSV can contain
+    # duplicate sample rows and rows with missing labels; pandas refuses
+    # label assignment on a non-unique index.
+    dup_rows = int(meta.index.duplicated(keep="first").sum())
+    if dup_rows:
+        logger.warning(f"Dropping {dup_rows} duplicate sample rows "
+                       f"(keeping the first occurrence), as the pipeline does.")
+        meta = meta[~meta.index.duplicated(keep="first")]
     cls = pd.to_numeric(meta[CLASSIFICATION_COLUMN], errors="coerce")
     oor = pd.to_numeric(meta[OORDEEL_COLUMN], errors="coerce")
+    unlabeled = cls.isna() | oor.isna()
+    if int(unlabeled.sum()):
+        logger.warning(f"Dropping {int(unlabeled.sum())} samples with a NaN "
+                       f"in Classification or Oordeel targeted, as the "
+                       f"pipeline does.")
+        meta = meta[~unlabeled]
+        cls = cls[~unlabeled]
+        oor = oor[~unlabeled]
     labeled_normal = meta.index[(cls == 0) & (oor == 0)]
     exclude = set()
     if args.exclude_ids:
