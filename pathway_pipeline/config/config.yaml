@@ -65,7 +65,21 @@ normal_oordeel: 0
 min_pathway_features: 3
 
 # ============================================================================
+# Stouffer scores (stage 3)
+# ============================================================================
+# Per pathway and sample, over the metabolites' z-scores (features deduplicated
+# per HMDB ID):
+#   z_stouffer     = sum(z_i)  / sqrt(k)   (direction-aware)
+#   z_stouffer_abs = sum(|z_i|) / sqrt(k)  (disturbance regardless of direction)
+# Samples with fewer than min_stouffer_metabolites usable metabolites in a
+# pathway get no score for it. Per-pathway empirical percentiles of the
+# absolute score over the normals are written for the calibration step.
+run_stouffer: true
+min_stouffer_metabolites: 3
+
+# ============================================================================
 # Output
 # ============================================================================
 save_mapping_outputs: true
 save_zscore_outputs: true
+save_stouffer_outputs: true

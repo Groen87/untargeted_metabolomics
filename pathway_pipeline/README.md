@@ -111,10 +111,41 @@ outputs/pathway_pipeline/
 ├── feature_to_hmdb.csv        # feature -> HMDB accession(s) + match method
 ├── feature_to_pathway.csv     # (feature, pathway) links
 ├── pathway_coverage.csv       # per-pathway matched metabolites/features + coverage
-├── metabolite_zscores.csv     # per-sample robust z-scores (normals reference)
-├── reference_stats.csv        # per-feature median/scale/normal-value counts
-├── dropped_features.csv       # features dropped before z-scoring, with reason
-└── pathway_coverage_scored.csv # coverage recomputed over calibrated features
+├── metabolite_zscores.csv      # per-sample robust z-scores (normals reference)
+├── reference_stats.csv         # per-feature median/scale/normal-value counts
+├── dropped_features.csv        # features dropped before z-scoring, with reason
+├── pathway_coverage_scored.csv # coverage recomputed over calibrated features
+├── pathway_stouffer_scores.csv # per (sample, pathway) signed + absolute Stouffer
+└── pathway_stouffer_reference.csv # per-pathway normal p50/p95/p99 of |Stouffer|
+```
+
+## Pathway Stouffer Scores (stage 3)
+
+Per pathway and sample, over the pathway's metabolite z-scores (features
+mapping to the same HMDB ID are averaged, so one metabolite counts once):
+
+```
+z_stouffer     = sum(z_i)  / sqrt(k)     (direction-aware)
+z_stouffer_abs = sum(|z_i|) / sqrt(k)    (disturbance regardless of direction)
+```
+
+Samples with fewer than `min_stouffer_metabolites` usable metabolites in a
+pathway get no score for it. `pathway_stouffer_reference.csv` records each
+pathway's empirical p50/p95/p99 of the absolute Stouffer score over the
+normals -- the calibration basis for the flagging stage (a noisy pathway
+automatically gets a wider normal range instead of being hand-pruned).
+
+## QC Diagnostics
+
+`qc_extremes.py` reports where extreme z-scores concentrate among the
+normals (per-feature = unstable feature, per-sample = QC-suspect sample) and
+verifies the calibration (per-feature median ~0, IQR ~1):
+
+```bash
+python -m pathway_pipeline.qc_extremes \
+    --zscores outputs/pathway_pipeline/metabolite_zscores.csv \
+    --input data/merged_data_with_classification.csv \
+    --threshold 10.0 --top 10
 ```
 
 ## Usage

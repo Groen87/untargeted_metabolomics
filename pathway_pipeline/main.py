@@ -37,6 +37,7 @@ from pathway_pipeline.pipeline.pathway_stats import (
     classify_samples,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
+    compute_stouffer_scores,
 )
 
 
@@ -235,7 +236,48 @@ def run_pipeline(input_file: str,
         logger.info("Wrote pathway_coverage_scored.csv to "
                     f"{out}")
 
-    logger.info("Z-score stage complete; stopping before Stouffer scores "
+    # ------------------------------------------------------------------
+    # Stage 3: pathway Stouffer scores
+    # ------------------------------------------------------------------
+    if not bool(config.get("run_stouffer", True)):
+        logger.info("run_stouffer is false; stopping after the z-score outputs.")
+        return {
+            "feature_to_hmdb": feature_to_hmdb,
+            "feature_to_pathway": feature_to_pathway,
+            "pathway_coverage": coverage,
+            "normal_mask": normal_mask,
+            "zscores": zscores,
+            "reference_stats": reference_stats,
+            "dropped_features": dropped_features,
+            "pathway_coverage_scored": scored_coverage,
+        }
+
+    _log_section("STEP 7: Pathway Stouffer scores")
+    min_metabolites = int(config.get("min_stouffer_metabolites", 3))
+    pathway_scores, pathway_reference = compute_stouffer_scores(
+        zscores,
+        feature_to_pathway=feature_to_pathway,
+        scored_coverage=scored_coverage,
+        normal_mask=normal_mask,
+        min_metabolites=min_metabolites,
+    )
+
+    if bool(config.get("save_stouffer_outputs", True)):
+        pathway_scores.to_csv(out / "pathway_stouffer_scores.csv", index=False)
+        pathway_reference.to_csv(out / "pathway_stouffer_reference.csv", index=False)
+        logger.info(f"Wrote pathway_stouffer_scores.csv, "
+                    f"pathway_stouffer_reference.csv to {out}")
+
+    if not pathway_scores.empty:
+        normals_in_scores = normal_mask.reindex(
+            pathway_scores["sample_id"].unique(), fill_value=False)
+        n_normal = int(normals_in_scores.sum())
+        logger.info(f"Stouffer scores cover "
+                    f"{pathway_scores['sample_id'].nunique()} samples x "
+                    f"{pathway_scores['smp_id'].nunique()} pathways "
+                    f"({n_normal} normals in the reference).")
+
+    logger.info("Stouffer stage complete; stopping before flagging "
                 "(to be added in the next stage).")
     return {
         "feature_to_hmdb": feature_to_hmdb,
@@ -246,6 +288,8 @@ def run_pipeline(input_file: str,
         "reference_stats": reference_stats,
         "dropped_features": dropped_features,
         "pathway_coverage_scored": scored_coverage,
+        "pathway_scores": pathway_scores,
+        "pathway_reference": pathway_reference,
     }
 
 

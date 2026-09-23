@@ -235,3 +235,120 @@ def filter_pathways_for_scoring(coverage: pd.DataFrame,
                     f"z-scoring; {len(scored)} remain.")
         logger.debug(f"Dropped pathways: {sorted(dropped_rows['pathway_name'].unique())}")
     return scored[out_cols]
+
+
+def compute_stouffer_scores(zscores: pd.DataFrame,
+                             feature_to_pathway: pd.DataFrame,
+                             scored_coverage: pd.DataFrame,
+                             normal_mask: pd.Series,
+                             min_metabolites: int = 3) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute per-pathway Stouffer scores for every sample.
+
+    For each pathway P with usable metabolites (features deduplicated per
+    HMDB ID -- several features mapping to the same metabolite are averaged)
+    and each sample s with k usable metabolite z-scores:
+
+        Z_signed(P, s) = sum(z_i) / sqrt(k)      (direction-aware)
+        Z_abs(P, s)    = sum(|z_i|) / sqrt(k)    (disturbance regardless of
+                                                  direction; the IMD default)
+
+    Metabolites with a missing z-score for a sample are skipped for that
+    sample; a sample with fewer than ``min_metabolites`` usable metabolites in
+    a pathway gets NaN for it (never a shrunken score).
+
+    Args:
+        zscores: per-sample metabolite z-scores (output of
+            :func:`compute_metabolite_zscores`).
+        feature_to_pathway: (feature, pathway) links.
+        scored_coverage: pathways kept for scoring (output of
+            :func:`filter_pathways_for_scoring`).
+        normal_mask: boolean Series marking the normal reference samples; used
+            only for the per-pathway reference percentiles.
+        min_metabolites: minimum usable metabolites for a score to be emitted.
+
+    Returns:
+        Tuple ``(scores, reference)``:
+
+        - ``scores``: long table with columns ``sample_id``, ``smp_id``,
+          ``pathway_name``, ``n_metabolites_used``, ``z_stouffer``,
+          ``z_stouffer_abs`` (one row per sample x pathway).
+        - ``reference``: per-pathway normal reference with columns ``smp_id``,
+          ``pathway_name``, ``n_metabolites`` (total usable metabolites),
+          ``normal_z_stouffer_abs_p50/p95/p99`` (empirical percentiles of the
+          absolute Stouffer score over the normal samples).
+    """
+    score_cols = ["sample_id", "smp_id", "pathway_name",
+                  "n_metabolites_used", "z_stouffer", "z_stouffer_abs"]
+    ref_cols = ["smp_id", "pathway_name", "n_metabolites",
+                "normal_z_stouffer_abs_p50", "normal_z_stouffer_abs_p95",
+                "normal_z_stouffer_abs_p99"]
+    if zscores.empty or scored_coverage.empty:
+        return (pd.DataFrame(columns=score_cols),
+                pd.DataFrame(columns=ref_cols))
+
+    normal_mask = normal_mask.reindex(zscores.index, fill_value=False)
+
+    kept_pathways = scored_coverage[["smp_id", "pathway_name"]].drop_duplicates()
+    links = feature_to_pathway.merge(kept_pathways,
+                                     on=["smp_id", "pathway_name"], how="inner")
+    links = links[links["feature"].isin(zscores.columns)
+                  & links["hmdb_id"].notna()]
+
+    # Pathway -> {metabolite (hmdb_id) -> [features]}
+    pathway_metabolite_features: Dict[str, Dict[str, List[str]]] = {}
+    for _, row in links.iterrows():
+        pathway_metabolite_features.setdefault(row["smp_id"], {}).setdefault(
+            row["hmdb_id"], []).append(row["feature"])
+
+    score_rows: List[Dict] = []
+    ref_rows: List[Dict] = []
+    n_scored_pathways = 0
+    for smp_id, metabolites in pathway_metabolite_features.items():
+        metabolite_z = []
+        metabolite_names = []
+        for hmdb_id, feats in metabolites.items():
+            feats = [f for f in feats if f in zscores.columns]
+            if feats:
+                metabolite_z.append(zscores[feats].mean(axis=1))
+                metabolite_names.append(hmdb_id)
+        if len(metabolite_z) < min_metabolites:
+            continue
+        n_scored_pathways += 1
+        metab_matrix = pd.concat(metabolite_z, axis=1)
+
+        usable = metab_matrix.notna().sum(axis=1)
+        k_eff = usable.astype(float)
+        signed = metab_matrix.sum(axis=1) / np.sqrt(k_eff.where(k_eff > 0))
+        absolute = metab_matrix.abs().sum(axis=1) / np.sqrt(k_eff.where(k_eff > 0))
+        signed[usable < min_metabolites] = np.nan
+        absolute[usable < min_metabolites] = np.nan
+
+        pathway_name = kept_pathways.loc[
+            kept_pathways["smp_id"] == smp_id, "pathway_name"].iloc[0]
+
+        for sample_id in zscores.index:
+            score_rows.append({
+                "sample_id": sample_id,
+                "smp_id": smp_id,
+                "pathway_name": pathway_name,
+                "n_metabolites_used": int(usable.loc[sample_id]),
+                "z_stouffer": signed.loc[sample_id],
+                "z_stouffer_abs": absolute.loc[sample_id],
+            })
+
+        normal_abs = absolute.loc[normal_mask].dropna()
+        ref_rows.append({
+            "smp_id": smp_id,
+            "pathway_name": pathway_name,
+            "n_metabolites": len(metabolite_names),
+            "normal_z_stouffer_abs_p50": float(normal_abs.quantile(0.50)) if len(normal_abs) else np.nan,
+            "normal_z_stouffer_abs_p95": float(normal_abs.quantile(0.95)) if len(normal_abs) else np.nan,
+            "normal_z_stouffer_abs_p99": float(normal_abs.quantile(0.99)) if len(normal_abs) else np.nan,
+        })
+
+    scores = pd.DataFrame(score_rows, columns=score_cols)
+    reference = pd.DataFrame(ref_rows, columns=ref_cols)
+    logger.info(f"Computed Stouffer scores for {n_scored_pathways} pathways x "
+                f"{zscores.index.nunique()} samples "
+                f"(min {min_metabolites} usable metabolites per score).")
+    return scores, reference

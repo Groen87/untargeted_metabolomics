@@ -18,6 +18,7 @@ from pathway_pipeline.pipeline.pathway_stats import (
     classify_samples,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
+    compute_stouffer_scores,
 )
 
 
@@ -168,3 +169,100 @@ def test_filter_pathways_empty_coverage():
                                          available_features=["f1"],
                                          min_pathway_features=3)
     assert scored.empty
+
+
+# ---------------------------------------------------------------------------
+# Stouffer scores
+# ---------------------------------------------------------------------------
+
+def _stouffer_inputs():
+    samples = ["s1", "s2", "s3", "s4"]
+    zscores = pd.DataFrame({
+        "f1": [1.0, 0.0, 0.5, 0.0],
+        "f2": [1.0, 0.0, 0.5, 0.0],
+        "f3": [1.0, 0.0, 0.5, 0.0],
+        "f4": [np.nan, 0.0, 0.0, 0.0],
+    }, index=samples)
+    feature_to_pathway = pd.DataFrame([
+        {"feature": "f1", "hmdb_id": "H1", "smp_id": "SMP1",
+         "pathway_name": "Alpha Pathway", "metabolite_id": "M1", "metabolite_name": "m1"},
+        {"feature": "f2", "hmdb_id": "H2", "smp_id": "SMP1",
+         "pathway_name": "Alpha Pathway", "metabolite_id": "M2", "metabolite_name": "m2"},
+        {"feature": "f3", "hmdb_id": "H3", "smp_id": "SMP1",
+         "pathway_name": "Alpha Pathway", "metabolite_id": "M3", "metabolite_name": "m3"},
+        # f4 is a second feature for metabolite H1 (dedup: averaged with f1).
+        {"feature": "f4", "hmdb_id": "H1", "smp_id": "SMP1",
+         "pathway_name": "Alpha Pathway", "metabolite_id": "M1", "metabolite_name": "m1"},
+    ])
+    scored_coverage = pd.DataFrame([
+        {"smp_id": "SMP1", "pathway_name": "Alpha Pathway", "n_metabolites": 3,
+         "n_matched_metabolites": 3, "matched_metabolites": "H1;H2;H3",
+         "n_matched_features": 4, "matched_features": "f1;f2;f3;f4", "coverage": 0.75},
+    ])
+    normal_mask = pd.Series([True, True, False, False], index=samples)
+    return zscores, feature_to_pathway, scored_coverage, normal_mask
+
+
+def test_stouffer_scores_and_reference():
+    zscores, links, coverage, normal_mask = _stouffer_inputs()
+    scores, reference = compute_stouffer_scores(zscores, links, coverage, normal_mask,
+                                               min_metabolites=3)
+
+    assert set(scores["smp_id"]) == {"SMP1"}
+    assert scores["sample_id"].nunique() == 4
+
+    s1 = scores[scores["sample_id"] == "s1"].iloc[0]
+    # s1: H1 = mean(f1, f4) = mean(1.0, nan) = 1.0; H2 = 1.0; H3 = 1.0
+    # signed = 3/sqrt(3); abs same (all positive)
+    assert s1["n_metabolites_used"] == 3
+    assert s1["z_stouffer"] == pytest.approx(3.0 / np.sqrt(3))
+    assert s1["z_stouffer_abs"] == pytest.approx(3.0 / np.sqrt(3))
+
+    # s2: all zeros -> scores 0.
+    s2 = scores[scores["sample_id"] == "s2"].iloc[0]
+    assert s2["z_stouffer"] == pytest.approx(0.0)
+    assert s2["z_stouffer_abs"] == pytest.approx(0.0)
+
+    # Reference percentiles come from the two normal samples (s1, s2).
+    row = reference.iloc[0]
+    assert row["n_metabolites"] == 3
+    assert row["normal_z_stouffer_abs_p50"] == pytest.approx(
+        np.mean([3.0 / np.sqrt(3), 0.0]))
+
+
+def test_stouffer_min_metabolites_nan():
+    zscores, links, coverage, normal_mask = _stouffer_inputs()
+    # Only f4 present for H1 -> 1 usable metabolite in s1 -> NaN, not shrunken.
+    zscores2 = zscores.drop(columns=["f2", "f3"])
+    scores, reference = compute_stouffer_scores(zscores2, links, coverage,
+                                                normal_mask, min_metabolites=3)
+    assert scores.empty  # no pathway reaches 3 metabolites at all
+
+
+def test_stouffer_signed_vs_absolute():
+    samples = ["s1", "s2"]
+    zscores = pd.DataFrame({
+        "f1": [2.0, -2.0],
+        "f2": [-2.0, -2.0],
+        "f3": [2.0, -2.0],
+    }, index=samples)
+    links = pd.DataFrame([
+        {"feature": "f1", "hmdb_id": "H1", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M1", "metabolite_name": "m1"},
+        {"feature": "f2", "hmdb_id": "H2", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M2", "metabolite_name": "m2"},
+        {"feature": "f3", "hmdb_id": "H3", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": "M3", "metabolite_name": "m3"},
+    ])
+    coverage = pd.DataFrame([
+        {"smp_id": "SMP1", "pathway_name": "P", "n_metabolites": 3,
+         "n_matched_metabolites": 3, "matched_metabolites": "H1;H2;H3",
+         "n_matched_features": 3, "matched_features": "f1;f2;f3", "coverage": 1.0},
+    ])
+    normal_mask = pd.Series([True, False], index=samples)
+    scores, _ = compute_stouffer_scores(zscores, links, coverage, normal_mask,
+                                        min_metabolites=3)
+    s1 = scores[scores["sample_id"] == "s1"].iloc[0]
+    # Mixed directions: signed cancels, absolute does not.
+    assert s1["z_stouffer"] == pytest.approx(2.0 / np.sqrt(3))
+    assert s1["z_stouffer_abs"] == pytest.approx(6.0 / np.sqrt(3))
