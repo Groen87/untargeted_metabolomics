@@ -216,6 +216,20 @@ still comes from the pathway rules alone.
 
 ## QC Diagnostics
 
+`qc_report.py` audits the pipeline outputs for measurement-suspect features,
+metabolites, and pathways (usage: `python -m pathway_pipeline.qc_report
+--outputs <output-dir> --input <feature-matrix>`):
+
+1. **Noise-floor features**: spike + tight IQR in the reference normals --
+   z-magnifiers that manufacture huge z-scores from small absolute changes.
+2. **Diverging duplicates**: metabolites backed by multiple dataset features
+   whose IQRs differ >2x; the averaged z is dominated by the noisiest one.
+3. **Flag concentration by group**: metabolites flagging normals as often
+   as IMD patients are artifact-suspect; those flagging mostly patients are
+   working as intended.
+4. **Pathway calibration**: pathways flagging >=3 normals, and the hottest
+   feature behind each pathway's flags.
+
 `qc_extremes.py` reports where extreme z-scores concentrate among the
 normals (per-feature = unstable feature, per-sample = QC-suspect sample) and
 verifies the calibration (per-feature median ~0, IQR ~1):
