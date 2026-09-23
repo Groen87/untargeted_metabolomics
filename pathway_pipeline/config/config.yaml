@@ -78,8 +78,23 @@ run_stouffer: true
 min_stouffer_metabolites: 3
 
 # ============================================================================
+# Flagging (stage 4)
+# ============================================================================
+# A (sample, pathway) pair is flagged when its absolute Stouffer score exceeds
+# the flag_threshold_percentile percentile of that pathway's own normals
+# (empirical per-pathway calibration: a noisy pathway automatically gets a
+# wider range). A sample is flagged when at least min_flagged_pathways of its
+# pathways are flagged. The Classification/Oordeel groups are joined for a
+# reporting-only detection-vs-contamination summary; thresholds are never
+# tuned against them.
+run_flagging: true
+flag_threshold_percentile: 99.0
+min_flagged_pathways: 1
+
+# ============================================================================
 # Output
 # ============================================================================
 save_mapping_outputs: true
 save_zscore_outputs: true
 save_stouffer_outputs: true
+save_flagging_outputs: true

@@ -352,3 +352,100 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
                 f"{zscores.index.nunique()} samples "
                 f"(min {min_metabolites} usable metabolites per score).")
     return scores, reference
+
+
+def flag_pathway_scores(pathway_scores: pd.DataFrame,
+                         normal_mask: pd.Series,
+                         threshold_percentile: float = 99.0
+                         ) -> pd.DataFrame:
+    """Flag (sample, pathway) pairs against each pathway's own normal range.
+
+    For every pathway the threshold is the ``threshold_percentile`` percentile
+    of the absolute Stouffer score over the NORMAL samples only (empirical
+    calibration: a noisy pathway automatically gets a wider range). A pair is
+    flagged when its ``z_stouffer_abs`` strictly exceeds its pathway's
+    threshold.
+
+    Args:
+        pathway_scores: output of :func:`compute_stouffer_scores`.
+        normal_mask: boolean Series (sample_id -> is-normal).
+        threshold_percentile: percentile of the normals' absolute score used
+            as the per-pathway threshold (default 99).
+
+    Returns:
+        DataFrame like ``pathway_scores`` plus ``threshold`` and ``excess``
+        (z_stouffer_abs / threshold, > 1 when flagged) and ``flagged``.
+    """
+    flag_cols = list(pathway_scores.columns) + ["threshold", "excess", "flagged"]
+    if pathway_scores.empty:
+        return pd.DataFrame(columns=flag_cols)
+
+    normal_mask = normal_mask.reindex(pathway_scores["sample_id"].unique(),
+                                      fill_value=False)
+    normal_scores = pathway_scores[pathway_scores["sample_id"].map(normal_mask)]
+
+    thresholds = (
+        normal_scores.groupby("smp_id")["z_stouffer_abs"]
+        .quantile(threshold_percentile / 100.0)
+        .rename("threshold")
+        .reset_index()
+    )
+    flags = pathway_scores.merge(thresholds, on="smp_id", how="left")
+    flags["excess"] = flags["z_stouffer_abs"] / flags["threshold"]
+    flags["flagged"] = flags["excess"] > 1.0
+    flags = flags[flag_cols]
+    n_flagged_pairs = int(flags["flagged"].sum())
+    logger.info(f"Flagged {n_flagged_pairs} (sample, pathway) pairs at the "
+                f"{threshold_percentile}th normal percentile "
+                f"({flags['smp_id'].nunique()} pathways scored).")
+    return flags
+
+
+def summarize_sample_flags(pathway_flags: pd.DataFrame,
+                            min_flagged_pathways: int = 1
+                            ) -> pd.DataFrame:
+    """Summarize the per-pathway flags into a per-sample decision.
+
+    A sample is flagged when at least ``min_flagged_pathways`` of its pathways
+    are flagged. The summary keeps the sample's top evidence (largest excess
+    ratio) for review.
+
+    Args:
+        pathway_flags: output of :func:`flag_pathway_scores`.
+        min_flagged_pathways: minimum flagged pathways for a sample decision.
+
+    Returns:
+        DataFrame with one row per sample: ``sample_id``,
+        ``n_flagged_pathways``, ``n_scored_pathways``, ``flagged``,
+        ``top_pathway_name``, ``top_z_stouffer_abs``, ``top_excess``.
+    """
+    out_cols = ["sample_id", "n_flagged_pathways", "n_scored_pathways", "flagged",
+                "top_pathway_name", "top_z_stouffer_abs", "top_excess"]
+    if pathway_flags.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    def _agg(g):
+        candidates = g.dropna(subset=["excess"])
+        if candidates.empty:
+            top = g.iloc[0]
+        else:
+            top = candidates.loc[candidates["excess"].idxmax()]
+        return pd.Series({
+            "n_flagged_pathways": int(g["flagged"].sum()),
+            "n_scored_pathways": int(g["flagged"].sum() + (~g["flagged"].astype(bool)).sum()),
+            "flagged": bool(g["flagged"].sum() >= min_flagged_pathways),
+            "top_pathway_name": top["pathway_name"],
+            "top_z_stouffer_abs": top["z_stouffer_abs"],
+            "top_excess": top["excess"],
+        })
+
+    group_cols = [c for c in pathway_flags.columns if c != "sample_id"]
+    summary = (pathway_flags[group_cols]
+               .groupby(pathway_flags["sample_id"].values)
+               .apply(_agg)
+               .reset_index()
+               .rename(columns={"index": "sample_id"}))
+    n_flagged_samples = int(summary["flagged"].sum())
+    logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
+                f"(>= {min_flagged_pathways} flagged pathway(s)).")
+    return summary[out_cols]

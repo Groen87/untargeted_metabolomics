@@ -19,6 +19,8 @@ from pathway_pipeline.pipeline.pathway_stats import (
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
     compute_stouffer_scores,
+    flag_pathway_scores,
+    summarize_sample_flags,
 )
 
 
@@ -266,3 +268,129 @@ def test_stouffer_signed_vs_absolute():
     # Mixed directions: signed cancels, absolute does not.
     assert s1["z_stouffer"] == pytest.approx(2.0 / np.sqrt(3))
     assert s1["z_stouffer_abs"] == pytest.approx(6.0 / np.sqrt(3))
+
+
+# ---------------------------------------------------------------------------
+# Flagging
+# ---------------------------------------------------------------------------
+
+def _flags_inputs(n_normal=20):
+    """Synthetic pathway scores: two pathways, n_normal normal samples with
+    well-behaved absolute scores, plus two IMD samples with extreme ones."""
+    rng = np.random.default_rng(7)
+    samples = [f"n{i}" for i in range(n_normal)] + ["imd1", "imd2"]
+    normal_mask = pd.Series([s.startswith("n") for s in samples], index=samples)
+    rows = []
+    for smp in ("SMP_A", "SMP_B"):
+        for s in samples:
+            base = rng.uniform(0.1, 2.0)
+            if s.startswith("n"):
+                z_abs = float(base)
+            elif smp == "SMP_A":
+                z_abs = 6.0 if s == "imd1" else 1.0
+            else:
+                z_abs = 1.0 if s == "imd1" else 6.0
+            rows.append({
+                "sample_id": s, "smp_id": smp,
+                "pathway_name": {"SMP_A": "Pathway A", "SMP_B": "Pathway B"}[smp],
+                "n_metabolites_used": 5,
+                "z_stouffer": z_abs if smp == "SMP_A" else -z_abs,
+                "z_stouffer_abs": z_abs,
+            })
+    return pd.DataFrame(rows), normal_mask
+
+
+def test_flag_pathway_scores_threshold_from_normals_only():
+    scores, normal_mask = _flags_inputs()
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=99.0)
+
+    assert list(flags.columns[-3:]) == ["threshold", "excess", "flagged"]
+    # Thresholds come from the normals' distribution (uniform 0.1-2.0).
+    for smp in ("SMP_A", "SMP_B"):
+        thr = flags.loc[flags["smp_id"] == smp, "threshold"].iloc[0]
+        assert 0.1 <= thr <= 2.0
+    # The 6.0 scores exceed every threshold; the 1.0 scores never do.
+    extreme = flags[flags["z_stouffer_abs"] == 6.0]
+    assert extreme["flagged"].all()
+    mild = flags[flags["z_stouffer_abs"] == 1.0]
+    assert not mild["flagged"].any()
+    # Empirical calibration: the very top of the normal distribution can
+    # exceed the interpolated percentile, but only a small tail does
+    # (<= 10% of normal rows at the 99th percentile).
+    normals = flags[~flags["sample_id"].str.startswith("imd")]
+    assert normals["flagged"].mean() <= 0.10
+
+
+def test_flag_pathway_scores_excess_and_empty():
+    scores, normal_mask = _flags_inputs(n_normal=4)
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=90.0)
+    row = flags[flags["sample_id"] == "imd1"].iloc[0]
+    assert row["excess"] == pytest.approx(row["z_stouffer_abs"] / row["threshold"])
+
+    empty = flag_pathway_scores(pd.DataFrame(), normal_mask)
+    assert empty.empty
+    assert "flagged" in empty.columns
+
+
+def test_flag_pathway_scores_nan_scores():
+    """NaN z_stouffer_abs rows (insufficient metabolites) are never flagged."""
+    scores, normal_mask = _flags_inputs(n_normal=10)
+    scores.loc[scores["sample_id"] == "imd1", "z_stouffer_abs"] = np.nan
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=99.0)
+    imd1 = flags[flags["sample_id"] == "imd1"]
+    # NaN scores: excess is NaN, flagged is False.
+    assert not bool(imd1["flagged"].any())
+
+
+def test_summarize_sample_flags_basic():
+    scores, normal_mask = _flags_inputs()
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=99.0)
+    summary = summarize_sample_flags(flags, min_flagged_pathways=1)
+
+    assert set(summary.columns) == {
+        "sample_id", "n_flagged_pathways", "n_scored_pathways", "flagged",
+        "top_pathway_name", "top_z_stouffer_abs", "top_excess"}
+
+    imd1 = summary[summary["sample_id"] == "imd1"].iloc[0]
+    # imd1: flagged in A only (6.0); its 1.0 in B stays below the threshold.
+    assert imd1["n_flagged_pathways"] == 1
+    assert imd1["n_scored_pathways"] == 2
+    assert bool(imd1["flagged"])
+    assert imd1["top_pathway_name"] == "Pathway A"
+    assert imd1["top_z_stouffer_abs"] == pytest.approx(6.0)
+
+    normals = summary[summary["sample_id"].str.startswith("n")]
+    # Small normal tail can flag (interpolated percentile) but stays rare.
+    assert normals["n_flagged_pathways"].max() <= 1
+    assert normals["flagged"].mean() <= 0.10
+
+
+def test_summarize_sample_flags_min_flagged_pathways():
+    scores, normal_mask = _flags_inputs()
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=99.0)
+
+    strict = summarize_sample_flags(flags, min_flagged_pathways=2)
+    for s in ("imd1", "imd2"):
+        row = strict[strict["sample_id"] == s].iloc[0]
+        # Each IMD sample is flagged in exactly one pathway -> min 2 rejects.
+        assert row["n_flagged_pathways"] == 1
+        assert not bool(row["flagged"])
+
+    loose = summarize_sample_flags(flags, min_flagged_pathways=1)
+    flagged = loose[loose["sample_id"].str.startswith("imd")]
+    assert flagged["flagged"].all()
+
+
+def test_summarize_sample_flags_empty_and_all_nan():
+    empty = summarize_sample_flags(pd.DataFrame(), min_flagged_pathways=1)
+    assert empty.empty
+    assert "flagged" in empty.columns
+
+    scores, normal_mask = _flags_inputs(n_normal=5)
+    scores["z_stouffer_abs"] = np.nan
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=99.0)
+    summary = summarize_sample_flags(flags, min_flagged_pathways=1)
+    # All-NaN: no flags, top evidence columns are NaN-safe.
+    assert (summary["n_flagged_pathways"] == 0).all()
+    assert (~summary["flagged"].astype(bool)).all()
+    assert summary["top_excess"].isna().all()

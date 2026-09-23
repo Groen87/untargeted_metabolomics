@@ -116,7 +116,9 @@ outputs/pathway_pipeline/
 ├── dropped_features.csv        # features dropped before z-scoring, with reason
 ├── pathway_coverage_scored.csv # coverage recomputed over calibrated features
 ├── pathway_stouffer_scores.csv # per (sample, pathway) signed + absolute Stouffer
-└── pathway_stouffer_reference.csv # per-pathway normal p50/p95/p99 of |Stouffer|
+├── pathway_stouffer_reference.csv # per-pathway normal p50/p95/p99 of |Stouffer|
+├── pathway_flags.csv          # per (sample, pathway) threshold/excess/flagged
+└── sample_decisions.csv       # per-sample decision + top evidence + review group
 ```
 
 ## Pathway Stouffer Scores (stage 3)
@@ -134,6 +136,19 @@ pathway get no score for it. `pathway_stouffer_reference.csv` records each
 pathway's empirical p50/p95/p99 of the absolute Stouffer score over the
 normals -- the calibration basis for the flagging stage (a noisy pathway
 automatically gets a wider normal range instead of being hand-pruned).
+
+## Flagging (stage 4)
+
+A (sample, pathway) pair is flagged when its absolute Stouffer score exceeds
+the `flag_threshold_percentile` percentile (default 99) of that pathway's own
+**normals** -- empirical per-pathway calibration, so a noisy pathway
+automatically gets a wider range. A sample is flagged when at least
+`min_flagged_pathways` of its pathways are flagged. `sample_decisions.csv`
+joins each sample's Classification/Oordeel group (`normal` = Class 0 +
+Oordeel 0, `imd` = Class 1 + Oordeel 1, `other`) next to the decision -- a
+**reporting-only** detection-vs-contamination summary. Thresholds are never
+tuned against the IMD labels; tuning would have to happen inside
+cross-validation.
 
 ## QC Diagnostics
 

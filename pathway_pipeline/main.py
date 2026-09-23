@@ -38,6 +38,8 @@ from pathway_pipeline.pipeline.pathway_stats import (
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
     compute_stouffer_scores,
+    flag_pathway_scores,
+    summarize_sample_flags,
 )
 
 
@@ -92,6 +94,22 @@ def load_feature_matrix(input_file: str,
 
     logger.info(f"{len(feature_cols)} feature columns, {metadata.shape[1]} metadata columns")
     return features, metadata, ages
+
+
+def _label_samples(metadata: pd.DataFrame, normal_mask: pd.Series) -> pd.Series:
+    """Assign each sample a review group: normal, imd, or other.
+
+    Normals are the configured reference set (Classification 0 and
+    Oordeel 0); IMD samples are Classification 1 and Oordeel 1. The group is
+    reporting-only evidence, never used to set thresholds.
+    """
+    group = pd.Series("other", index=metadata.index)
+    if {"Classification", "Oordeel targeted"}.issubset(metadata.columns):
+        cls = pd.to_numeric(metadata["Classification"], errors="coerce")
+        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+        group[(cls == 1) & (oor == 1)] = "imd"
+    group[normal_mask.reindex(metadata.index, fill_value=False)] = "normal"
+    return group
 
 
 def run_pipeline(input_file: str,
@@ -277,8 +295,59 @@ def run_pipeline(input_file: str,
                     f"{pathway_scores['smp_id'].nunique()} pathways "
                     f"({n_normal} normals in the reference).")
 
-    logger.info("Stouffer stage complete; stopping before flagging "
-                "(to be added in the next stage).")
+    # ------------------------------------------------------------------
+    # Stage 4: flag samples against each pathway's own normal range
+    # ------------------------------------------------------------------
+    if not bool(config.get("run_flagging", True)):
+        logger.info("run_flagging is false; stopping after the Stouffer outputs.")
+        return {
+            "feature_to_hmdb": feature_to_hmdb,
+            "feature_to_pathway": feature_to_pathway,
+            "pathway_coverage": coverage,
+            "normal_mask": normal_mask,
+            "zscores": zscores,
+            "reference_stats": reference_stats,
+            "dropped_features": dropped_features,
+            "pathway_coverage_scored": scored_coverage,
+            "pathway_scores": pathway_scores,
+            "pathway_reference": pathway_reference,
+        }
+
+    _log_section("STEP 8: Flag samples per pathway (normal-percentile thresholds)")
+    threshold_percentile = float(config.get("flag_threshold_percentile", 99.0))
+    pathway_flags = flag_pathway_scores(
+        pathway_scores,
+        normal_mask=normal_mask,
+        threshold_percentile=threshold_percentile,
+    )
+
+    min_flagged_pathways = int(config.get("min_flagged_pathways", 1))
+    sample_decisions = summarize_sample_flags(
+        pathway_flags,
+        min_flagged_pathways=min_flagged_pathways,
+    )
+
+    sample_group = _label_samples(metadata, normal_mask)
+    decisions_labeled = sample_decisions.merge(
+        sample_group.rename("group"), left_on="sample_id", right_index=True,
+        how="left")
+    decisions_labeled["group"] = decisions_labeled["group"].fillna("other")
+
+    if not decisions_labeled.empty:
+        group_counts = (decisions_labeled
+                        .groupby("group")
+                        .agg(n_samples=("flagged", "size"),
+                             n_flagged=("flagged", "sum"))
+                        .reset_index())
+        for _, r in group_counts.iterrows():
+            logger.info(f"Group '{r['group']}': {int(r['n_flagged'])} of "
+                        f"{int(r['n_samples'])} samples flagged.")
+
+    if bool(config.get("save_flagging_outputs", True)):
+        pathway_flags.to_csv(out / "pathway_flags.csv", index=False)
+        decisions_labeled.to_csv(out / "sample_decisions.csv", index=False)
+        logger.info(f"Wrote pathway_flags.csv, sample_decisions.csv to {out}")
+
     return {
         "feature_to_hmdb": feature_to_hmdb,
         "feature_to_pathway": feature_to_pathway,
@@ -290,6 +359,8 @@ def run_pipeline(input_file: str,
         "pathway_coverage_scored": scored_coverage,
         "pathway_scores": pathway_scores,
         "pathway_reference": pathway_reference,
+        "pathway_flags": pathway_flags,
+        "sample_decisions": decisions_labeled,
     }
 
 
