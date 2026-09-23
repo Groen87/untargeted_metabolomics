@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 from typing import Tuple
 
+import numpy as np
 import pandas as pd
 
 from pathway_pipeline.config.config import Config
@@ -79,11 +80,16 @@ def load_feature_matrix(input_file: str,
         df = df.set_index(patient_id_column)
     logger.info(f"Loaded {input_file}: {df.shape[0]} samples x {df.shape[1]} columns")
 
-    duplicates = df.index[df.index.duplicated()].unique().tolist()
-    if duplicates:
+    dup_counts = df.index.value_counts()
+    duplicates = dup_counts[dup_counts > 1]
+    if not duplicates.empty:
         logger.warning(f"{len(duplicates)} sample IDs occur more than once "
-                       f"in the input; per-sample outputs will keep every "
-                       f"row. First 10 duplicated IDs: {duplicates[:10]}")
+                       f"in the input ({int(duplicates.sum())} rows in "
+                       f"total); per-sample outputs will keep every row.")
+        for sample_id, count in duplicates.items():
+            rows = (np.flatnonzero(df.index == sample_id) + 2).tolist()
+            logger.warning(f"  Duplicate sample '{sample_id}': {int(count)} "
+                           f"rows (CSV rows {rows})")
 
     nf = list(non_feature_columns)
     if age_column and age_column not in nf:
