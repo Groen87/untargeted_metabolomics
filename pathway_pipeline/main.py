@@ -32,7 +32,7 @@ import pandas as pd
 from pathway_pipeline.config.config import Config
 from pathway_pipeline.pipeline.hmdb_parser import build_name_index
 from pathway_pipeline.pipeline.pathway_mapping import (
-    load_pathways_tsv,
+    load_pathways,
     match_features_to_hmdb,
     link_features_to_pathways,
     pathway_coverage,
@@ -310,7 +310,7 @@ def run_pipeline(input_file: str,
     )
 
     _log_section("STEP 4: Load pathways and link features to pathways")
-    pathways = load_pathways_tsv(config.get("pathways_file", "data/pathways.tsv"))
+    pathways = load_pathways(config.get("pathways_file", "data/pathway_member.csv"))
     feature_to_pathway = link_features_to_pathways(feature_to_hmdb, pathways)
     min_pathway_size = int(config.get("min_pathway_size", 3))
     coverage = pathway_coverage(feature_to_pathway,

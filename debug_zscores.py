@@ -29,7 +29,7 @@ import seaborn as sns
 from pathway_pipeline.config.config import Config
 from pathway_pipeline.pipeline.hmdb_parser import build_name_index
 from pathway_pipeline.pipeline.pathway_mapping import (
-    load_pathways_tsv,
+    load_pathways,
     match_features_to_hmdb,
     link_features_to_pathways,
 )
@@ -361,8 +361,8 @@ def main():
                         help="Output directory for debug results.")
     parser.add_argument("--hmdb", default="pathway_pipeline/data/hmdb_metabolites.xml",
                         help="Path to HMDB XML file.")
-    parser.add_argument("--pathways", default="pathway_pipeline/data/pathways.tsv",
-                        help="Path to pathways TSV file.")
+    parser.add_argument("--pathways", default="pathway_pipeline/data/pathway_member.csv",
+                        help="Path to pathways file (SMPDB TSV or PathBank members CSV).")
     parser.add_argument("--config", default=None,
                         help="Path to config YAML.")
     args = parser.parse_args()
@@ -411,7 +411,7 @@ def main():
     )
 
     logger.info("Loading pathways and linking features...")
-    pathways = load_pathways_tsv(args.pathways)
+    pathways = load_pathways(args.pathways)
     feature_to_pathway = link_features_to_pathways(feature_to_hmdb, pathways)
     min_pathway_size = int(config.get("min_pathway_size", 3))
 
