@@ -18,6 +18,7 @@ scores.
 """
 
 import logging
+from math import exp, lgamma, log
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -241,7 +242,8 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
                              feature_to_pathway: pd.DataFrame,
                              scored_coverage: pd.DataFrame,
                              normal_mask: pd.Series,
-                             min_metabolites: int = 3) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                             min_metabolites: int = 3,
+                             max_abs_z: float = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Compute per-pathway Stouffer scores for every sample.
 
     For each pathway P with usable metabolites (features deduplicated per
@@ -265,6 +267,9 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
         normal_mask: boolean Series marking the normal reference samples; used
             only for the per-pathway reference percentiles.
         min_metabolites: minimum usable metabolites for a score to be emitted.
+        max_abs_z: cap on |z| applied before the Stouffer sum (a single
+            artifact feature can otherwise dominate a whole pathway); None
+            disables the cap.
 
     Returns:
         Tuple ``(scores, reference)``:
@@ -285,6 +290,11 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
     if zscores.empty or scored_coverage.empty:
         return (pd.DataFrame(columns=score_cols),
                 pd.DataFrame(columns=ref_cols))
+
+    if max_abs_z is not None and max_abs_z > 0:
+        zscores = zscores.clip(lower=-max_abs_z, upper=max_abs_z)
+        logger.info(f"Capping metabolite |z| at {max_abs_z} before the "
+                    f"Stouffer sum.")
 
     normal_mask = normal_mask[~normal_mask.index.duplicated(keep="first")]
     normal_mask = normal_mask.reindex(zscores.index, fill_value=False)
@@ -356,6 +366,38 @@ def compute_stouffer_scores(zscores: pd.DataFrame,
     return scores, reference
 
 
+def _binomial_sf(k: int, n: int, p: float) -> float:
+    """Survival function P(X >= k) for X ~ Binomial(n, p).
+
+    Exact tail sum in log space (no SciPy dependency); underflows to 0 for
+    vanishingly small tails.
+
+    Args:
+        k: minimum number of successes.
+        n: number of trials.
+        p: per-trial success probability.
+
+    Returns:
+        P(X >= k); 1.0 for k <= 0, 0.0 for k > n.
+    """
+    if k <= 0:
+        return 1.0
+    if k > n:
+        return 0.0
+    if p <= 0.0:
+        return 0.0
+    if p >= 1.0:
+        return 1.0
+    log_p = log(p)
+    log_1mp = log(1.0 - p)
+    total = 0.0
+    for i in range(k, n + 1):
+        log_term = (lgamma(n + 1) - lgamma(i + 1) - lgamma(n - i + 1)
+                    + i * log_p + (n - i) * log_1mp)
+        total += exp(log_term)
+    return min(total, 1.0)
+
+
 def flag_pathway_scores(pathway_scores: pd.DataFrame,
                          normal_mask: pd.Series,
                          threshold_percentile: float = 99.0
@@ -405,25 +447,42 @@ def flag_pathway_scores(pathway_scores: pd.DataFrame,
 
 
 def summarize_sample_flags(pathway_flags: pd.DataFrame,
-                            min_flagged_pathways: int = 1
+                            min_flagged_pathways: int = 1,
+                            per_pathway_flag_rate: float = None,
+                            max_sample_p: float = 0.05
                             ) -> pd.DataFrame:
     """Summarize the per-pathway flags into a per-sample decision.
 
-    A sample is flagged when at least ``min_flagged_pathways`` of its pathways
-    are flagged. The summary keeps the sample's top evidence (largest excess
-    ratio) for review.
+    With 200+ pathways per sample, a few chance pathway flags are expected for
+    every sample (n_pathways x per-pathway flag rate). The decision therefore
+    combines two rules:
+
+    - count rule: at least ``min_flagged_pathways`` pathways flagged;
+    - binomial rule (when ``per_pathway_flag_rate`` is given): the sample's
+      flagged-pathway count is compared against Binomial(n_scored_pathways,
+      per_pathway_flag_rate) -- the null of independent per-pathway flagging
+      at the calibration rate -- and the sample must have ``sample_p_value``
+      <= ``max_sample_p``. This is what stops the binomial noise (a normal
+      flagging ~2 of 234 pathways at the p99 threshold) from flagging the
+      sample as a whole.
 
     Args:
         pathway_flags: output of :func:`flag_pathway_scores`.
         min_flagged_pathways: minimum flagged pathways for a sample decision.
+        per_pathway_flag_rate: expected fraction of flagged pathways per
+            sample under the null (typically 1 - threshold_percentile/100);
+            None disables the binomial rule.
+        max_sample_p: p-value cutoff for the binomial rule (default 0.05).
 
     Returns:
         DataFrame with one row per sample: ``sample_id``,
         ``n_flagged_pathways``, ``n_scored_pathways``, ``flagged``,
+        ``sample_p_value`` (NaN when the binomial rule is disabled),
         ``top_pathway_name``, ``top_z_stouffer_abs``, ``top_excess``.
     """
     out_cols = ["sample_id", "n_flagged_pathways", "n_scored_pathways", "flagged",
-                "top_pathway_name", "top_z_stouffer_abs", "top_excess"]
+                "sample_p_value", "top_pathway_name", "top_z_stouffer_abs",
+                "top_excess"]
     if pathway_flags.empty:
         return pd.DataFrame(columns=out_cols)
 
@@ -433,10 +492,20 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
             top = g.iloc[0]
         else:
             top = candidates.loc[candidates["excess"].idxmax()]
+        n_flagged = int(g["flagged"].sum())
+        n_scored = int(g["flagged"].sum() + (~g["flagged"].astype(bool)).sum())
+        if per_pathway_flag_rate is None:
+            p_value = float("nan")
+            decision = n_flagged >= min_flagged_pathways
+        else:
+            p_value = _binomial_sf(n_flagged, n_scored, per_pathway_flag_rate)
+            decision = (n_flagged >= min_flagged_pathways
+                        and p_value <= max_sample_p)
         return pd.Series({
-            "n_flagged_pathways": int(g["flagged"].sum()),
-            "n_scored_pathways": int(g["flagged"].sum() + (~g["flagged"].astype(bool)).sum()),
-            "flagged": bool(g["flagged"].sum() >= min_flagged_pathways),
+            "n_flagged_pathways": n_flagged,
+            "n_scored_pathways": n_scored,
+            "flagged": bool(decision),
+            "sample_p_value": p_value,
             "top_pathway_name": top["pathway_name"],
             "top_z_stouffer_abs": top["z_stouffer_abs"],
             "top_excess": top["excess"],
@@ -447,6 +516,12 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
                .apply(_agg)
                .reset_index())
     n_flagged_samples = int(summary["flagged"].sum())
-    logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
-                f"(>= {min_flagged_pathways} flagged pathway(s)).")
+    if per_pathway_flag_rate is None:
+        logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
+                    f"(>= {min_flagged_pathways} flagged pathway(s)).")
+    else:
+        logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
+                    f"(>= {min_flagged_pathways} flagged pathway(s) AND "
+                    f"binomial p <= {max_sample_p} at rate "
+                    f"{per_pathway_flag_rate:.2%}).")
     return summary[out_cols]

@@ -74,8 +74,11 @@ min_pathway_features: 3
 # Samples with fewer than min_stouffer_metabolites usable metabolites in a
 # pathway get no score for it. Per-pathway empirical percentiles of the
 # absolute score over the normals are written for the calibration step.
+# max_abs_z caps |z| before the Stouffer sum so a single artifact feature
+# cannot dominate a whole pathway (null disables the cap).
 run_stouffer: true
 min_stouffer_metabolites: 3
+max_abs_z: 10.0
 
 # ============================================================================
 # Flagging (stage 4)
@@ -87,9 +90,16 @@ min_stouffer_metabolites: 3
 # pathways are flagged. The Classification/Oordeel groups are joined for a
 # reporting-only detection-vs-contamination summary; thresholds are never
 # tuned against them.
+# use_binomial_sample_rule additionally requires the sample's flagged-pathway
+# count to be improbable under Binomial(n_scored_pathways, 1 - percentile)
+# -- the null of chance flagging at the calibration rate -- with p <=
+# max_sample_p. With 234 pathways at p99 a normal flags ~2 pathways by
+# chance; the binomial rule keeps that noise from flagging the sample.
 run_flagging: true
 flag_threshold_percentile: 99.0
 min_flagged_pathways: 1
+use_binomial_sample_rule: true
+max_sample_p: 0.05
 
 # ============================================================================
 # Output

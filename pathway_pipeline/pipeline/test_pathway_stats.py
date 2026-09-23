@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from pathway_pipeline.main import load_feature_matrix
 from pathway_pipeline.pipeline.pathway_stats import (
+    _binomial_sf,
     classify_samples,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
@@ -350,7 +351,8 @@ def test_summarize_sample_flags_basic():
 
     assert set(summary.columns) == {
         "sample_id", "n_flagged_pathways", "n_scored_pathways", "flagged",
-        "top_pathway_name", "top_z_stouffer_abs", "top_excess"}
+        "sample_p_value", "top_pathway_name", "top_z_stouffer_abs",
+        "top_excess"}
 
     imd1 = summary[summary["sample_id"] == "imd1"].iloc[0]
     # imd1: flagged in A only (6.0); its 1.0 in B stays below the threshold.
@@ -482,3 +484,97 @@ def test_load_feature_matrix_drops_unlabeled_samples(tmp_path):
     assert metadata.index.tolist() == ["s1", "s4", "s5"]
     assert features.columns.tolist() == ["A", "B"]
     assert metadata["Classification"].tolist() == [0, 1, 0]
+
+
+
+# ---------------------------------------------------------------------------
+# Binomial sample rule and z-cap
+# ---------------------------------------------------------------------------
+
+def test_binomial_sf_known_values():
+    # P(X >= 2) for Binomial(4, 0.25) = 1 - P(0) - P(1)
+    expected = 1.0 - 0.75 ** 4 - 4 * 0.25 * 0.75 ** 3
+    assert _binomial_sf(2, 4, 0.25) == pytest.approx(expected)
+    assert _binomial_sf(0, 4, 0.25) == 1.0
+    assert _binomial_sf(5, 4, 0.25) == 0.0
+    assert _binomial_sf(1, 234, 0.01) == pytest.approx(
+        1.0 - 0.99 ** 234, abs=1e-6)
+
+
+def test_summarize_sample_flags_binomial_rule():
+    """A sample flagging 2 of 234 pathways at p99 is chance, not a decision."""
+    n_pathways = 234
+    rows = []
+    for i in range(20):
+        # Each noise sample flags exactly 2 of 234 pathways: under
+        # Binomial(234, 0.01) that has p ~ 0.68, i.e. pure chance.
+        flagged_set = {i % n_pathways, (i + 117) % n_pathways}
+        for pw in range(n_pathways):
+            flagged = pw in flagged_set
+            rows.append({
+                "sample_id": f"noise_{i}", "smp_id": f"SMP{pw}",
+                "pathway_name": f"P{pw}", "n_metabolites_used": 5,
+                "z_stouffer": 1.0, "z_stouffer_abs": 1.0,
+                "threshold": 0.9,
+                "excess": 1.5 if flagged else 0.5,
+                "flagged": flagged,
+            })
+    # The shifted sample flags 20 pathways: far beyond the binomial null.
+    for pw in range(20):
+        rows.append({
+            "sample_id": "shifted", "smp_id": f"SMP{pw}",
+            "pathway_name": f"P{pw}", "n_metabolites_used": 5,
+            "z_stouffer": 1.5, "z_stouffer_abs": 1.5,
+            "threshold": 0.9, "excess": 1.7, "flagged": True,
+        })
+    flags = pd.DataFrame(rows)
+
+    without_rule = summarize_sample_flags(flags, min_flagged_pathways=1,
+                                          per_pathway_flag_rate=None)
+    with_rule = summarize_sample_flags(flags, min_flagged_pathways=1,
+                                       per_pathway_flag_rate=0.01,
+                                       max_sample_p=0.05)
+
+    # The count rule alone flags every noise sample (2 chance flags >= 1).
+    assert without_rule["flagged"].sum() == 21
+    # The binomial rule keeps all noise samples unflagged...
+    assert not with_rule.loc[
+        with_rule["sample_id"].str.startswith("noise"), "flagged"].any()
+    # ...but still flags the broadly shifted sample.
+    shifted = with_rule[with_rule["sample_id"] == "shifted"].iloc[0]
+    assert bool(shifted["flagged"])
+    assert shifted["sample_p_value"] == pytest.approx(
+        _binomial_sf(20, 234, 0.01), rel=1e-9)
+    # A disabled binomial rule leaves the p-value column as NaN.
+    assert np.isnan(without_rule["sample_p_value"].iloc[0])
+
+
+def test_stouffer_max_abs_z_cap():
+    """A single extreme feature cannot dominate the pathway sum."""
+    samples = ["s1", "s2"]
+    zscores = pd.DataFrame({
+        "f1": [20.0, 0.1],
+        "f2": [0.2, 0.2],
+        "f3": [0.1, 0.1],
+    }, index=samples)
+    links = pd.DataFrame([
+        {"feature": f"f{i}", "hmdb_id": f"H{i}", "smp_id": "SMP1",
+         "pathway_name": "P", "metabolite_id": f"M{i}", "metabolite_name": f"m{i}"}
+        for i in (1, 2, 3)
+    ])
+    coverage = pd.DataFrame([{
+        "smp_id": "SMP1", "pathway_name": "P", "n_metabolites": 3,
+        "n_matched_metabolites": 3, "matched_metabolites": "H1;H2;H3",
+        "n_matched_features": 3, "matched_features": "f1;f2;f3", "coverage": 1.0,
+    }])
+    normal_mask = pd.Series([True, False], index=samples)
+
+    capped, _ = compute_stouffer_scores(zscores, links, coverage, normal_mask,
+                                        min_metabolites=3, max_abs_z=10.0)
+    uncapped, _ = compute_stouffer_scores(zscores, links, coverage, normal_mask,
+                                          min_metabolites=3, max_abs_z=None)
+    s1_capped = capped[capped["sample_id"] == "s1"].iloc[0]["z_stouffer"]
+    s1_uncapped = uncapped[uncapped["sample_id"] == "s1"].iloc[0]["z_stouffer"]
+    assert s1_capped == pytest.approx((10.0 + 0.2 + 0.1) / np.sqrt(3))
+    assert s1_uncapped == pytest.approx((20.0 + 0.2 + 0.1) / np.sqrt(3))
+    assert s1_capped < s1_uncapped

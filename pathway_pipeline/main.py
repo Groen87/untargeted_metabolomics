@@ -303,12 +303,15 @@ def run_pipeline(input_file: str,
 
     _log_section("STEP 7: Pathway Stouffer scores")
     min_metabolites = int(config.get("min_stouffer_metabolites", 3))
+    max_abs_z = config.get("max_abs_z", None)
+    max_abs_z = float(max_abs_z) if max_abs_z is not None else None
     pathway_scores, pathway_reference = compute_stouffer_scores(
         zscores,
         feature_to_pathway=feature_to_pathway,
         scored_coverage=scored_coverage,
         normal_mask=normal_mask,
         min_metabolites=min_metabolites,
+        max_abs_z=max_abs_z,
     )
 
     if bool(config.get("save_stouffer_outputs", True)):
@@ -353,9 +356,14 @@ def run_pipeline(input_file: str,
     )
 
     min_flagged_pathways = int(config.get("min_flagged_pathways", 1))
+    max_sample_p = float(config.get("max_sample_p", 0.05))
+    use_binomial_rule = bool(config.get("use_binomial_sample_rule", True))
     sample_decisions = summarize_sample_flags(
         pathway_flags,
         min_flagged_pathways=min_flagged_pathways,
+        per_pathway_flag_rate=(1.0 - threshold_percentile / 100.0)
+        if use_binomial_rule else None,
+        max_sample_p=max_sample_p,
     )
 
     sample_group = _label_samples(metadata, normal_mask)

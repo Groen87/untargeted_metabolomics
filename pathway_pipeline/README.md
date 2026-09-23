@@ -132,22 +132,29 @@ z_stouffer_abs = sum(|z_i|) / sqrt(k)    (disturbance regardless of direction)
 ```
 
 Samples with fewer than `min_stouffer_metabolites` usable metabolites in a
-pathway get no score for it. `pathway_stouffer_reference.csv` records each
-pathway's empirical p50/p95/p99 of the absolute Stouffer score over the
-normals -- the calibration basis for the flagging stage (a noisy pathway
-automatically gets a wider normal range instead of being hand-pruned).
+pathway get no score for it. `max_abs_z` (default 10) caps |z| before the
+sum so a single artifact feature cannot dominate a whole pathway.
+`pathway_stouffer_reference.csv` records each pathway's empirical
+p50/p95/p99 of the absolute Stouffer score over the normals -- the
+calibration basis for the flagging stage (a noisy pathway automatically
+gets a wider normal range instead of being hand-pruned).
 
 ## Flagging (stage 4)
 
 A (sample, pathway) pair is flagged when its absolute Stouffer score exceeds
 the `flag_threshold_percentile` percentile (default 99) of that pathway's own
 **normals** -- empirical per-pathway calibration, so a noisy pathway
-automatically gets a wider range. A sample is flagged when at least
-`min_flagged_pathways` of its pathways are flagged. `sample_decisions.csv`
-joins each sample's Classification/Oordeel group (`normal` = Class 0 +
-Oordeel 0, `imd` = Class 1 + Oordeel 1, `other`) next to the decision -- a
-**reporting-only** detection-vs-contamination summary. Thresholds are never
-tuned against the IMD labels; tuning would have to happen inside
+automatically gets a wider range. With 200+ pathways, a few chance pathway
+flags are expected for *every* sample (~2 of 234 at p99), so the sample
+decision combines a count rule (`min_flagged_pathways`, default 1) with a
+binomial rule (`use_binomial_sample_rule`, default on): the sample's
+flagged-pathway count must be improbable under
+Binomial(n_scored_pathways, 1 - percentile) with p <= `max_sample_p`
+(default 0.05). The per-sample p-value is reported as `sample_p_value` in
+`sample_decisions.csv`, together with the Classification/Oordeel group
+(`normal` = Class 0 + Oordeel 0, `imd` = Class 1 + Oordeel 1, `other`) --
+a **reporting-only** detection-vs-contamination summary. Thresholds are
+never tuned against the IMD labels; tuning would have to happen inside
 cross-validation.
 
 ## QC Diagnostics
