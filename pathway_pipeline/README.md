@@ -167,6 +167,20 @@ Class 1 + Oordeel 1, `other`) -- a **reporting-only**
 detection-vs-contamination summary. Thresholds are never tuned against
 the IMD labels; tuning would have to happen inside cross-validation.
 
+### Manual reference exclusions (`normal_exclude_ids`)
+
+Sample IDs listed under `normal_exclude_ids` in `config.yaml` are removed
+from the **normal reference only**: they no longer contribute to the z-score
+medians/IQRs, the per-pathway flag thresholds, or the empirical null, but
+they keep their z-scores, Stouffer scores, flags, and sample decisions, and
+they still report under group `normal` in the group summary. Use this for
+normals that STEP 8b identifies as `exclude_candidate`, or whose top metabolite
+reaches implausible |z| values (mislabeled, undiagnosed IMD, or measurement
+artifact). The config ships pre-filled with the 12 problematic normals from
+the 2026-09-23 run; review `flagged_normal_analysis.csv` after each run and
+keep the list current. IDs missing from the dataset (or not labeled normal)
+are logged with a warning so a stale entry cannot silently do nothing.
+
 ### Flagged-normal analysis (STEP 8b)
 
 Every flagged normal is classified (`flagged_normal_analysis.csv`):

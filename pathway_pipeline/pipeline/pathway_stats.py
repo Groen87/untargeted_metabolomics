@@ -565,6 +565,45 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
     return summary[out_cols]
 
 
+def apply_normal_exclusions(normal_mask: pd.Series,
+                            exclude_ids=None) -> pd.Series:
+    """Remove manually flagged sample IDs from the normal reference mask.
+
+    Excluded samples keep their scores and outputs; they are only removed
+    from the reference used to calibrate z-scores, thresholds, and the
+    empirical null. IDs absent from the index are reported so a stale
+    config entry cannot silently do nothing.
+
+    Args:
+        normal_mask: boolean Series indexed by sample ID.
+        exclude_ids: iterable of sample IDs to drop from the reference.
+
+    Returns:
+        New boolean Series; True only for kept reference samples.
+    """
+    if exclude_ids is None:
+        return normal_mask
+    exclude = [sid for sid in (str(x) for x in exclude_ids) if str(sid).strip()]
+    if not exclude:
+        return normal_mask
+    in_index = [sid for sid in exclude if sid in normal_mask.index]
+    in_reference = [sid for sid in in_index if bool(normal_mask.loc[sid])]
+    missing = [sid for sid in exclude if sid not in normal_mask.index]
+    if missing:
+        logger.warning(f"normal_exclude_ids: {len(missing)} ID(s) not in the "
+                       f"dataset: {missing}")
+    not_normal = [sid for sid in in_index if not bool(normal_mask.loc[sid])]
+    if not_normal:
+        logger.warning(f"normal_exclude_ids: {len(not_normal)} ID(s) are not "
+                       f"normal in the first place: {not_normal}")
+    updated = normal_mask.copy()
+    updated.loc[in_reference] = False
+    logger.info(f"Normal reference: excluded {len(in_reference)} of "
+                f"{int(normal_mask.sum())} normals "
+                f"({int(updated.sum())} remain for calibration).")
+    return updated
+
+
 def analyze_flagged_normals(pathway_flags: pd.DataFrame,
                              zscores: pd.DataFrame,
                              feature_to_pathway: pd.DataFrame,

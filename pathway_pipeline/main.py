@@ -38,6 +38,7 @@ from pathway_pipeline.pipeline.pathway_stats import (
     CLASSIFICATION_COLUMN,
     OORDEEL_COLUMN,
     analyze_flagged_normals,
+    apply_normal_exclusions,
     classify_samples,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
@@ -232,11 +233,14 @@ def run_pipeline(input_file: str,
         }
 
     _log_section("STEP 5: Compute metabolite z-scores (normals as reference)")
-    normal_mask = classify_samples(
+    labeled_normal_mask = classify_samples(
         metadata,
         normal_classification=int(config.get("normal_classification", 0)),
         normal_oordeel=int(config.get("normal_oordeel", 0)),
     )
+    exclude_ids = config.get("normal_exclude_ids") or []
+    normal_mask = apply_normal_exclusions(labeled_normal_mask,
+                                          exclude_ids=exclude_ids)
     if not normal_mask.any():
         logger.error("No normal reference samples; cannot compute z-scores.")
         return {
@@ -368,7 +372,7 @@ def run_pipeline(input_file: str,
         sample_rule=sample_rule,
     )
 
-    sample_group = _label_samples(metadata, normal_mask)
+    sample_group = _label_samples(metadata, labeled_normal_mask)
     decisions_labeled = sample_decisions.merge(
         sample_group.rename("group"), left_on="sample_id", right_index=True,
         how="left")

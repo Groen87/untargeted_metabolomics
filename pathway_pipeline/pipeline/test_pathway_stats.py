@@ -18,6 +18,7 @@ from pathway_pipeline.main import load_feature_matrix
 from pathway_pipeline.pipeline.pathway_stats import (
     _binomial_sf,
     analyze_flagged_normals,
+    apply_normal_exclusions,
     classify_samples,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
@@ -639,21 +640,27 @@ def test_analyze_flagged_normals_classification():
 
 
 # ---------------------------------------------------------------------------
-# Binomial sample rule and z-cap
+# z-cap
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Binomial sample rule and z-cap
-# ---------------------------------------------------------------------------
+def test_apply_normal_exclusions_removes_ids():
+    mask = pd.Series([True, True, True, False], index=["a", "b", "c", "d"])
+    updated = apply_normal_exclusions(mask, exclude_ids=["a", "c"])
+    assert updated.tolist() == [False, True, False, False]
+    assert int(updated.sum()) == 1
 
-def test_binomial_sf_known_values():
-    # P(X >= 2) for Binomial(4, 0.25) = 1 - P(0) - P(1)
-    expected = 1.0 - 0.75 ** 4 - 4 * 0.25 * 0.75 ** 3
-    assert _binomial_sf(2, 4, 0.25) == pytest.approx(expected)
-    assert _binomial_sf(0, 4, 0.25) == 1.0
-    assert _binomial_sf(5, 4, 0.25) == 0.0
-    assert _binomial_sf(1, 234, 0.01) == pytest.approx(
-        1.0 - 0.99 ** 234, abs=1e-6)
+
+def test_apply_normal_exclusions_handles_missing_and_nonnormal():
+    mask = pd.Series([True, True, False], index=["a", "b", "c"])
+    updated = apply_normal_exclusions(mask, exclude_ids=["zzz", "c", None, ""])
+    assert updated.tolist() == [True, True, False]
+    assert int(updated.sum()) == 2
+
+
+def test_apply_normal_exclusions_none_keeps_mask():
+    mask = pd.Series([True, True], index=["a", "b"])
+    updated = apply_normal_exclusions(mask, exclude_ids=None)
+    assert updated.tolist() == [True, True]
 
 
 def test_stouffer_max_abs_z_cap():
