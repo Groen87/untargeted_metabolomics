@@ -269,6 +269,7 @@ def _train_with_hyperparameter_tuning(
     optuna_pruner = config.get('optuna_pruner', 'median')
     optuna_storage_url = config.get('optuna_storage_url', None)
     optuna_study_name = config.get('optuna_study_name', None)
+    scaler_name = config.get('scaler', 'robust')
 
     # Run hyperparameter tuning
     best_model, scaler, best_params, tuning_results = tune_and_train(
@@ -287,6 +288,7 @@ def _train_with_hyperparameter_tuning(
         optuna_pruner=optuna_pruner,
         study_name=optuna_study_name,
         storage_url=optuna_storage_url,
+        scaler_name=scaler_name,
     )
 
     # Create ExtendedIsolationForestModel wrapper with best parameters
@@ -347,6 +349,7 @@ def _train_ae_with_tuning(
         random_state=random_state,
         scoring=tuning_scoring,
         refit=True,
+        scaler_name=scaler_name,
     )
 
     scorer_kwargs = dict(best_params)
@@ -356,6 +359,7 @@ def _train_ae_with_tuning(
         contamination=contamination,
         scorer_name='ae',
         scorer_kwargs=scorer_kwargs,
+        scaler_name=scaler_name,
     )
     model.model = best_model
     model.scaler = scaler
@@ -389,6 +393,7 @@ def _train_without_tuning(
     contamination = config.get('contamination', 'auto')
     n_splits = config.get('n_splits', 5)
     scorer_name = config.get('scorer', 'iforest')
+    scaler_name = config.get('scaler', 'robust')
     # Extra per-scorer kwargs (e.g. ocsvm nu/gamma, pca_recon n_components).
     scorer_kwargs = config.get('scorer_kwargs', None)
 
@@ -402,6 +407,7 @@ def _train_without_tuning(
         contamination=contamination,
         scorer_name=scorer_name,
         scorer_kwargs=scorer_kwargs,
+        scaler_name=scaler_name,
     )
 
     # Train with cross-validation
@@ -445,6 +451,7 @@ def _train_without_cv(
     random_state = config.get('random_state', 42)
     contamination = config.get('contamination', 'auto')
     scorer_name = config.get('scorer', 'iforest')
+    scaler_name = config.get('scaler', 'robust')
     scorer_kwargs = config.get('scorer_kwargs', None)
 
     model = ExtendedIsolationForestModel(
@@ -457,6 +464,7 @@ def _train_without_cv(
         contamination=contamination,
         scorer_name=scorer_name,
         scorer_kwargs=scorer_kwargs,
+        scaler_name=scaler_name,
     )
 
     model.fit(X_train, y_train, normal_classification=normal_class)

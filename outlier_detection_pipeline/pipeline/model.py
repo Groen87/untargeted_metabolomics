@@ -14,7 +14,7 @@ import logging
 import yaml
 from sklearn.ensemble import IsolationForest
 from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import RobustScaler
+from outlier_detection_pipeline.pipeline.scaling import make_scaler
 
 from outlier_detection_pipeline.pipeline.scorers import make_scorer
 
@@ -98,6 +98,7 @@ class ExtendedIsolationForestModel:
         contamination: str = "auto",
         scorer_name: str = "iforest",
         scorer_kwargs: Optional[Dict[str, Any]] = None,
+        scaler_name: str = "robust",
     ) -> None:
         """
         Initialize the model.
@@ -143,7 +144,7 @@ class ExtendedIsolationForestModel:
             self._scorer_kwargs.update(scorer_kwargs)
 
         self.model = None  # the fitted scorer (any type)
-        self.scaler = RobustScaler()
+        self.scaler = make_scaler(scaler_name)
         self.threshold_: Optional[float] = None
         self.is_fitted_ = False
         # Out-of-fold raw score_samples() for NORMAL training samples, collected
@@ -228,8 +229,9 @@ class ExtendedIsolationForestModel:
         X_scaled = self.scaler.transform(X)
 
         if threshold is not None:
-            # Use custom threshold
-            scores = self.decision_function(X_scaled)
+            # Use custom threshold. decision_function() scales its input,
+            # so pass the raw X, not the already-scaled X_scaled.
+            scores = self.decision_function(X)
             predictions = np.where(scores < threshold, -1, 1)
         else:
             predictions = self.model.predict(X_scaled)

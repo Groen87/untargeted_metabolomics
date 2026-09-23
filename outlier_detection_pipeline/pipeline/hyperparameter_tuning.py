@@ -18,6 +18,7 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.model_selection import ParameterGrid, StratifiedKFold
 from sklearn.preprocessing import RobustScaler
+from outlier_detection_pipeline.pipeline.scaling import make_scaler
 import logging
 
 if TYPE_CHECKING:
@@ -200,6 +201,7 @@ def _tune_with_optuna(
     optuna_pruner: Optional[str] = 'median',
     study_name: Optional[str] = None,
     storage_url: Optional[str] = None,
+    scaler_name: str = 'robust',
 ) -> Tuple[IsolationForest, Dict[str, Any], pd.DataFrame]:
     """
     Perform hyperparameter tuning using Optuna.
@@ -241,7 +243,7 @@ def _tune_with_optuna(
 
     # Scale all data, fitting the scaler on NORMAL samples only so abnormal
     # training samples never influence scaling (pure one-class design).
-    scaler = RobustScaler()
+    scaler = make_scaler(scaler_name)
     scaler.fit(X[normal_mask])
     X_scaled = scaler.transform(X)
     X_normal_scaled = X_scaled[normal_mask]
@@ -367,6 +369,7 @@ def tune_hyperparameters(
     optuna_pruner: Optional[str] = 'median',
     study_name: Optional[str] = None,
     storage_url: Optional[str] = None,
+    scaler_name: str = 'robust',
 ) -> Tuple[IsolationForest, Dict[str, Any], pd.DataFrame]:
     """
     Perform hyperparameter tuning using grid search with cross-validation.
@@ -438,7 +441,7 @@ def tune_hyperparameters(
 
     # Scale all data, fitting the scaler on NORMAL samples only so abnormal
     # training samples never influence scaling (pure one-class design).
-    scaler = RobustScaler()
+    scaler = make_scaler(scaler_name)
     scaler.fit(X[normal_mask])
     X_scaled = scaler.transform(X)
     X_normal_scaled = X_scaled[normal_mask]
@@ -556,6 +559,7 @@ def tune_and_train(
     optuna_pruner: Optional[str] = 'median',
     study_name: Optional[str] = None,
     storage_url: Optional[str] = None,
+    scaler_name: str = 'robust',
 ) -> Tuple[IsolationForest, RobustScaler, Dict[str, Any], pd.DataFrame]:
     """
     Convenience function: tune hyperparameters and return best model with scaler.
@@ -571,7 +575,7 @@ def tune_and_train(
 
     # Scale data, fitting the scaler on NORMAL training samples only so
     # abnormal training samples never influence scaling.
-    scaler = RobustScaler()
+    scaler = make_scaler(scaler_name)
     normal_mask_tr = (y_train == normal_classification).values
     scaler.fit(X_train[normal_mask_tr])
     X_scaled = scaler.transform(X_train)
@@ -619,6 +623,7 @@ def tune_ae(
     random_state: int = 42,
     scoring: str = 'pr_auc',
     refit: bool = True,
+    scaler_name: str = 'robust',
 ) -> Tuple[Any, RobustScaler, Dict[str, Any], pd.DataFrame]:
     """Grid-search autoencoder (AE) scorer hyperparameters.
 
@@ -665,7 +670,7 @@ def tune_ae(
     logger.info(f"Validating on {len(X)} samples ({len(normal_indices)} normal, {len(abnormal_indices)} abnormal)")
 
     # Scale on normals only (pure one-class design).
-    scaler = RobustScaler()
+    scaler = make_scaler(scaler_name)
     scaler.fit(X[normal_mask])
     X_scaled = scaler.transform(X)
     X_normal_scaled = X_scaled[normal_mask]

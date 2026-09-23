@@ -198,6 +198,18 @@ contamination: "auto"     # Expected proportion of outliers (auto or float)
 #                 iforest + ocsvm); combines different failure modes
 # Hyperparameter tuning (use_hyperparameter_tuning) only applies to iforest.
 scorer: iforest
+
+# Feature scaling applied before the anomaly scorer. The scaler is ALWAYS fit
+# on the training normals only; every other sample (test normals, abnormals)
+# is transformed with that fitted scaler (pure one-class design).
+#   robust   : RobustScaler, median/IQR (default; robust to outliers, but its
+#              IQR estimate is noisy at small n and zero-IQR features keep
+#              their raw scale)
+#   standard : StandardScaler, mean/std
+#   none     : no scaling at all -- the model runs on the input scale, e.g.
+#              log10-transformed but unscaled data (set scorer: lof to run
+#              Local Outlier Factor on non-scaled log-transformed data)
+scaler: "robust"
 # Optional per-scorer kwargs (e.g. for ocsvm: {nu: 0.05, gamma: scale};
 # for pca_recon: {n_components: 20}; for ae/deep_svdd: {hidden_dim: 16,
 # latent_dim: 8, epochs: 200}; for lof: {n_neighbors: 20}; for knn:
