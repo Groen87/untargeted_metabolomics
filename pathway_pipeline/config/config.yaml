@@ -29,9 +29,19 @@ min_name_length: 3
 # PathBank Pathways
 # ============================================================================
 # PathBank all-metabolites CSV: one row per (pathway, metabolite) pair with the
-# metabolite's HMDB ID. Only Metabolic and Disease pathways for Homo sapiens
-# are used.
+# metabolite's HMDB ID.
 pathbank_file: "data/pathbank_all_metabolites.csv"
+
+# Organism to keep from the PathBank CSV's 'Species' column
+# (matched exactly, after whitespace stripping).
+pathbank_species: "Homo sapiens"
+
+# Pathway types to keep from the PathBank CSV's 'Pathway Subject' column
+# (matched exactly, after whitespace stripping). A single string is also
+# accepted. Common values: Metabolic, Disease, Signaling, Drug, Genetic.
+pathbank_pathway_subjects:
+  - "Metabolic"
+  - "Disease"
 
 # Keep only pathways where at least this fraction of the pathway's metabolites
 # are mapped to features in the dataset (0.20 = 20%).

@@ -126,6 +126,30 @@ def test_load_pathbank_pathways_missing_file(tmp_path):
     assert pathways.empty
 
 
+def test_load_pathbank_pathways_selectable_filters(tmp_path):
+    csv_path = _write_pathbank_csv(tmp_path)
+    # Only Metabolic subject, no Disease rows in the fixture, but the mouse
+    # Metabolic row must appear when the species is switched.
+    pathways = load_pathbank_pathways(csv_path, species="Mus musculus",
+                                      pathway_subjects="Metabolic")
+    assert set(pathways["smp_id"]) == {"SMP0000002"}
+    assert set(pathways["hmdb_id"]) == {"HMDB0000161"}
+
+    # Single-string subject behaves the same as a one-element list; the mouse
+    # pathway stays excluded by the (default) species filter.
+    pathways = load_pathbank_pathways(csv_path,
+                                      pathway_subjects=["Metabolic"])
+    assert set(pathways["smp_id"]) == {"SMP0000055"}
+
+    # Unknown species -> empty with an error logged (fail fast).
+    pathways = load_pathbank_pathways(csv_path, species="Arabidopsis thaliana")
+    assert pathways.empty
+
+    # Unknown subject -> empty with an error logged (fail fast).
+    pathways = load_pathbank_pathways(csv_path, pathway_subjects=["Signaling"])
+    assert pathways.empty
+
+
 # ---------------------------------------------------------------------------
 # Feature -> HMDB matching
 # ---------------------------------------------------------------------------

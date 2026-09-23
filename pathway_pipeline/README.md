@@ -49,9 +49,11 @@ pathway_pipeline/
   PathBank ID,Pathway Name,Pathway Subject,Species,Metabolite ID,Metabolite Name,HMDB ID,...
   SMP0000055,Alanine Metabolism,Metabolic,Homo sapiens,PW_C000105,L-Alanine,HMDB0000161,...
   ```
-  Only rows with `Pathway Subject` in {Metabolic, Disease} and
-  `Species == Homo sapiens` are used, and a pathway's metabolite set is the
-  distinct set of its `HMDB ID` values.
+  Only rows matching the configured `pathbank_species` (default
+  `Homo sapiens`) and `pathbank_pathway_subjects` (default
+  `[Metabolic, Disease]`) are used, and a pathway's metabolite set is the
+  distinct set of its `HMDB ID` values. A filter value that matches nothing in
+  the CSV fails fast with a logged error listing the available values.
 
 ## Feature -> HMDB Matching
 

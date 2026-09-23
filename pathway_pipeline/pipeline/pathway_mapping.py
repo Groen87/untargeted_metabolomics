@@ -42,23 +42,40 @@ from .name_utils import normalize_name, normalize_loose
 logger = logging.getLogger(__name__)
 
 
-PATHBANK_SPECIES = "Homo sapiens"
-PATHBANK_SUBJECTS = ("Metabolic", "Disease")
+DEFAULT_SPECIES = "Homo sapiens"
+DEFAULT_PATHWAY_SUBJECTS = ("Metabolic", "Disease")
 
 
-def load_pathbank_pathways(pathbank_file: str) -> pd.DataFrame:
+def load_pathbank_pathways(pathbank_file: str,
+                             species: str = DEFAULT_SPECIES,
+                             pathway_subjects=DEFAULT_PATHWAY_SUBJECTS) -> pd.DataFrame:
     """Load the PathBank all-metabolites CSV into a per-(pathway, metabolite) table.
 
     The expected structure is one row per (pathway, metabolite) pair with the
     columns ``PathBank ID``, ``Pathway Name``, ``Pathway Subject``, ``Species``,
-    ``Metabolite ID``, ``Metabolite Name``, and ``HMDB ID``. Only ``Metabolic``
-    and ``Disease`` pathways for ``Homo sapiens`` are kept; rows without an
-    HMDB ID cannot link to the dataset and are dropped.
+    ``Metabolite ID``, ``Metabolite Name``, and ``HMDB ID``. Only rows whose
+    ``Species`` matches ``species`` and whose ``Pathway Subject`` is in
+    ``pathway_subjects`` are kept; rows without an HMDB ID cannot link to the
+    dataset and are dropped.
+
+    Args:
+        pathbank_file: path to ``pathbank_all_metabolites.csv``.
+        species: species to keep (default ``'Homo sapiens'``). Matched exactly
+            (after whitespace stripping) against the CSV's ``Species`` column.
+        pathway_subjects: pathway subjects to keep (default
+            ``('Metabolic', 'Disease')``). A single string is accepted and
+            wrapped into a one-element tuple. Matched exactly (after
+            whitespace stripping) against the CSV's ``Pathway Subject`` column.
 
     Returns a DataFrame with the columns ``smp_id``, ``pathway_name``,
     ``pathway_subject``, ``species``, ``metabolite_id``, ``metabolite_name``,
     and ``hmdb_id`` (one row per (pathway, metabolite) pair).
     """
+    if isinstance(pathway_subjects, str):
+        pathway_subjects = (pathway_subjects,)
+    pathway_subjects = tuple(dict.fromkeys(
+        str(s).strip() for s in pathway_subjects if str(s).strip()))
+    species = str(species).strip()
     path = Path(pathbank_file)
     if not path.exists():
         logger.error(f"PathBank all-metabolites CSV not found at {pathbank_file}")
@@ -88,9 +105,21 @@ def load_pathbank_pathways(pathbank_file: str) -> pd.DataFrame:
     df["pathway_subject"] = df["pathway_subject"].fillna("").str.strip()
     df["hmdb_id"] = df["hmdb_id"].fillna("").str.strip().str.upper()
 
+    # Fail fast on filter values that match nothing (a config typo would
+    # otherwise silently produce an empty pathway set).
+    if len(df) and not df["species"].eq(species).any():
+        available = sorted(df["species"].unique())
+        logger.error(f"Species '{species}' not found in PathBank CSV. Available: {available}")
+        return pd.DataFrame(columns=list(rename.values()))
+    if len(df) and not df["pathway_subject"].isin(pathway_subjects).any():
+        available = sorted(df["pathway_subject"].unique())
+        logger.error(f"None of the pathway subjects {pathway_subjects} found in "
+                     f"PathBank CSV. Available: {available}")
+        return pd.DataFrame(columns=list(rename.values()))
+
     keep = (
-        (df["species"] == PATHBANK_SPECIES)
-        & (df["pathway_subject"].isin(PATHBANK_SUBJECTS))
+        (df["species"] == species)
+        & (df["pathway_subject"].isin(pathway_subjects))
         & (df["hmdb_id"] != "")
     )
     df = df.loc[keep, list(rename.values())].copy()
@@ -98,7 +127,7 @@ def load_pathbank_pathways(pathbank_file: str) -> pd.DataFrame:
 
     logger.info(
         f"Loaded {n_raw} rows from {pathbank_file}; kept {len(df)} "
-        f"({PATHBANK_SPECIES} {PATHBANK_SUBJECTS} rows with an HMDB ID) across "
+        f"({species} {pathway_subjects} rows with an HMDB ID) across "
         f"{df['smp_id'].nunique()} pathways."
     )
     return df
