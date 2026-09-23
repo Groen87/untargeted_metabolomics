@@ -37,6 +37,7 @@ from pathway_pipeline.pipeline.pathway_mapping import (
 from pathway_pipeline.pipeline.pathway_stats import (
     CLASSIFICATION_COLUMN,
     OORDEEL_COLUMN,
+    analyze_flagged_normals,
     classify_samples,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
@@ -357,13 +358,14 @@ def run_pipeline(input_file: str,
 
     min_flagged_pathways = int(config.get("min_flagged_pathways", 1))
     max_sample_p = float(config.get("max_sample_p", 0.05))
-    use_binomial_rule = bool(config.get("use_binomial_sample_rule", True))
+    sample_rule = str(config.get("sample_rule", "empirical"))
     sample_decisions = summarize_sample_flags(
         pathway_flags,
         min_flagged_pathways=min_flagged_pathways,
-        per_pathway_flag_rate=(1.0 - threshold_percentile / 100.0)
-        if use_binomial_rule else None,
+        per_pathway_flag_rate=1.0 - threshold_percentile / 100.0,
         max_sample_p=max_sample_p,
+        normal_mask=normal_mask,
+        sample_rule=sample_rule,
     )
 
     sample_group = _label_samples(metadata, normal_mask)
@@ -381,6 +383,22 @@ def run_pipeline(input_file: str,
         for _, r in group_counts.iterrows():
             logger.info(f"Group '{r['group']}': {int(r['n_flagged'])} of "
                         f"{int(r['n_samples'])} samples flagged.")
+
+    if bool(config.get("analyze_flagged_normals", True)):
+        _log_section("STEP 8b: Analyze flagged normals "
+                     "(correlated noise vs exclude candidates)")
+        flagged_normal_report = analyze_flagged_normals(
+            pathway_flags,
+            zscores=zscores,
+            feature_to_pathway=feature_to_pathway,
+            normal_mask=normal_mask,
+            max_abs_z=max_abs_z,
+            top=int(config.get("flagged_normals_top", 15)),
+        )
+        if bool(config.get("save_flagging_outputs", True)):
+            flagged_normal_report.to_csv(
+                out / "flagged_normal_analysis.csv", index=False)
+            logger.info(f"Wrote flagged_normal_analysis.csv to {out}")
 
     if bool(config.get("save_flagging_outputs", True)):
         pathway_flags.to_csv(out / "pathway_flags.csv", index=False)

@@ -449,35 +449,42 @@ def flag_pathway_scores(pathway_scores: pd.DataFrame,
 def summarize_sample_flags(pathway_flags: pd.DataFrame,
                             min_flagged_pathways: int = 1,
                             per_pathway_flag_rate: float = None,
-                            max_sample_p: float = 0.05
+                            max_sample_p: float = 0.05,
+                            normal_mask: pd.Series = None,
+                            sample_rule: str = "empirical"
                             ) -> pd.DataFrame:
     """Summarize the per-pathway flags into a per-sample decision.
 
-    With 200+ pathways per sample, a few chance pathway flags are expected for
-    every sample (n_pathways x per-pathway flag rate). The decision therefore
-    combines two rules:
+    With 200+ pathways per sample, a few chance pathway flags are expected
+    for every sample. The decision combines the count rule (at least
+    ``min_flagged_pathways`` flagged) with a null model for the
+    flagged-pathway count:
 
-    - count rule: at least ``min_flagged_pathways`` pathways flagged;
-    - binomial rule (when ``per_pathway_flag_rate`` is given): the sample's
-      flagged-pathway count is compared against Binomial(n_scored_pathways,
-      per_pathway_flag_rate) -- the null of independent per-pathway flagging
-      at the calibration rate -- and the sample must have ``sample_p_value``
-      <= ``max_sample_p``. This is what stops the binomial noise (a normal
-      flagging ~2 of 234 pathways at the p99 threshold) from flagging the
-      sample as a whole.
+    - ``sample_rule='empirical'`` (default): the null is the observed
+      flagged-pathway count distribution of the NORMAL samples. PathBank
+      pathways share metabolites, so flags are correlated and the binomial
+      null is anti-conservative; the empirical distribution absorbs that
+      correlation automatically. ``sample_p_value`` is the fraction of
+      normals with at least as many flagged pathways.
+    - ``sample_rule='binomial'``: the null is
+      Binomial(n_scored_pathways, per_pathway_flag_rate); valid only when
+      pathway flags are (near-)independent.
+    - ``sample_rule='none'``: count rule only.
 
     Args:
         pathway_flags: output of :func:`flag_pathway_scores`.
         min_flagged_pathways: minimum flagged pathways for a sample decision.
-        per_pathway_flag_rate: expected fraction of flagged pathways per
-            sample under the null (typically 1 - threshold_percentile/100);
-            None disables the binomial rule.
-        max_sample_p: p-value cutoff for the binomial rule (default 0.05).
+        per_pathway_flag_rate: per-pathway flag rate for the binomial rule
+            (typically 1 - threshold_percentile/100).
+        max_sample_p: p-value cutoff for the null rules (default 0.05).
+        normal_mask: boolean Series (sample_id -> is-normal); required by
+            the empirical rule (falls back with a warning when absent).
+        sample_rule: 'empirical', 'binomial', or 'none'.
 
     Returns:
         DataFrame with one row per sample: ``sample_id``,
         ``n_flagged_pathways``, ``n_scored_pathways``, ``flagged``,
-        ``sample_p_value`` (NaN when the binomial rule is disabled),
+        ``sample_p_value`` (NaN when no null rule applies),
         ``top_pathway_name``, ``top_z_stouffer_abs``, ``top_excess``.
     """
     out_cols = ["sample_id", "n_flagged_pathways", "n_scored_pathways", "flagged",
@@ -485,6 +492,29 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
                 "top_excess"]
     if pathway_flags.empty:
         return pd.DataFrame(columns=out_cols)
+
+    sample_rule = str(sample_rule).lower()
+    if sample_rule == "empirical":
+        if normal_mask is None or not normal_mask.any():
+            logger.warning("Empirical sample rule needs normal samples; "
+                           "falling back to the count rule.")
+            sample_rule = "none"
+    elif sample_rule == "binomial" and per_pathway_flag_rate is None:
+        logger.warning("Binomial sample rule needs per_pathway_flag_rate; "
+                       "falling back to the count rule.")
+        sample_rule = "none"
+
+    flagged_counts = pathway_flags.groupby("sample_id")["flagged"].sum()
+
+    normal_counts = None
+    if sample_rule == "empirical":
+        dedup = normal_mask[~normal_mask.index.duplicated(keep="first")]
+        is_normal = dedup.reindex(flagged_counts.index, fill_value=False)
+        normal_counts = flagged_counts[is_normal.to_numpy()]
+        logger.info(f"Empirical null: flagged-pathway counts of "
+                    f"{len(normal_counts)} normals (median "
+                    f"{float(normal_counts.median()):.1f}, p99 "
+                    f"{float(normal_counts.quantile(0.99)):.1f}).")
 
     def _agg(g):
         candidates = g.dropna(subset=["excess"])
@@ -494,11 +524,15 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
             top = candidates.loc[candidates["excess"].idxmax()]
         n_flagged = int(g["flagged"].sum())
         n_scored = int(g["flagged"].sum() + (~g["flagged"].astype(bool)).sum())
-        if per_pathway_flag_rate is None:
+        if sample_rule == "empirical":
+            p_value = float((normal_counts >= n_flagged).mean())
+        elif sample_rule == "binomial":
+            p_value = _binomial_sf(n_flagged, n_scored, per_pathway_flag_rate)
+        else:
             p_value = float("nan")
+        if sample_rule == "none":
             decision = n_flagged >= min_flagged_pathways
         else:
-            p_value = _binomial_sf(n_flagged, n_scored, per_pathway_flag_rate)
             decision = (n_flagged >= min_flagged_pathways
                         and p_value <= max_sample_p)
         return pd.Series({
@@ -516,12 +550,169 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
                .apply(_agg)
                .reset_index())
     n_flagged_samples = int(summary["flagged"].sum())
-    if per_pathway_flag_rate is None:
+    if sample_rule == "empirical":
         logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
-                    f"(>= {min_flagged_pathways} flagged pathway(s)).")
-    else:
+                    f"(>= {min_flagged_pathways} flagged pathway(s) AND "
+                    f"empirical p <= {max_sample_p} against the normals).")
+    elif sample_rule == "binomial":
         logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
                     f"(>= {min_flagged_pathways} flagged pathway(s) AND "
                     f"binomial p <= {max_sample_p} at rate "
                     f"{per_pathway_flag_rate:.2%}).")
+    else:
+        logger.info(f"Flagged {n_flagged_samples} of {len(summary)} samples "
+                    f"(>= {min_flagged_pathways} flagged pathway(s)).")
     return summary[out_cols]
+
+
+def analyze_flagged_normals(pathway_flags: pd.DataFrame,
+                             zscores: pd.DataFrame,
+                             feature_to_pathway: pd.DataFrame,
+                             normal_mask: pd.Series,
+                             max_abs_z: float = None,
+                             top: int = 15) -> pd.DataFrame:
+    """Classify flagged normals: correlated noise vs sample to exclude.
+
+    PathBank pathways share metabolites, so a single disturbed metabolite
+    can flag many pathways at once. This function inspects every flagged
+    normal and asks WHICH story its evidence tells:
+
+    - ``correlated_noise``: a few metabolites drive most of the flagged
+      pathways (many flags, low metabolite concentration). Consistent with
+      a mild, broad shift or a shared-feature artifact: keep the sample in
+      the reference set.
+    - ``exclude_candidate``: flags spread over many metabolites with high
+      excesses -- a genuinely abnormal sample mislabeled as normal. Inspect
+      it (batch, QC, diagnosis) and consider excluding it from the
+      reference set.
+
+    Classification uses the fraction of the sample's flagged pathways that
+    the top ``max(top_metabolites)`` metabolites explain: when the flagged
+    pathways share metabolites heavily (high overlap), one or few
+    metabolites dominate.
+
+    Args:
+        pathway_flags: output of :func:`flag_pathway_scores`.
+        zscores: per-sample metabolite z-scores (from
+            :func:`compute_metabolite_zscores`).
+        feature_to_pathway: (feature, pathway) links.
+        normal_mask: boolean Series (sample_id -> is-normal).
+        max_abs_z: the cap used in the Stouffer stage (for reference in
+            the report); not applied here.
+        top: how many flagged normals to report in detail.
+
+    Returns:
+        DataFrame with one row per flagged normal: ``sample_id``,
+        ``n_flagged_pathways``, ``max_excess``,
+        ``n_top_metabolites`` (metabolites behind its top-3 flagged
+        pathways), ``pathway_overlap`` (mean Jaccard overlap of those
+        pathways' metabolite sets), ``concentration`` (fraction of flagged
+        pathways explained by the top metabolites), ``classification``
+        ('correlated_noise' / 'exclude_candidate'), and ``reason``.
+    """
+    out_cols = ["sample_id", "n_flagged_pathways", "max_excess",
+                "n_top_metabolites", "pathway_overlap", "concentration",
+                "classification", "reason"]
+    if pathway_flags.empty or zscores.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    dedup = normal_mask[~normal_mask.index.duplicated(keep="first")]
+    pathway_metabolites = (feature_to_pathway
+                           .groupby("smp_id")["hmdb_id"]
+                           .agg(lambda s: set(s)).to_dict())
+    pathway_features = (feature_to_pathway
+                        .groupby("smp_id")["feature"]
+                        .agg(lambda s: set(s)).to_dict())
+
+    flags = pathway_flags[pathway_flags["flagged"]]
+    normal_flags = flags[flags["sample_id"].map(
+        dedup.reindex(flags["sample_id"].unique(), fill_value=False))]
+
+    rows = []
+    for sample_id, group in normal_flags.groupby("sample_id"):
+        group = group.sort_values("excess", ascending=False)
+        n_flagged = len(group)
+        max_excess = float(group["excess"].max())
+
+        flagged_pathways = list(group["smp_id"])
+
+        sample_z = zscores.loc[zscores.index.isin([sample_id])]
+        metabolite_scores = {}
+        for smp in flagged_pathways:
+            feats = pathway_features.get(smp, set())
+            feats = [f for f in feats if f in zscores.columns]
+            if feats and not sample_z.empty:
+                for f in feats:
+                    z = sample_z[f].iloc[0]
+                    if pd.notna(z):
+                        metabolite_scores[f] = max(
+                            metabolite_scores.get(f, 0.0), abs(float(z)))
+
+        top_metabolites = [m for m, z in sorted(
+            metabolite_scores.items(), key=lambda kv: -kv[1])[:3]]
+        top_z = [metabolite_scores[m] for m in top_metabolites]
+
+        flagged_sets = [pathway_metabolites.get(s, set())
+                        for s in flagged_pathways]
+        overlaps = []
+        for i in range(len(flagged_sets)):
+            for j in range(i + 1, len(flagged_sets)):
+                union = flagged_sets[i] | flagged_sets[j]
+                if union:
+                    overlaps.append(len(flagged_sets[i] & flagged_sets[j])
+                                    / len(union))
+        pathway_overlap = float(np.mean(overlaps)) if overlaps else float("nan")
+
+        if len(flagged_sets) > 1 and all(len(s) for s in flagged_sets):
+            all_metabolites = set().union(*flagged_sets)
+            n_top = min(3, len(top_metabolites))
+            concentration = n_top / max(len(all_metabolites), 1)
+        else:
+            concentration = float("nan")
+
+        high_excess = max_excess >= 1.5
+        concentrated = (concentration >= 0.10
+                        or (not np.isnan(pathway_overlap)
+                            and pathway_overlap >= 0.30))
+
+        if high_excess and not concentrated:
+            classification = "exclude_candidate"
+            if np.isnan(concentration):
+                spread = "unknown concentration"
+            else:
+                spread = (f"top-3 explain {concentration:.0%} of "
+                          f"{len(flagged_sets)} pathways' metabolites")
+            reason = (f"flags spread over metabolites ({spread}) "
+                      f"with max excess {max_excess:.1f}")
+        else:
+            classification = "correlated_noise"
+            reason = (f"top-3 metabolites (|z| "
+                      f"{', '.join(f'{z:.1f}' for z in top_z)}) drive "
+                      f"{n_flagged} overlapping pathways "
+                      f"(overlap {pathway_overlap:.2f})")
+
+        rows.append({
+            "sample_id": sample_id,
+            "n_flagged_pathways": n_flagged,
+            "max_excess": max_excess,
+            "n_top_metabolites": len(top_metabolites),
+            "pathway_overlap": pathway_overlap,
+            "concentration": concentration,
+            "classification": classification,
+            "reason": reason,
+        })
+
+    result = pd.DataFrame(rows, columns=out_cols)
+    result = result.sort_values("max_excess", ascending=False).reset_index(
+        drop=True)
+
+    n_noise = int((result["classification"] == "correlated_noise").sum())
+    n_exclude = int((result["classification"] == "exclude_candidate").sum())
+    logger.info(f"Flagged-normal analysis: {n_noise} correlated noise, "
+                f"{n_exclude} exclude candidates "
+                f"(high excess, flags not metabolite-concentrated).")
+    logger.info(f"Top {min(top, len(result))} flagged normals:")
+    for _, r in result.head(top).iterrows():
+        logger.info(f"  {r['sample_id']}: {r['classification']} "
+                    f"({r['reason']})")
+    return result

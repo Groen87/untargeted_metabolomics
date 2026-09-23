@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 from pathway_pipeline.main import load_feature_matrix
 from pathway_pipeline.pipeline.pathway_stats import (
     _binomial_sf,
+    analyze_flagged_normals,
     classify_samples,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
@@ -501,13 +502,10 @@ def test_binomial_sf_known_values():
         1.0 - 0.99 ** 234, abs=1e-6)
 
 
-def test_summarize_sample_flags_binomial_rule():
-    """A sample flagging 2 of 234 pathways at p99 is chance, not a decision."""
-    n_pathways = 234
+def _many_pathway_flags(n_pathways=234, n_noise=20):
+    """Fixture: noise samples flag 2 pathways each, one sample flags 20."""
     rows = []
-    for i in range(20):
-        # Each noise sample flags exactly 2 of 234 pathways: under
-        # Binomial(234, 0.01) that has p ~ 0.68, i.e. pure chance.
+    for i in range(n_noise):
         flagged_set = {i % n_pathways, (i + 117) % n_pathways}
         for pw in range(n_pathways):
             flagged = pw in flagged_set
@@ -519,7 +517,6 @@ def test_summarize_sample_flags_binomial_rule():
                 "excess": 1.5 if flagged else 0.5,
                 "flagged": flagged,
             })
-    # The shifted sample flags 20 pathways: far beyond the binomial null.
     for pw in range(20):
         rows.append({
             "sample_id": "shifted", "smp_id": f"SMP{pw}",
@@ -527,26 +524,136 @@ def test_summarize_sample_flags_binomial_rule():
             "z_stouffer": 1.5, "z_stouffer_abs": 1.5,
             "threshold": 0.9, "excess": 1.7, "flagged": True,
         })
-    flags = pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
+
+def test_summarize_sample_flags_binomial_rule():
+    """A sample flagging 2 of 234 pathways at p99 is chance, not a decision."""
+    flags = _many_pathway_flags()
 
     without_rule = summarize_sample_flags(flags, min_flagged_pathways=1,
-                                          per_pathway_flag_rate=None)
+                                          per_pathway_flag_rate=None,
+                                          sample_rule="none")
     with_rule = summarize_sample_flags(flags, min_flagged_pathways=1,
                                        per_pathway_flag_rate=0.01,
-                                       max_sample_p=0.05)
+                                       max_sample_p=0.05,
+                                       sample_rule="binomial")
 
-    # The count rule alone flags every noise sample (2 chance flags >= 1).
     assert without_rule["flagged"].sum() == 21
-    # The binomial rule keeps all noise samples unflagged...
     assert not with_rule.loc[
         with_rule["sample_id"].str.startswith("noise"), "flagged"].any()
-    # ...but still flags the broadly shifted sample.
     shifted = with_rule[with_rule["sample_id"] == "shifted"].iloc[0]
     assert bool(shifted["flagged"])
     assert shifted["sample_p_value"] == pytest.approx(
         _binomial_sf(20, 234, 0.01), rel=1e-9)
-    # A disabled binomial rule leaves the p-value column as NaN.
     assert np.isnan(without_rule["sample_p_value"].iloc[0])
+
+
+def test_summarize_sample_flags_empirical_rule():
+    """The empirical null absorbs correlated flags among normals."""
+    flags = _many_pathway_flags()
+    correlated = flags.copy()
+    correlated.loc[correlated["sample_id"].str.startswith("noise")
+                   & correlated["flagged"], "flagged"] = False
+    for i in range(20):
+        for pw in range(10, 18):
+            sel = ((correlated["sample_id"] == f"noise_{i}")
+                   & (correlated["smp_id"] == f"SMP{pw}"))
+            correlated.loc[sel, "flagged"] = True
+            correlated.loc[sel, "excess"] = 1.4
+
+    normal_mask = pd.Series(
+        [s.startswith("noise") for s in correlated["sample_id"].unique()],
+        index=correlated["sample_id"].unique())
+
+    empirical = summarize_sample_flags(correlated, min_flagged_pathways=1,
+                                       max_sample_p=0.05,
+                                       normal_mask=normal_mask,
+                                       sample_rule="empirical")
+    binomial = summarize_sample_flags(correlated, min_flagged_pathways=1,
+                                      per_pathway_flag_rate=0.01,
+                                      max_sample_p=0.05,
+                                      normal_mask=normal_mask,
+                                      sample_rule="binomial")
+
+    # Every normal flags the same 8 pathways: binomial p(8 of 234 @1%) ~
+    # 0.006 flags them, but the empirical p is 1.0 (all normals do it).
+    assert not empirical.loc[
+        empirical["sample_id"].str.startswith("noise"),
+        "flagged"].any()
+    assert binomial.loc[
+        binomial["sample_id"].str.startswith("noise"),
+        "flagged"].all()
+    shifted = empirical[empirical["sample_id"] == "shifted"].iloc[0]
+    assert bool(shifted["flagged"])
+
+
+def test_analyze_flagged_normals_classification():
+    """Flagged normals get classified with top metabolites and overlap."""
+    samples = ["n1", "n2", "n_bad"]
+    zscores = pd.DataFrame({
+        "f1": [0.1, 0.1, 8.0],
+        "f2": [0.2, 0.2, 7.5],
+        "f3": [0.1, 0.1, 9.0],
+        "f4": [0.0, 0.0, 0.1],
+        "f5": [0.0, 0.0, 0.1],
+        "f6": [0.0, 0.0, 0.1],
+    }, index=samples)
+    links = pd.DataFrame([
+        {"feature": f"f{i}", "hmdb_id": f"H{i}", "smp_id": "SMP1",
+         "pathway_name": "P1", "metabolite_id": f"M{i}",
+         "metabolite_name": f"m{i}"}
+        for i in (1, 2, 3)
+    ] + [
+        {"feature": f"f{i}", "hmdb_id": f"H{i}", "smp_id": "SMP2",
+         "pathway_name": "P2", "metabolite_id": f"M{i}",
+         "metabolite_name": f"m{i}"}
+        for i in (4, 5, 6)
+    ])
+    rows = []
+    for s in samples:
+        for pw in ("SMP1", "SMP2"):
+            flagged = s == "n_bad"
+            rows.append({
+                "sample_id": s, "smp_id": pw, "pathway_name": pw,
+                "n_metabolites_used": 3,
+                "z_stouffer": 3.0 if flagged else 0.1,
+                "z_stouffer_abs": 3.0 if flagged else 0.1,
+                "threshold": 1.0,
+                "excess": 3.0 if flagged else 0.1,
+                "flagged": flagged,
+            })
+    flags = pd.DataFrame(rows)
+    normal_mask = pd.Series([True, True, True], index=samples)
+
+    report = analyze_flagged_normals(flags, zscores, links, normal_mask,
+                                     top=5)
+    assert report["sample_id"].tolist() == ["n_bad"]
+    bad = report.iloc[0]
+    assert bad["classification"] in ("exclude_candidate", "correlated_noise")
+    assert int(bad["n_flagged_pathways"]) == 2
+    assert set(report.columns) == {
+        "sample_id", "n_flagged_pathways", "max_excess",
+        "n_top_metabolites", "pathway_overlap", "concentration",
+        "classification", "reason"}
+
+
+# ---------------------------------------------------------------------------
+# Binomial sample rule and z-cap
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Binomial sample rule and z-cap
+# ---------------------------------------------------------------------------
+
+def test_binomial_sf_known_values():
+    # P(X >= 2) for Binomial(4, 0.25) = 1 - P(0) - P(1)
+    expected = 1.0 - 0.75 ** 4 - 4 * 0.25 * 0.75 ** 3
+    assert _binomial_sf(2, 4, 0.25) == pytest.approx(expected)
+    assert _binomial_sf(0, 4, 0.25) == 1.0
+    assert _binomial_sf(5, 4, 0.25) == 0.0
+    assert _binomial_sf(1, 234, 0.01) == pytest.approx(
+        1.0 - 0.99 ** 234, abs=1e-6)
 
 
 def test_stouffer_max_abs_z_cap():

@@ -118,7 +118,8 @@ outputs/pathway_pipeline/
 ├── pathway_stouffer_scores.csv # per (sample, pathway) signed + absolute Stouffer
 ├── pathway_stouffer_reference.csv # per-pathway normal p50/p95/p99 of |Stouffer|
 ├── pathway_flags.csv          # per (sample, pathway) threshold/excess/flagged
-└── sample_decisions.csv       # per-sample decision + top evidence + review group
+├── sample_decisions.csv       # per-sample decision + p-value + evidence
+└── flagged_normal_analysis.csv # flagged normals: noise vs exclude candidates
 ```
 
 ## Pathway Stouffer Scores (stage 3)
@@ -132,7 +133,7 @@ z_stouffer_abs = sum(|z_i|) / sqrt(k)    (disturbance regardless of direction)
 ```
 
 Samples with fewer than `min_stouffer_metabolites` usable metabolites in a
-pathway get no score for it. `max_abs_z` (default 10) caps |z| before the
+pathway get no score for it. `max_abs_z` (default 15) caps |z| before the
 sum so a single artifact feature cannot dominate a whole pathway.
 `pathway_stouffer_reference.csv` records each pathway's empirical
 p50/p95/p99 of the absolute Stouffer score over the normals -- the
@@ -145,17 +146,37 @@ A (sample, pathway) pair is flagged when its absolute Stouffer score exceeds
 the `flag_threshold_percentile` percentile (default 99) of that pathway's own
 **normals** -- empirical per-pathway calibration, so a noisy pathway
 automatically gets a wider range. With 200+ pathways, a few chance pathway
-flags are expected for *every* sample (~2 of 234 at p99), so the sample
-decision combines a count rule (`min_flagged_pathways`, default 1) with a
-binomial rule (`use_binomial_sample_rule`, default on): the sample's
-flagged-pathway count must be improbable under
-Binomial(n_scored_pathways, 1 - percentile) with p <= `max_sample_p`
-(default 0.05). The per-sample p-value is reported as `sample_p_value` in
-`sample_decisions.csv`, together with the Classification/Oordeel group
-(`normal` = Class 0 + Oordeel 0, `imd` = Class 1 + Oordeel 1, `other`) --
-a **reporting-only** detection-vs-contamination summary. Thresholds are
-never tuned against the IMD labels; tuning would have to happen inside
-cross-validation.
+flags are expected for *every* sample, so the sample decision combines a
+count rule (`min_flagged_pathways`, default 1) with a null model for the
+flagged-pathway count (`sample_rule`):
+
+- `empirical` (default): the null is the observed flagged-pathway count
+  distribution of the normals themselves. PathBank pathways share
+  metabolites, so flags are correlated and the binomial null is
+  anti-conservative (on real data it flagged 16% of normals at p=0.05);
+  the empirical distribution absorbs the correlation automatically.
+- `binomial`: Binomial(n_scored_pathways, 1 - percentile); only valid when
+  pathway flags are near-independent.
+- `none`: count rule only.
+
+A sample is flagged when it passes the count rule AND
+`sample_p_value <= max_sample_p` (default 0.05) under the chosen null.
+`sample_decisions.csv` reports the per-sample p-value together with the
+Classification/Oordeel group (`normal` = Class 0 + Oordeel 0, `imd` =
+Class 1 + Oordeel 1, `other`) -- a **reporting-only**
+detection-vs-contamination summary. Thresholds are never tuned against
+the IMD labels; tuning would have to happen inside cross-validation.
+
+### Flagged-normal analysis (STEP 8b)
+
+Every flagged normal is classified (`flagged_normal_analysis.csv`):
+
+- `correlated_noise`: a few metabolites drive most of the flagged pathways
+  (high pathway overlap / metabolite concentration). Consistent with a
+  mild shared-metabolite shift: keep the sample in the reference.
+- `exclude_candidate`: high excesses spread over metabolites -- a
+  genuinely abnormal sample mislabeled as normal. Inspect it (batch, QC,
+  diagnosis) and consider excluding it from the reference.
 
 ## QC Diagnostics
 

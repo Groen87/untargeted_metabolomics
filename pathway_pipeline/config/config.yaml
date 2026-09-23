@@ -78,7 +78,7 @@ min_pathway_features: 3
 # cannot dominate a whole pathway (null disables the cap).
 run_stouffer: true
 min_stouffer_metabolites: 3
-max_abs_z: 10.0
+max_abs_z: 15.0
 
 # ============================================================================
 # Flagging (stage 4)
@@ -90,16 +90,28 @@ max_abs_z: 10.0
 # pathways are flagged. The Classification/Oordeel groups are joined for a
 # reporting-only detection-vs-contamination summary; thresholds are never
 # tuned against them.
-# use_binomial_sample_rule additionally requires the sample's flagged-pathway
-# count to be improbable under Binomial(n_scored_pathways, 1 - percentile)
-# -- the null of chance flagging at the calibration rate -- with p <=
-# max_sample_p. With 234 pathways at p99 a normal flags ~2 pathways by
-# chance; the binomial rule keeps that noise from flagging the sample.
+# sample_rule sets the null for the flagged-pathway count of a sample:
+#   empirical (default) - the observed count distribution of the normals;
+#     PathBank pathways share metabolites so flags are correlated and the
+#     binomial null is anti-conservative (it flagged 16% of normals at
+#     p=0.05). The empirical distribution absorbs the correlation.
+#   binomial           - Binomial(n_scored_pathways, 1 - percentile);
+#     only valid when pathway flags are near-independent.
+#   none               - count rule only (min_flagged_pathways).
+# A sample is flagged when it passes the count rule AND sample_p_value <=
+# max_sample_p under the chosen null.
 run_flagging: true
 flag_threshold_percentile: 99.0
 min_flagged_pathways: 1
-use_binomial_sample_rule: true
+sample_rule: empirical
 max_sample_p: 0.05
+
+# STEP 8b: classify every flagged normal as correlated_noise (a few shared
+# metabolites drive many overlapping pathway flags; keep it in the
+# reference) or exclude_candidate (high excesses spread over metabolites;
+# inspect and consider removing it from the reference).
+analyze_flagged_normals: true
+flagged_normals_top: 15
 
 # ============================================================================
 # Output
