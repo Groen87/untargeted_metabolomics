@@ -35,6 +35,8 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     pathway_coverage,
 )
 from pathway_pipeline.pipeline.pathway_stats import (
+    CLASSIFICATION_COLUMN,
+    OORDEEL_COLUMN,
     classify_samples,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
@@ -103,6 +105,24 @@ def load_feature_matrix(input_file: str,
         ages = pd.to_numeric(df[age_column], errors="coerce")
         ages.index = df.index
         logger.info(f"Age column '{age_column}': {int(ages.notna().sum())} usable ages")
+
+    label_columns = [c for c in (CLASSIFICATION_COLUMN, OORDEEL_COLUMN)
+                     if c in df.columns]
+    if label_columns:
+        unlabeled = df[label_columns].isna().any(axis=1)
+        if unlabeled.any():
+            dropped_ids = df.index[unlabeled].tolist()
+            logger.warning(f"Dropping {len(dropped_ids)} samples with a NaN in "
+                           f"{' or '.join(label_columns)}; first 10: "
+                           f"{dropped_ids[:10]}")
+            features = features.loc[~unlabeled]
+            metadata = metadata.loc[~unlabeled]
+            if ages is not None:
+                ages = ages.loc[~unlabeled]
+        logger.info(f"{len(features)} samples remain after the label filter")
+    else:
+        logger.warning("Input has no Classification/Oordeel targeted columns; "
+                      "the label filter is skipped.")
 
     logger.info(f"{len(feature_cols)} feature columns, {metadata.shape[1]} metadata columns")
     return features, metadata, ages

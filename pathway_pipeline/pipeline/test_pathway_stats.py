@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from pathway_pipeline.main import load_feature_matrix
 from pathway_pipeline.pipeline.pathway_stats import (
     classify_samples,
     compute_metabolite_zscores,
@@ -439,3 +440,28 @@ def test_stouffer_and_flagging_with_duplicate_sample_ids():
     imd_row = summary[summary["sample_id"] == "imd1"].iloc[0]
     assert int(imd_row["n_scored_pathways"]) == 2  # both duplicate rows counted
     assert bool(imd_row["flagged"])
+
+
+# ---------------------------------------------------------------------------
+# Label-NaN filter at load time
+# ---------------------------------------------------------------------------
+
+def test_load_feature_matrix_drops_unlabeled_samples(tmp_path):
+    df = pd.DataFrame({
+        "Classification": [0, 0, None, 1, 0],
+        "Oordeel targeted": [0, None, 0, 1, 0],
+        "A": [1.0, 2.0, 3.0, 9.0, 2.5],
+        "B": [1.1, 2.2, 3.3, 9.9, 2.6],
+    }, index=["s1", "s2", "s3", "s4", "s5"])
+    csv = tmp_path / "input.csv"
+    df.to_csv(csv)
+
+    features, metadata, ages = load_feature_matrix(
+        str(csv),
+        non_feature_columns=["Oordeel targeted", "Classification"],
+    )
+    # s2 (NaN oordeel) and s3 (NaN classification) are dropped.
+    assert features.index.tolist() == ["s1", "s4", "s5"]
+    assert metadata.index.tolist() == ["s1", "s4", "s5"]
+    assert features.columns.tolist() == ["A", "B"]
+    assert metadata["Classification"].tolist() == [0, 1, 0]
