@@ -14,7 +14,7 @@ import logging
 import yaml
 from sklearn.ensemble import IsolationForest
 from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 
 from outlier_detection_pipeline.pipeline.scorers import make_scorer
 
@@ -143,7 +143,7 @@ class ExtendedIsolationForestModel:
             self._scorer_kwargs.update(scorer_kwargs)
 
         self.model = None  # the fitted scorer (any type)
-        self.scaler = StandardScaler()
+        self.scaler = RobustScaler()
         self.threshold_: Optional[float] = None
         self.is_fitted_ = False
         # Out-of-fold raw score_samples() for NORMAL training samples, collected
