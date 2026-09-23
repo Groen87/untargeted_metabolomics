@@ -89,6 +89,27 @@ A pathway is kept only when the fraction of its PathBank-listed metabolites
 `min_pathway_coverage` (default `0.20`, i.e. 20%). Pathways below the
 threshold are dropped and logged.
 
+### Chemistry-based pathway curation (`exclude_pathway_keywords`)
+
+Pathways whose **name** contains any of the configured keywords
+(case-insensitive substring) are dropped before scoring -- by default any
+pathway with "lipid" in its name. The justification is the extraction
+chemistry alone (evidence budget #3): a phase-extraction metabolomics
+protocol does not recover complex lipids, so lipid-pathway features measure
+extraction variability rather than physiology, and leaving them in inflates
+the normals' null distributions (which raises the bar for true IMDs under
+the `max_excess` rule). The criterion is a class-level keyword block in the
+frozen configuration -- never pathway-by-pathway flag performance, and no
+disease label is read.
+
+The filter drops **pathways, not features**: a metabolite shared between an
+excluded and a kept pathway keeps its z-score and its Stouffer contribution
+through the kept pathway. Only features whose *every* pathway is excluded
+vanish from scoring entirely -- in practice exactly the complex-lipid
+features the extraction cannot recover. `feature_to_pathway.csv` is
+written before the filter, so the full link table (including excluded
+pathways) is preserved in the outputs for audit.
+
 ## Metabolite Z-Scores (stage 2)
 
 Values must already be log10-transformed upstream. Every pathway-mapped

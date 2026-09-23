@@ -22,6 +22,7 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     match_features_to_hmdb,
     link_features_to_pathways,
     pathway_coverage,
+    filter_pathways_by_keywords,
 )
 
 
@@ -312,6 +313,22 @@ def test_coverage_empty_inputs(tmp_path):
     assert coverage.empty
 
 
+def test_filter_pathways_by_keywords():
+    coverage = pd.DataFrame({
+        "smp_id": ["SMP_A", "SMP_B", "SMP_C", "SMP_D"],
+        "pathway_name": ["Sphingolipid Metabolism", "Krabbe Disease",
+                         "Bile acid biosynthesis", "Urea Cycle"],
+        "coverage": [0.5, 0.6, 0.4, 0.9],
+    })
+    kept = filter_pathways_by_keywords(coverage, ["lipid", "bile acid"])
+    assert set(kept["smp_id"]) == {"SMP_B", "SMP_D"}
+    # Case-insensitive substring matching; no keywords -> no-op.
+    kept_none = filter_pathways_by_keywords(coverage, [])
+    assert len(kept_none) == 4
+    kept_one = filter_pathways_by_keywords(coverage, "urea")
+    assert set(kept_one["smp_id"]) == {"SMP_A", "SMP_B", "SMP_C"}
+
+
 # ---------------------------------------------------------------------------
 # End-to-end wiring of the scale floor, overrides, demotion, and weights
 # ---------------------------------------------------------------------------
@@ -415,3 +432,88 @@ def test_run_pipeline_wires_floor_overrides_demotion_and_weights(tmp_path):
     assert not scores.empty
     metabolite_flags = result.get("sample_decisions")
     assert metabolite_flags is not None
+
+
+def test_run_pipeline_keyword_exclusion_keeps_shared_features(tmp_path):
+    """Chemistry curation drops lipid pathways but keeps their shared features.
+
+    SMP0000055 (valid) shares ATP and L-Alanine with the lipid pathway
+    SMP0000056; the exclusively-lipid feature DG (only in SMP0000056)
+    disappears entirely, the shared ones keep their scores.
+    """
+    import numpy as np
+    import yaml
+    from pathway_pipeline.main import run_pipeline
+
+    xml = _write_hmdb_xml(tmp_path)
+    pathbank = tmp_path / "pathbank_all_metabolites.csv"
+    pathbank.write_text(
+        "pathway_id,metabolite_name,metabolite_id,hmdb_id,species,source\n"
+        "SMP0000055,Adenosine triphosphate,PW_C000414,HMDB0000538,Homo sapiens,pathbank\n"
+        "SMP0000055,L-Alanine,PW_C000105,HMDB0000161,Homo sapiens,pathbank\n"
+        "SMP0000055,Adenosine monophosphate,PW_C000032,HMDB0000045,Homo sapiens,pathbank\n"
+        "SMP0000055,Unmapped metabolite,PW_C000999,HMDB9999999,Homo sapiens,pathbank\n"
+        "SMP0000056,Adenosine triphosphate,PW_C000414,HMDB0000538,Homo sapiens,pathbank\n"
+        "SMP0000056,L-Alanine,PW_C000105,HMDB0000161,Homo sapiens,pathbank\n"
+        "SMP0000056,DG(16:1(9Z)/22:0/0:0),PW_C000888,HMDB0007777,Homo sapiens,pathbank\n",
+        encoding="utf-8")
+    names = tmp_path / "pathbank_pathways.csv"
+    names.write_text(
+        "pathway_id,pathbank_id,smpdb_id,name,subject,description,category,species\n"
+        "SMP0000055,PW000001,SMP0000055,Alanine Metabolism,Metabolic,d,Metabolic,Homo sapiens\n"
+        "SMP0000056,PW000003,SMP0000056,Sphingolipid Metabolism,Metabolic,d,Metabolic,Homo sapiens\n",
+        encoding="utf-8")
+
+    rng = np.random.default_rng(3)
+    n_normal, n_other = 30, 6
+    n = n_normal + n_other
+    data = {
+        "Sample": [f"s{i}" for i in range(n)],
+        "Classification": [0] * n_normal + [1] * n_other,
+        "Oordeel targeted": [0] * n_normal + [1] * n_other,
+        "ATP": list(rng.normal(2.0, 0.30, size=n)),
+        "Alanine": list(rng.normal(2.0, 0.30, size=n)),
+        "AMP": list(rng.normal(2.0, 0.30, size=n)),
+        "DG(16:1(9Z)/22:0/0:0)": list(rng.normal(2.0, 0.30, size=n)),
+    }
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame(data).to_csv(input_csv, index=False)
+
+    config = {
+        "input_file": str(input_csv),
+        "output_dir": str(tmp_path / "out"),
+        "patient_id_column": "Sample",
+        "non_feature_columns": ["Oordeel targeted", "Classification"],
+        "hmdb_xml_file": xml,
+        "use_hmdb_cache": False,
+        "pathbank_file": str(pathbank),
+        "pathbank_pathway_names_file": str(names),
+        "min_pathway_coverage": 0.10,
+        "min_pathway_features": 2,
+        "min_stouffer_metabolites": 2,
+        "sample_rule": "max_excess",
+        "max_sample_p": 0.5,
+        "exclude_pathway_keywords": ["lipid"],
+        "save_mapping_outputs": True,
+        "save_zscore_outputs": True,
+        "save_stouffer_outputs": True,
+        "save_flagging_outputs": True,
+    }
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    result = run_pipeline(
+        input_file=str(input_csv),
+        output_dir=str(tmp_path / "out"),
+        config_path=str(config_path),
+    )
+    scored = result["pathway_coverage_scored"]
+    assert set(scored["smp_id"]) == {"SMP0000055"}
+    # Shared features survive: ATP and L-Alanine are still z-scored and
+    # scored through the kept pathway.
+    assert "ATP" in set(result["zscores"].columns)
+    scored_features = set(scored["matched_features"].str.split(";").explode().dropna())
+    assert {"ATP", "Alanine", "AMP"} <= scored_features
+    # The exclusively-lipid feature has no kept pathway and vanishes from
+    # scoring entirely.
+    assert "DG(16:1(9Z)/22:0/0:0)" not in scored_features

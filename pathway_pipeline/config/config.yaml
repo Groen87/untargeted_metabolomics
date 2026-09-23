@@ -54,6 +54,22 @@ pathbank_pathway_names_file: "data/pathbank_pathways.csv"
 # are mapped to features in the dataset (0.20 = 20%).
 min_pathway_coverage: 0.20
 
+# Chemistry-based pathway curation (label-blind): a pathway whose NAME
+# contains any of these keywords (case-insensitive) is dropped before
+# scoring. Justification is the extraction chemistry ONLY -- the phase-
+# extraction metabolomics protocol does not recover complex lipids, so
+# lipid-pathway features measure extraction variability rather than
+# physiology, and leaving them in inflates the normals' null distributions
+# (which raises the bar for true IMDs under the max_excess rule). This is a
+# class-level block criterion, never pathway-by-pathway flag performance.
+# Extend the block with more extraction-chemistry keywords as needed, e.g.
+#   - "cholesterol"
+#   - "steroid"
+#   - "bile acid"
+# or remove the list entirely to score everything again.
+exclude_pathway_keywords:
+  - "lipid"
+
 # ============================================================================
 # Z-scores (stage 2)
 # ============================================================================

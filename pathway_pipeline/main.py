@@ -33,6 +33,7 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     match_features_to_hmdb,
     link_features_to_pathways,
     pathway_coverage,
+    filter_pathways_by_keywords,
 )
 from pathway_pipeline.pipeline.pathway_stats import (
     CLASSIFICATION_COLUMN,
@@ -207,6 +208,11 @@ def run_pipeline(input_file: str,
     min_coverage = float(config.get("min_pathway_coverage", 0.20))
     coverage = pathway_coverage(feature_to_pathway, pathways,
                                 min_coverage=min_coverage)
+    # Chemistry-based pathway curation (label-blind): drop whole pathway
+    # classes the sample preparation cannot recover (e.g. complex lipids
+    # under phase extraction). The keyword list lives in the frozen config.
+    exclude_keywords = config.get_list("exclude_pathway_keywords")
+    coverage = filter_pathways_by_keywords(coverage, exclude_keywords)
 
     if bool(config.get("save_mapping_outputs", True)):
         feature_to_hmdb.to_csv(out / "feature_to_hmdb.csv", index=False)

@@ -451,3 +451,42 @@ def pathway_coverage(feature_to_pathway: pd.DataFrame,
                     f"{len(coverage)} remain.")
         logger.debug(f"Dropped pathways: {sorted(dropped_rows['pathway_name'].unique())}")
     return coverage[out_cols]
+
+
+def filter_pathways_by_keywords(coverage: pd.DataFrame,
+                                exclude_keywords: List[str]) -> pd.DataFrame:
+    """Drop pathways whose name matches any exclusion keyword (case-insensitive).
+
+    Chemistry-based pathway curation (evidence budget #3): pathways whose
+    metabolites the sample preparation cannot recover -- e.g. complex lipids
+    under a phase-extraction protocol -- are analytically invalid regardless
+    of how well they calibrate, and leaving them in inflates the normals'
+    null distributions. The criterion is the keyword list in the frozen
+    configuration, applied as a block to the pathway NAME; it never reads
+    disease labels or flag performance.
+
+    Args:
+        coverage: output of :func:`pathway_coverage` (one row per pathway).
+        exclude_keywords: substrings matched case-insensitively against
+            ``pathway_name``; a pathway matching any keyword is dropped.
+
+    Returns:
+        The coverage frame without the matching pathways.
+    """
+    if exclude_keywords is None:
+        exclude_keywords = []
+    elif isinstance(exclude_keywords, str):
+        exclude_keywords = [exclude_keywords]
+    keywords = [str(k).strip().lower() for k in exclude_keywords
+                if str(k).strip()]
+    if coverage.empty or not keywords:
+        return coverage
+    name = coverage["pathway_name"].fillna("").str.lower()
+    hit = name.apply(lambda n: any(k in n for k in keywords))
+    dropped = coverage[hit]
+    kept = coverage[~hit]
+    if len(dropped):
+        names = sorted(dropped["pathway_name"].unique())
+        logger.info(f"Pathway keyword curation: dropped {len(dropped)} "
+                    f"pathway(s) matching {keywords}: {names}")
+    return kept
