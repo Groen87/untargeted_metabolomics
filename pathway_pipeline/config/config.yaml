@@ -243,27 +243,8 @@ metabolite_flag_percentile: 99.0
 # biomarker_flags.csv for audit.
 biomarker_channel:
   enable: true
-  # Source 1: literature disease-biomarker table (Excel or CSV). Columns
-  # (case-insensitive): disease, biomarker (NAME -- the pipeline resolves
-  # it to HMDB via the same matching chain as feature names, honoring the
-  # biomarker_hmdb_overrides below), direction ('up'/'down'/free-text
-  # like 'elevated'/'reduced'; empty = either direction), source
-  # (citation). The disease name is matched to a kept PathBank pathway
-  # (loose-exact, then unique substring; ambiguous/unmatched names are
-  # reported, never silently matched). The full match audit is written to
-  # disease_table_audit.csv -- review it before freezing the table.
-  # Set to null (or delete) to use only the resolved-attachments CSV.
-  disease_table_file: null   # e.g. "data/disease_biomarkers.xlsx"
-  # Source 2: resolved attachments CSV (smp_id or pathway_name + hmdb_id
-  # already known) -- used when the disease table is absent, or keep both
-  # and they complement each other.
   attachments_file: "data/pathway_biomarker_attachments.csv"
   threshold_percentile: 99.0
-
-# Biomarker-name -> HMDB overrides for names the automatic chain misses or
-# resolves wrongly in the disease table (exact biomarker name -> accession).
-# Same mechanism as feature_hmdb_overrides; document the source.
-biomarker_hmdb_overrides: {}
 
 # STEP 9: label-blind development QC (calibration check, noise floor,
 # diverging duplicates, threshold stability, pathway redundancy). Iterate

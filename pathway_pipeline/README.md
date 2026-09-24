@@ -320,47 +320,24 @@ curated prior knowledge as a **separate, openly declared channel**: PathBank
 pathways are never modified, so the pathway channel stays pure and any
 performance difference between the channels is attributable and auditable.
 
-Attachments come from two complementary sources:
-
-1. **Disease biomarker table** (`biomarker_channel.disease_table_file`): an
-   Excel (`.xlsx`, requires `openpyxl`) or CSV file with columns
-   `disease`, `biomarker` (a plain NAME, not an HMDB code), `direction`
-   (`up`/`down` or free text like `elevated`/`reduced`; empty = either),
-   `source` (citation). The pipeline resolves the biomarker names to HMDB
-   accessions via the same matching chain used for feature names
-   (override via `biomarker_hmdb_overrides` -> exact -> loose name), and
-   the disease names to kept PathBank pathways (loose-exact, then a
-   unique substring match; ambiguous or unmatched diseases are reported,
-   never silently matched). Every row -- matched or not -- lands in
-   `disease_table_audit.csv` with `biomarker_match_method` and
-   `disease_match_method` columns: review it, fix unmatched biomarker
-   names with `biomarker_hmdb_overrides` (name -> HMDB accession, with
-   citation), fix unmatched/ambiguous diseases by renaming them to the
-   PathBank pathway name, then re-run and freeze the table before the
-   STEP 10 read.
-2. **Resolved attachments CSV** (`biomarker_channel.attachments_file`,
-   columns `smp_id` OR `pathway_name`, `hmdb_id`, `source`): used when
-   the disease table is absent, or alongside it as a complement.
-
-Both are user-curated from systematic literature sources (biomarker tables
-in reviews / newborn-screening guidelines), with the citation per row in
-`source`. Curation rules (evidence budget #3): attachments are chosen from
-textbook knowledge only, never from which samples the pipeline flagged or
-missed, and the tables are frozen before the STEP 10 read. The knowledge is
-gene/disease-level, so it is label-blind by construction -- the same table
-would be declared for any cohort. A missing file disables the channel with
-a warning until the table is provided.
+The attachment table (`data/pathway_biomarker_attachments.csv`, columns
+`smp_id` OR `pathway_name`, `hmdb_id`, `source`) is user-curated from
+systematic literature sources (biomarker tables in reviews / newborn-
+screening guidelines), with the citation per row in `source`. Curation rules
+evidence budget #3: attachments are chosen from textbook knowledge only,
+never from which samples the pipeline flagged or missed, and the table is
+frozen before the STEP 10 read. The knowledge is gene/disease-level, so it
+is label-blind by construction -- the same table would be declared for any
+cohort. A missing file disables the channel with a warning until the table
+is provided.
 
 Mechanics: attached biomarkers are z-scored against the same development
 normals (even when no kept PathBank pathway maps their feature -- the
-z-score stage extends to them). Directions are honored: an `up` biomarker
-keeps only its positive z (decreases can neither flag nor feed the null),
-a `down` biomarker keeps only its decrease magnitude, and an empty or
-mixed direction keeps the absolute value. A sample flags the channel when
-an attached biomarker exceeds its own normal-percentile threshold
-(`biomarker_channel.threshold_percentile`) AND the sample's maximum
-directed biomarker z beats the biomarker-restricted depth null of the
-reference normals at the same frozen `max_sample_p` as the pathway channel. The channel **ORs into
+z-score stage extends to them). A sample flags the channel when an attached
+biomarker exceeds its own normal-percentile threshold (`biomarker_channel.
+threshold_percentile`) AND the sample's maximum attached-biomarker |z|
+beats the biomarker-restricted depth null of the reference normals at the
+same frozen `max_sample_p` as the pathway channel. The channel **ORs into
 the sample decision**: `sample_decisions.csv` gains
 `flagged_pathway_channel`, `biomarker_flagged`, `n_flagged_biomarkers`,
 `biomarker_depth_p`, `max_biomarker_z`, and `top_biomarker`, and every
