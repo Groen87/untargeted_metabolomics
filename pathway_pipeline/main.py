@@ -40,6 +40,7 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     link_features_to_pathways,
     pathway_coverage,
     filter_pathways_by_keywords,
+    ambiguous_feature_report,
 )
 from pathway_pipeline.pipeline.pathway_stats import (
     CLASSIFICATION_COLUMN,
@@ -229,6 +230,15 @@ def run_pipeline(input_file: str,
         min_name_length=min_name_length,
         overrides=config.get("feature_hmdb_overrides", None),
     )
+    ambiguous = ambiguous_feature_report(
+        feature_to_hmdb,
+        exclude=config.get_list("demoted_features"))
+    if len(ambiguous):
+        logger.warning(
+            f"{len(ambiguous)} feature name(s) match multiple HMDB accessions "
+            "(chemically ambiguous; review for demotion or override): "
+            + "; ".join(f"{feat} -> {ids}"
+                        for feat, ids in ambiguous.items()))
     # Identity curation (label-blind, chemistry-based): .HMDB-tagged
     # features are standard-confirmed upstream, so within a resolved
     # metabolite they supersede plain-named twins (co-eluting

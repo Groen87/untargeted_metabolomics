@@ -566,3 +566,30 @@ def prefer_tagged_features(feature_to_hmdb: pd.DataFrame,
             logger.debug(f"  dropped {r.feature} (HMDB {r.hmdb_id}) in "
                          f"favor of {r.superseded_by}")
     return curated, dropped
+
+
+def ambiguous_feature_report(feature_to_hmdb: pd.DataFrame,
+                             exclude: Optional[List[str]] = None
+                             ) -> pd.Series:
+    """Collect features whose plain name matched multiple HMDB accessions.
+
+    A feature matched by name to more than one accession cannot be
+    identified from the name alone, yet it scores into every pathway
+    containing any of its identities. This report surfaces those
+    features so each can be demoted or given an explicit override
+    before the configuration is frozen.
+
+    Args:
+        feature_to_hmdb: output of :func:`match_features_to_hmdb`.
+        exclude: feature names to omit (e.g. already-demoted artifacts
+            whose ambiguity has been resolved by a demotion decision).
+
+    Returns:
+        A Series indexed by feature name whose values are the
+        comma-joined sorted HMDB accessions it matched.
+    """
+    excluded = set(exclude or [])
+    multi = feature_to_hmdb[feature_to_hmdb["n_hmdb_ids"] > 1]
+    multi = multi[~multi["feature"].isin(excluded)]
+    return (multi.groupby("feature")["hmdb_id"]
+            .apply(lambda s: ",".join(sorted(str(x) for x in s))))

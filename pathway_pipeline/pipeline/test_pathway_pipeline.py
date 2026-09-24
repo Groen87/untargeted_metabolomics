@@ -24,6 +24,7 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     pathway_coverage,
     filter_pathways_by_keywords,
     prefer_tagged_features,
+    ambiguous_feature_report,
 )
 
 
@@ -213,6 +214,112 @@ def test_match_features_to_hmdb_chain(tmp_path):
     assert len(unmatched) == 1
     assert unmatched.iloc[0]["match_method"] == "unmatched"
     assert pd.isna(unmatched.iloc[0]["hmdb_id"])
+
+
+def test_ambiguous_feature_report():
+    """Multi-matched features are reported with all their accessions,
+    unambiguous ones are not, and excluded (already-demoted) ones are
+    omitted because their ambiguity has been resolved by decision."""
+    feature_to_hmdb = pd.DataFrame([
+        {"feature": "Dup", "hmdb_id": "HMDB0001227",
+         "match_method": "name_exact", "n_hmdb_ids": 2},
+        {"feature": "Dup", "hmdb_id": "HMDB0002666",
+         "match_method": "name_exact", "n_hmdb_ids": 2},
+        {"feature": "Settled", "hmdb_id": "HMDB0000045",
+         "match_method": "name_exact", "n_hmdb_ids": 2},
+        {"feature": "Settled", "hmdb_id": "HMDB0000538",
+         "match_method": "name_exact", "n_hmdb_ids": 2},
+        {"feature": "L-Alanine", "hmdb_id": "HMDB0000161",
+         "match_method": "name_exact", "n_hmdb_ids": 1},
+    ])
+    report = ambiguous_feature_report(feature_to_hmdb)
+    assert list(report.index) == ["Dup", "Settled"]
+    assert report["Dup"] == "HMDB0001227,HMDB0002666"
+    report = ambiguous_feature_report(
+        feature_to_hmdb, exclude=["Settled"])
+    assert list(report.index) == ["Dup"]
+
+
+def test_run_pipeline_warns_on_ambiguous_feature_names(tmp_path, caplog):
+    """run_pipeline surfaces multi-matched feature names at STEP 3 but
+    stays silent about ambiguities already resolved by demotion."""
+    import logging
+    import numpy as np
+    import yaml
+    from pathway_pipeline.main import run_pipeline
+
+    xml = tmp_path / "hmdb_ambiguous.xml"
+    xml.write_text("""<?xml version="1.0"?>
+<hmdb>
+  <metabolite>
+    <accession>HMDB0001227</accession>
+    <name>Ambigo</name>
+  </metabolite>
+  <metabolite>
+    <accession>HMDB0002666</accession>
+    <name>Other name</name>
+    <synonyms>
+      <synonym>Ambigo</synonym>
+    </synonyms>
+  </metabolite>
+  <metabolite>
+    <accession>HMDB0001111</accession>
+    <name>Settled</name>
+  </metabolite>
+  <metabolite>
+    <accession>HMDB0002222</accession>
+    <name>Third name</name>
+    <synonyms>
+      <synonym>Settled</synonym>
+    </synonyms>
+  </metabolite>
+</hmdb>
+""", encoding="utf-8")
+    pathbank = _write_pathbank_csv(tmp_path)
+    names = _write_pathway_names_csv(tmp_path)
+    rng = np.random.default_rng(3)
+    n = 20
+    data = {
+        "Sample": [f"s{i}" for i in range(n)],
+        "Classification": [0] * n,
+        "Oordeel targeted": [0] * n,
+        "Ambigo": list(rng.normal(2.0, 0.3, size=n)),
+        "Settled": list(rng.normal(2.0, 0.3, size=n)),
+    }
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame(data).to_csv(input_csv, index=False)
+    config = {
+        "input_file": str(input_csv),
+        "output_dir": str(tmp_path / "out"),
+        "patient_id_column": "Sample",
+        "non_feature_columns": ["Oordeel targeted", "Classification"],
+        "hmdb_xml_file": str(xml),
+        "use_hmdb_cache": False,
+        "pathbank_file": pathbank,
+        "pathbank_pathway_names_file": names,
+        "min_pathway_features": 1,
+        "min_stouffer_metabolites": 1,
+        "demoted_features": ["Settled"],
+        "save_mapping_outputs": False,
+        "save_zscore_outputs": False,
+        "save_stouffer_outputs": False,
+        "save_flagging_outputs": False,
+    }
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    with caplog.at_level(logging.WARNING, logger="pathway_pipeline.main"):
+        run_pipeline(
+            input_file=str(input_csv),
+            output_dir=str(tmp_path / "out"),
+            config_path=str(config_path),
+        )
+    warnings = [r for r in caplog.records
+                if "match multiple HMDB accessions" in r.getMessage()]
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "Ambigo -> HMDB0001227,HMDB0002666" in msg
+    assert "Settled" not in msg
 
 
 def test_match_features_to_hmdb_override_beats_tag():
