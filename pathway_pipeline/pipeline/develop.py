@@ -186,22 +186,25 @@ def threshold_stability(zscores: pd.DataFrame,
     return report
 
 
-def redundant_pathways(pathway_flags: pd.DataFrame,
-                       feature_to_pathway: pd.DataFrame,
+def redundant_pathways(scored_coverage: pd.DataFrame,
                        min_jaccard: float = 0.8) -> pd.DataFrame:
     """Pathway pairs whose scored-metabolite sets nearly coincide.
 
-    PathBank disease pathways share metabolites heavily; five pathways
-    driven by the same three metabolites produce five identical flags and
-    inflate the flagged-pathway count. Pruning near-duplicates is
+    Runs on the SCORED (and pruned) pathway set, so whatever it still
+    reports at the threshold is genuinely similar-but-not-identical
+    pathways left after STEP 6 pruning. Pruning near-duplicates is
     label-blind (uses only pathway composition) and reduces multiplicity.
     """
-    if pathway_flags.empty or feature_to_pathway.empty:
-        return pd.DataFrame(columns=["pathway_a", "pathway_b",
-                                     "jaccard", "n_metabolites"])
-    metabolite_sets = (feature_to_pathway
-                       .groupby("smp_id")["hmdb_id"]
-                       .agg(lambda s: set(s)).to_dict())
+    out_cols = ["pathway_a", "pathway_b", "name_a", "name_b",
+                "jaccard", "n_metabolites"]
+    if scored_coverage.empty:
+        return pd.DataFrame(columns=out_cols)
+    names = dict(zip(scored_coverage["smp_id"],
+                     scored_coverage["pathway_name"]))
+    metabolite_sets = {
+        row["smp_id"]: set(str(row["matched_metabolites"]).split(";")) - {""}
+        for _, row in scored_coverage.iterrows()
+    }
     smp_ids = sorted(metabolite_sets)
     rows = []
     for i in range(len(smp_ids)):
@@ -215,10 +218,12 @@ def redundant_pathways(pathway_flags: pd.DataFrame,
                 rows.append({
                     "pathway_a": smp_ids[i],
                     "pathway_b": smp_ids[j],
+                    "name_a": names.get(smp_ids[i], smp_ids[i]),
+                    "name_b": names.get(smp_ids[j], smp_ids[j]),
                     "jaccard": jac,
                     "n_metabolites": len(union),
                 })
-    report = pd.DataFrame(rows)
+    report = pd.DataFrame(rows, columns=out_cols)
     logger.info(f"Pathway redundancy: {len(report)} pathway pairs with "
                 f"Jaccard >= {min_jaccard} in their scored metabolite sets.")
     return report
@@ -230,8 +235,7 @@ def run_development_qc(zscores: pd.DataFrame,
                       features: pd.DataFrame,
                       feature_to_hmdb: pd.DataFrame,
                       pathway_scores: pd.DataFrame,
-                      pathway_flags: pd.DataFrame,
-                      feature_to_pathway: pd.DataFrame,
+                      scored_coverage: pd.DataFrame,
                       percentile: float = 99.0,
                       n_bootstrap: int = 200,
                       output_csv: str = None) -> Dict[str, pd.DataFrame]:
@@ -244,8 +248,8 @@ def run_development_qc(zscores: pd.DataFrame,
         features: raw log10 feature matrix (all samples, scored columns).
         feature_to_hmdb: feature -> HMDB mapping with match methods.
         pathway_scores: Stouffer scores (sample, pathway) long table.
-        pathway_flags: per (sample, pathway) flags with excess.
-        feature_to_pathway: (feature, pathway) links.
+        scored_coverage: scored (and pruned) pathway coverage table with
+            ``matched_metabolites``; drives the redundancy check.
         percentile: flagging percentile for the stability bootstrap.
         n_bootstrap: bootstrap resamples for threshold stability.
         output_csv: optional path to write the noise-floor feature list.
@@ -260,7 +264,7 @@ def run_development_qc(zscores: pd.DataFrame,
     stability_report = threshold_stability(
         zscores, pathway_scores, reference_mask,
         percentile=percentile, n_bootstrap=n_bootstrap)
-    redundancy_report = redundant_pathways(pathway_flags, feature_to_pathway)
+    redundancy_report = redundant_pathways(scored_coverage)
 
     if output_csv and len(noise_report):
         noise_report.to_csv(output_csv, index=False)

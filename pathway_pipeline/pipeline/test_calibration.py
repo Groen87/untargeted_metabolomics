@@ -175,22 +175,27 @@ def test_diverging_duplicates_flags_iqr_ratio():
 
 
 def test_redundant_pathways_finds_near_duplicates():
-    feature_to_pathway = pd.DataFrame([
-        {"feature": "f1", "hmdb_id": "H1", "smp_id": "SMP_A"},
-        {"feature": "f2", "hmdb_id": "H2", "smp_id": "SMP_A"},
-        {"feature": "f3", "hmdb_id": "H3", "smp_id": "SMP_A"},
-        {"feature": "f1", "hmdb_id": "H1", "smp_id": "SMP_B"},
-        {"feature": "f2", "hmdb_id": "H2", "smp_id": "SMP_B"},
-        {"feature": "f3", "hmdb_id": "H3", "smp_id": "SMP_B"},
-        {"feature": "f4", "hmdb_id": "H4", "smp_id": "SMP_C"},
-        {"feature": "f5", "hmdb_id": "H5", "smp_id": "SMP_C"},
+    scored = pd.DataFrame([
+        {"smp_id": "SMP_A", "pathway_name": "Pathway A",
+         "matched_metabolites": "H1;H2;H3"},
+        {"smp_id": "SMP_B", "pathway_name": "Pathway B",
+         "matched_metabolites": "H1;H2;H3"},
+        {"smp_id": "SMP_C", "pathway_name": "Pathway C",
+         "matched_metabolites": "H4;H5;H6"},
     ])
-    flags = pd.DataFrame([{"smp_id": "SMP_A", "flagged": True},
-                          {"smp_id": "SMP_B", "flagged": True}])
-    report = redundant_pathways(flags, feature_to_pathway, min_jaccard=0.8)
+    report = redundant_pathways(scored, min_jaccard=0.8)
     pairs = set(zip(report["pathway_a"], report["pathway_b"]))
     assert ("SMP_A", "SMP_B") in pairs
     assert all("SMP_C" not in p for p in pairs)
+
+
+def test_redundant_pathways_empty_input():
+    empty = pd.DataFrame(columns=["smp_id", "pathway_name",
+                                   "matched_metabolites"])
+    report = redundant_pathways(empty)
+    assert report.empty
+    assert list(report.columns) == ["pathway_a", "pathway_b", "name_a",
+                                   "name_b", "jaccard", "n_metabolites"]
 
 
 # ---------------------------------------------------------------------------
