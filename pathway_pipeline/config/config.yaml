@@ -66,10 +66,10 @@ age_column: null
 #  - C3  Propionylcarnitine: HMDB0000824
 #  - C8  Octanoylcarnitine: HMDB0000791
 #  - C10 Decanoylcarnitine: HMDB0000651
-#  - C12:1 Dodecenoylcarnitine: HMDB0251567 (unspecified double-bond
-#       position, the NBS analyte; trans-2/2-/11-isomers have separate
-#       entries) -- verify the exact input column name before freezing
-#  - C14:1 cis-5-Tetradecenoylcarnitine: HMDB0002014
+#  - C12:1 trans-2-Dodecenoylcarnitine: HMDB0013326 (the lab's
+#       measured C12:1 isomer)
+#  - C14:1 Tetradecenoylcarnitine: HMDB0258884 (the lab's measured
+#       C14:1 species)
 #  - C16 Palmitoylcarnitine: HMDB0000222
 #  - C18 Stearoylcarnitine: HMDB0000848
 #  - C18:1 Oleoylcarnitine: HMDB0005065
@@ -81,11 +81,11 @@ ratio_features:
     numerator: "Octanoylcarnitine.HMDB0000791"
     denominator: "Decanoylcarnitine.HMDB0000651"
   - name: "C14:1/C2"
-    numerator: "cis-5-Tetradecenoylcarnitine.HMDB0002014"
+    numerator: "Tetradecenoylcarnitine.HMDB0258884"
     denominator: "L-Acetylcarnitine.HMDB0000201"
   - name: "C14:1/C12:1"
-    numerator: "cis-5-Tetradecenoylcarnitine.HMDB0002014"
-    denominator: "Dodecenoylcarnitine.HMDB0251567"
+    numerator: "Tetradecenoylcarnitine.HMDB0258884"
+    denominator: "trans-2-Dodecenoylcarnitine.HMDB0013326"
   - name: "C3/C2"
     numerator: "Propionylcarnitine.HMDB0000824"
     denominator: "L-Acetylcarnitine.HMDB0000201"
