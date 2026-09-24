@@ -25,6 +25,7 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     filter_pathways_by_keywords,
     prefer_tagged_features,
     ambiguous_feature_report,
+    ambiguous_feature_impact,
 )
 
 
@@ -238,6 +239,38 @@ def test_ambiguous_feature_report():
     report = ambiguous_feature_report(
         feature_to_hmdb, exclude=["Settled"])
     assert list(report.index) == ["Dup"]
+
+
+def test_ambiguous_feature_impact_sorts_by_scoring_reach():
+    """Impact triage counts scored pathways and disease tests per
+    ambiguous feature and sorts the actionable ones first."""
+    ambiguous = pd.Series({
+        "Dup": "HMDB0001227,HMDB0002666",
+        "Idle": "HMDB0001111,HMDB0002222",
+    })
+    feature_to_pathway = pd.DataFrame([
+        {"feature": "Dup", "smp_id": "SMP0000055"},
+        {"feature": "Dup", "smp_id": "SMP0000002"},
+        {"feature": "Idle", "smp_id": "SMP0000099"},
+    ])
+    scored_coverage = pd.DataFrame([{"smp_id": "SMP0000055"}])
+    disease_resolved = pd.DataFrame([
+        {"disease": "Deficiency A", "features": "Dup"},
+        {"disease": "Deficiency B", "features": "Other"},
+    ])
+    impact = ambiguous_feature_impact(
+        ambiguous, feature_to_pathway, scored_coverage,
+        disease_resolved=disease_resolved)
+    assert list(impact["feature"]) == ["Dup", "Idle"]
+    dup = impact[impact["feature"] == "Dup"].iloc[0]
+    assert dup["n_scored_pathways"] == 1
+    assert dup["n_disease_tests"] == 1
+    idle = impact[impact["feature"] == "Idle"].iloc[0]
+    assert idle["n_scored_pathways"] == 0
+    assert idle["n_disease_tests"] == 0
+    empty = ambiguous_feature_impact(
+        pd.Series(dtype="object"), feature_to_pathway, scored_coverage)
+    assert empty.empty
 
 
 def test_run_pipeline_warns_on_ambiguous_feature_names(tmp_path, caplog):

@@ -593,3 +593,66 @@ def ambiguous_feature_report(feature_to_hmdb: pd.DataFrame,
     multi = multi[~multi["feature"].isin(excluded)]
     return (multi.groupby("feature")["hmdb_id"]
             .apply(lambda s: ",".join(sorted(str(x) for x in s))))
+
+
+def ambiguous_feature_impact(ambiguous: pd.Series,
+                             feature_to_pathway: pd.DataFrame,
+                             scored_coverage: pd.DataFrame,
+                             disease_resolved: pd.DataFrame = None
+                             ) -> pd.DataFrame:
+    """Annotate ambiguous features with scoring impact for triage.
+
+    Most multi-matched names are xenobiotics that never reach a scored
+    pathway or a disease test; the actionable subset is the features
+    that actually contribute to the pathway or biomarker channels.
+    This joins the ambiguity report to scored PathBank pathways and
+    resolved IEMbase disease tests so the review can be prioritized.
+
+    Args:
+        ambiguous: output of :func:`ambiguous_feature_report` (feature
+            name -> comma-joined HMDB accessions).
+        feature_to_pathway: (feature, pathway) links.
+        scored_coverage: pathways kept for scoring (one row per
+            pathway, with a ``smp_id`` column).
+        disease_resolved: resolved IEMbase disease biomarker tests
+            (one row per (disease, biomarker), with a ``features``
+            column); None or empty disables the disease annotation.
+
+    Returns:
+        A frame with columns ``feature``, ``hmdb_ids``,
+        ``n_scored_pathways``, ``n_disease_tests``, sorted by
+        descending impact (scored pathways first, then disease tests,
+        then feature name).
+    """
+    if ambiguous.empty:
+        return pd.DataFrame(columns=["feature", "hmdb_ids",
+                                    "n_scored_pathways",
+                                    "n_disease_tests"])
+    scored_ids = set(scored_coverage["smp_id"]) \
+        if scored_coverage is not None and not scored_coverage.empty else set()
+    links = feature_to_pathway
+    if links is None or links.empty:
+        links = pd.DataFrame(columns=["feature", "smp_id"])
+    links = links[links["smp_id"].isin(scored_ids)]
+    n_pathways = links.groupby("feature")["smp_id"].nunique()
+    if disease_resolved is None or disease_resolved.empty:
+        n_disease = pd.Series(dtype="int64")
+    else:
+        tests = disease_resolved.copy()
+        tests["features"] = tests["features"].fillna("")
+        mask = tests["features"].str.split(";").apply(
+            lambda fs: any(f in ambiguous.index for f in fs))
+        tests = tests[mask]
+        n_disease = (tests.groupby("features")["disease"].nunique())
+        n_disease.index = [fs.split(";")[0] for fs in n_disease.index]
+    out = pd.DataFrame({
+        "feature": ambiguous.index,
+        "hmdb_ids": ambiguous.values,
+    })
+    out["n_scored_pathways"] = (out["feature"].map(n_pathways)
+                                .fillna(0).astype("int64"))
+    out["n_disease_tests"] = (out["feature"].map(n_disease)
+                              .fillna(0).astype("int64"))
+    return out.sort_values(
+        by=["n_scored_pathways", "n_disease_tests", "feature"],
+        ascending=[False, False, True]).reset_index(drop=True)

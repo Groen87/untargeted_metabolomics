@@ -41,6 +41,7 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     pathway_coverage,
     filter_pathways_by_keywords,
     ambiguous_feature_report,
+    ambiguous_feature_impact,
 )
 from pathway_pipeline.pipeline.pathway_stats import (
     CLASSIFICATION_COLUMN,
@@ -512,6 +513,20 @@ def run_pipeline(input_file: str,
         scored_coverage.to_csv(out / "pathway_coverage_scored.csv", index=False)
         logger.info("Wrote pathway_coverage_scored.csv to "
                     f"{out}")
+    if len(ambiguous):
+        impact = ambiguous_feature_impact(
+            ambiguous, feature_to_pathway, scored_coverage,
+            disease_resolved=disease_resolved)
+        scoring = int((impact["n_scored_pathways"] > 0).sum())
+        testing = int((impact["n_disease_tests"] > 0).sum())
+        logger.warning(
+            f"Ambiguity triage: {scoring} of {len(impact)} ambiguous "
+            f"feature(s) reach scored pathways, {testing} carry disease "
+            "tests -- review those first in ambiguous_features.csv.")
+        if bool(config.get("save_mapping_outputs", True)):
+            impact.to_csv(out / "ambiguous_features.csv", index=False)
+            logger.info(f"Wrote ambiguous_features.csv to {out} "
+                        "(impact-sorted)")
 
     # ------------------------------------------------------------------
     # Stage 3: pathway Stouffer scores
