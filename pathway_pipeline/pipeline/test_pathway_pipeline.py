@@ -579,3 +579,100 @@ def test_prefer_tagged_features_override_confers_precedence():
     curated2, dropped2 = prefer_tagged_features(f2h2, feature_columns=cols2)
     assert set(dropped2["feature"]) == {"Nicotinic acid"}
     assert "Nicotinic acid" not in set(curated2["feature"])
+
+
+# ---------------------------------------------------------------------------
+# STEP 8d: biomarker attachment channel wiring
+# ---------------------------------------------------------------------------
+
+def test_run_pipeline_biomarker_channel_flags_unmapped_biomarker(tmp_path):
+    """Smoke test: a literature biomarker attached to a disease pathway is
+    z-scored even when NO PathBank pathway maps its feature, and a spike in
+    it flags the sample through the biomarker channel (OR into the
+    decision), while the pathway channel alone would have missed it."""
+    import numpy as np
+    import yaml
+    from pathway_pipeline.main import run_pipeline
+
+    xml = _write_hmdb_xml(tmp_path)
+    pathbank = _write_pathbank_csv(tmp_path)
+    names = _write_pathway_names_csv(tmp_path)
+
+    # Attach octanoylcarnitine to a fictitious MCAD pathway (SMP0000055
+    # stands in for the disease pathway; the attachment targets it by
+    # smp_id). The biomarker feature exists in the matrix and matches
+    # HMDB0000215 via the HMDB tag, but no PathBank pathway lists it.
+    attachments = tmp_path / "pathway_biomarker_attachments.csv"
+    attachments.write_text(
+        "smp_id,pathway_name,hmdb_id,source\n"
+        "SMP0000055,,HMDB0000215,literature-ref\n",
+        encoding="utf-8")
+
+    rng = np.random.default_rng(21)
+    n_normal, n_other = 30, 4
+    n = n_normal + n_other
+    spike = rng.normal(1.0, 0.01, size=n)
+    spike[-1] = 8.0  # one 'other' sample grossly elevated
+    data = {
+        "Sample": [f"s{i}" for i in range(n)],
+        "Classification": [0] * n_normal + [1] * n_other,
+        "Oordeel targeted": [0] * n_normal + [1] * n_other,
+        "Alanine": list(rng.normal(2.0, 0.30, size=n)),
+        "ATP": list(rng.normal(2.0, 0.30, size=n)),
+        "AMP": list(rng.normal(2.0, 0.30, size=n)),
+        # Biomarker feature: HMDB tag matches HMDB0000215 (add it to the
+        # tiny synthetic index via a tag-style column name).
+        "Octanoylcarnitine.HMDB0000215": list(spike),
+    }
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame(data).to_csv(input_csv, index=False)
+    config = {
+        "input_file": str(input_csv),
+        "output_dir": str(tmp_path / "out"),
+        "patient_id_column": "Sample",
+        "non_feature_columns": ["Oordeel targeted", "Classification"],
+        "hmdb_xml_file": xml,
+        "use_hmdb_cache": False,
+        "pathbank_file": pathbank,
+        "pathbank_pathway_names_file": names,
+        "min_pathway_coverage": 0.10,
+        "min_pathway_features": 2,
+        "min_stouffer_metabolites": 2,
+        "sample_rule": "max_excess",
+        "max_sample_p": 0.05,
+        "biomarker_channel": {
+            "enable": True,
+            "attachments_file": str(attachments),
+        },
+        "save_mapping_outputs": True,
+        "save_zscore_outputs": True,
+        "save_stouffer_outputs": True,
+        "save_flagging_outputs": True,
+    }
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    result = run_pipeline(
+        input_file=str(input_csv),
+        output_dir=str(tmp_path / "out"),
+        config_path=str(config_path),
+    )
+    decisions = result["sample_decisions"]
+    # The biomarker feature was z-scored although no PathBank pathway maps
+    # it (feature_to_pathway would never contain it).
+    assert "Octanoylcarnitine.HMDB0000215" in set(result["zscores"].columns)
+    f2p = result["feature_to_pathway"]
+    assert f2p.empty or "Octanoylcarnitine.HMDB0000215" not in set(f2p["feature"])
+    # The spiked sample is flagged through the biomarker channel.
+    spiked = decisions[decisions["sample_id"] == f"s{n - 1}"].iloc[0]
+    assert bool(spiked["biomarker_flagged"])
+    assert bool(spiked["flagged"])
+    assert bool(spiked["flagged_pathway_channel"]) is False
+    # The channel columns are present for audit.
+    for col in ("biomarker_flagged", "flagged_pathway_channel",
+                "n_flagged_biomarkers", "biomarker_depth_p",
+                "max_biomarker_z", "top_biomarker"):
+        assert col in decisions.columns
+    # Flags table recorded the (sample, pathway, biomarker) evidence.
+    bio_flags = pd.read_csv(tmp_path / "out" / "biomarker_flags.csv")
+    assert (bio_flags["hmdb_id"] == "HMDB0000215").any()

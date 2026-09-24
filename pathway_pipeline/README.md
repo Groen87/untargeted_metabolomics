@@ -308,7 +308,42 @@ The `metabolite_depth_p` is the fraction of normals whose maximum metabolite
 pathway max_excess rule. It catches IMDs with a single grossly elevated
 metabolite whose pathway Stouffer score is diluted by the pathway's other
 metabolites. These columns are **report-only**; the sample `flagged` decision
-still comes from the pathway rules alone.
+still comes from the pathway rules (plus the STEP 8d biomarker channel),
+not from this table.
+
+### Biomarker attachment channel (STEP 8d, literature-curated)
+
+PathBank disease pathways are intracellular mechanism cartoons and can omit
+the clinically diagnostic biomarkers of the disease they depict (the MCADD
+pathway does not list octanoylcarnitine). The biomarker channel injects
+curated prior knowledge as a **separate, openly declared channel**: PathBank
+pathways are never modified, so the pathway channel stays pure and any
+performance difference between the channels is attributable and auditable.
+
+The attachment table (`data/pathway_biomarker_attachments.csv`, columns
+`smp_id` OR `pathway_name`, `hmdb_id`, `source`) is user-curated from
+systematic literature sources (biomarker tables in reviews / newborn-
+screening guidelines), with the citation per row in `source`. Curation rules
+evidence budget #3: attachments are chosen from textbook knowledge only,
+never from which samples the pipeline flagged or missed, and the table is
+frozen before the STEP 10 read. The knowledge is gene/disease-level, so it
+is label-blind by construction -- the same table would be declared for any
+cohort. A missing file disables the channel with a warning until the table
+is provided.
+
+Mechanics: attached biomarkers are z-scored against the same development
+normals (even when no kept PathBank pathway maps their feature -- the
+z-score stage extends to them). A sample flags the channel when an attached
+biomarker exceeds its own normal-percentile threshold (`biomarker_channel.
+threshold_percentile`) AND the sample's maximum attached-biomarker |z|
+beats the biomarker-restricted depth null of the reference normals at the
+same frozen `max_sample_p` as the pathway channel. The channel **ORs into
+the sample decision**: `sample_decisions.csv` gains
+`flagged_pathway_channel`, `biomarker_flagged`, `n_flagged_biomarkers`,
+`biomarker_depth_p`, `max_biomarker_z`, and `top_biomarker`, and every
+per-(sample, pathway, biomarker) flag lands in `biomarker_flags.csv` for
+audit. Duplicate features of the same biomarker are combined with the same
+scale^2 weighting as the Stouffer channel.
 
 ## Development QC (STEP 9, label-blind)
 

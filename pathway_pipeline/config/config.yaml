@@ -211,6 +211,41 @@ max_sample_p: 0.05
 run_metabolite_flags: true
 metabolite_flag_percentile: 99.0
 
+# STEP 8d: biomarker attachment channel (literature-curated prior
+# knowledge, parallel to the PathBank pathway channel -- PathBank
+# pathways are NEVER modified). PathBank disease pathways are
+# intracellular mechanism cartoons and can omit the clinically
+# diagnostic biomarkers of their disease (e.g. MCADD without
+# octanoylcarnitine); this channel attaches published disease
+# biomarkers to their disease pathways from a curated CSV.
+#
+# Curation protocol (evidence budget #3, gene/disease-level knowledge --
+# label-blind by construction, the same table would be declared for any
+# cohort):
+# 1. Assemble attachments from SYSTEMATIC literature sources (biomarker
+#    tables in reviews / newborn-screening guidelines), never from which
+#    samples this pipeline flagged or missed.
+# 2. Cite each row's source in the `source` column.
+# 3. Freeze the table before the STEP 10 evaluation read; never edit it
+#    after reading validation performance.
+#
+# CSV columns: smp_id OR pathway_name (the target disease pathway;
+# smp_id wins when both are given), hmdb_id (biomarker accession,
+# uppercase), source (citation). A missing file disables the channel
+# (warning logged) until the table is provided.
+#
+# A sample flags the channel when an attached biomarker exceeds its own
+# normal-percentile threshold AND the sample's maximum attached-biomarker
+# |z| beats the biomarker-restricted depth null of the reference normals
+# (same frozen max_sample_p as the pathway channel). The channel ORs into
+# the sample decision; per-channel calls are recorded in
+# sample_decisions.csv (flagged_pathway_channel, biomarker_flagged) and
+# biomarker_flags.csv for audit.
+biomarker_channel:
+  enable: true
+  attachments_file: "data/pathway_biomarker_attachments.csv"
+  threshold_percentile: 99.0
+
 # STEP 9: label-blind development QC (calibration check, noise floor,
 # diverging duplicates, threshold stability, pathway redundancy). Iterate
 # freely on this output; IMD labels are never read.
