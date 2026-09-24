@@ -230,15 +230,6 @@ def run_pipeline(input_file: str,
         min_name_length=min_name_length,
         overrides=config.get("feature_hmdb_overrides", None),
     )
-    ambiguous = ambiguous_feature_report(
-        feature_to_hmdb,
-        exclude=config.get_list("demoted_features"))
-    if len(ambiguous):
-        logger.warning(
-            f"{len(ambiguous)} feature name(s) match multiple HMDB accessions "
-            "(chemically ambiguous; review for demotion or override): "
-            + "; ".join(f"{feat} -> {ids}"
-                        for feat, ids in ambiguous.items()))
     # Identity curation (label-blind, chemistry-based): .HMDB-tagged
     # features are standard-confirmed upstream, so within a resolved
     # metabolite they supersede plain-named twins (co-eluting
@@ -254,6 +245,20 @@ def run_pipeline(input_file: str,
             superseded_features.to_csv(out / "superseded_features.csv",
                                        index=False)
             logger.info(f"Wrote superseded_features.csv to {out}")
+    ambiguous = ambiguous_feature_report(
+        feature_to_hmdb,
+        exclude=config.get_list("demoted_features"))
+    if len(ambiguous):
+        logger.warning(
+            f"{len(ambiguous)} feature name(s) match multiple HMDB accessions "
+            "(chemically ambiguous; review for demotion or override): "
+            + "; ".join(f"{feat} -> {ids}"
+                        for feat, ids in ambiguous.items()))
+    if bool(config.get("save_mapping_outputs", True)):
+        ambiguous.rename("hmdb_ids").reset_index().to_csv(
+            out / "ambiguous_features.csv", index=False)
+        if len(ambiguous):
+            logger.info(f"Wrote ambiguous_features.csv to {out}")
 
     _log_section("STEP 4: Load PathBank pathways and link features to pathways")
     pathbank_file = config.get("pathbank_file", "data/pathbank_all_metabolites.csv")

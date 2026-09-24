@@ -241,8 +241,9 @@ def test_ambiguous_feature_report():
 
 
 def test_run_pipeline_warns_on_ambiguous_feature_names(tmp_path, caplog):
-    """run_pipeline surfaces multi-matched feature names at STEP 3 but
-    stays silent about ambiguities already resolved by demotion."""
+    """run_pipeline surfaces multi-matched feature names after identity
+    curation: demoted and tagged-twin-superseded ambiguities stay silent,
+    only unresolved multi-matches warn and land in the CSV artifact."""
     import logging
     import numpy as np
     import yaml
@@ -273,6 +274,17 @@ def test_run_pipeline_warns_on_ambiguous_feature_names(tmp_path, caplog):
       <synonym>Settled</synonym>
     </synonyms>
   </metabolite>
+  <metabolite>
+    <accession>HMDB0003333</accession>
+    <name>Curated</name>
+  </metabolite>
+  <metabolite>
+    <accession>HMDB0004444</accession>
+    <name>Fourth name</name>
+    <synonyms>
+      <synonym>Curated</synonym>
+    </synonyms>
+  </metabolite>
 </hmdb>
 """, encoding="utf-8")
     pathbank = _write_pathbank_csv(tmp_path)
@@ -285,6 +297,9 @@ def test_run_pipeline_warns_on_ambiguous_feature_names(tmp_path, caplog):
         "Oordeel targeted": [0] * n,
         "Ambigo": list(rng.normal(2.0, 0.3, size=n)),
         "Settled": list(rng.normal(2.0, 0.3, size=n)),
+        "Curated": list(rng.normal(2.0, 0.3, size=n)),
+        "Curated.HMDB0003333": list(rng.normal(2.0, 0.3, size=n)),
+        "Curated.HMDB0004444": list(rng.normal(2.0, 0.3, size=n)),
     }
     input_csv = tmp_path / "input.csv"
     pd.DataFrame(data).to_csv(input_csv, index=False)
@@ -300,7 +315,7 @@ def test_run_pipeline_warns_on_ambiguous_feature_names(tmp_path, caplog):
         "min_pathway_features": 1,
         "min_stouffer_metabolites": 1,
         "demoted_features": ["Settled"],
-        "save_mapping_outputs": False,
+        "save_mapping_outputs": True,
         "save_zscore_outputs": False,
         "save_stouffer_outputs": False,
         "save_flagging_outputs": False,
@@ -320,6 +335,12 @@ def test_run_pipeline_warns_on_ambiguous_feature_names(tmp_path, caplog):
     msg = warnings[0].getMessage()
     assert "Ambigo -> HMDB0001227,HMDB0002666" in msg
     assert "Settled" not in msg
+    # Superseded by tagged twins at identity curation -> never warned.
+    assert "Curated" not in msg
+    # The CSV artifact lists exactly the unresolved ambiguities.
+    artifact = pd.read_csv(tmp_path / "out" / "ambiguous_features.csv")
+    assert list(artifact["feature"]) == ["Ambigo"]
+    assert artifact["hmdb_ids"].iloc[0] == "HMDB0001227,HMDB0002666"
 
 
 def test_match_features_to_hmdb_override_beats_tag():
