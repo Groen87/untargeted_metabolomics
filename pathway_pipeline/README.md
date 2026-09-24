@@ -340,6 +340,24 @@ Acting on the output (adding an override or demotion, changing a
 threshold) is a human decision that creates a **new frozen configuration
 version**.
 
+### Feature demotion (`demoted_features`)
+
+Demoted features keep their z-scores in `metabolite_zscores.csv` for audit
+but never contribute to pathway Stouffer sums, metabolite flags, or
+downstream threshold calibration. Entries must be **exact feature column
+names**; the pipeline logs a warning for any configured name that matches
+no scored column. Justification is chemistry/analytical priors only
+(evidence budget #3): pre-analytical lability (e.g. Reduced Glutathione,
+Urocanic acid), noise-floor compression (thiamine monophosphate), strong
+age dependence (creatinine -- pediatric reference ranges span an order of
+magnitude, so deviations track maturation, not IMD), and
+exogenous/medication-dominated features (caffeine chain, theophylline,
+Premarin, tretinoin, etc.) where a minority of exposed normals would
+otherwise inflate the reference null distributions and produce
+non-specific pathway flags. No group/disease counts inform the list.
+Demoting features starves medication pathways (e.g. Caffeine Metabolism)
+of coverage so they drop out of scoring on their own.
+
 ## Evaluation (STEP 10, label-aware, one-shot)
 
 `run_evaluation` stays `false` during development. When the configuration

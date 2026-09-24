@@ -335,6 +335,12 @@ def run_pipeline(input_file: str,
     # the reference calibration of downstream thresholds.
     demoted_features = [f for f in config.get_list("demoted_features")
                         if f in zscores.columns]
+    unmatched = [f for f in config.get_list("demoted_features")
+                 if f not in zscores.columns]
+    if unmatched:
+        logger.warning(f"{len(unmatched)} configured demoted feature(s) match "
+                       f"no z-scored column (check the exact names): "
+                       f"{unmatched}")
     if demoted_features:
         logger.info(f"Demoting {len(demoted_features)} artifact features "
                     f"(excluded from scoring, kept in the reports): "
