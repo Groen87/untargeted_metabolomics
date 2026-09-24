@@ -16,7 +16,16 @@ patient_id_column: null
 non_feature_columns:
   - "Oordeel targeted"
   - "Classification"
+  - "Non-treated"
 age_column: null
+
+# Cohort definition for reporting: with untreated_imd_only, an IMD sample
+# (Classification == 1 AND Oordeel targeted == 1) counts as 'imd' only when
+# Non-treated == 1 (untreated, a true IMD presentation). Treated IMDs
+# (Non-treated == 0 or empty) are reported in the 'other' group: treatment
+# normalizes the metabolome, so they are not the phenotype the screen must
+# catch. Reporting/stratification only -- never used to set thresholds.
+untreated_imd_only: true
 
 # ============================================================================
 # HMDB Database

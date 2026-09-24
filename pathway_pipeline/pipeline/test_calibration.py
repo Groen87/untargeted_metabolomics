@@ -281,6 +281,28 @@ def test_assign_groups_labels():
     assert groups.tolist() == ["normal", "other", "imd", "other"]
 
 
+def test_assign_groups_untreated_imd_only():
+    """Treated IMDs (Non-treated != 1) demote to 'other' when requested."""
+    meta = pd.DataFrame({
+        "Classification": [1, 1, 1],
+        "Oordeel targeted": [1, 1, 1],
+        "Non-treated": [1, 0, None],
+    }, index=["a", "b", "c"])
+    groups = assign_groups(meta, untreated_imd_only=True)
+    assert groups.tolist() == ["imd", "other", "other"]
+    groups_default = assign_groups(meta)
+    assert groups_default.tolist() == ["imd", "imd", "imd"]
+
+
+def test_assign_groups_untreated_imd_only_inert_without_column():
+    meta = pd.DataFrame({
+        "Classification": [0, 1],
+        "Oordeel targeted": [0, 1],
+    }, index=["a", "b"])
+    groups = assign_groups(meta, untreated_imd_only=True)
+    assert groups.tolist() == ["normal", "imd"]
+
+
 def test_leave_one_out_hygiene_exclusion_cap_stops_cascade():
     """The pre-declared exclusion cap stops a miscalibrated max_depth cascade."""
     rng = np.random.default_rng(12)

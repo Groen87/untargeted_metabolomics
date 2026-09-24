@@ -271,7 +271,26 @@ def run_pipeline(input_file: str,
         normal_mask=labeled_normal_mask,
         normal_classification=int(config.get("normal_classification", 0)),
         normal_oordeel=int(config.get("normal_oordeel", 0)),
+        untreated_imd_only=bool(
+            config.get("untreated_imd_only", False)),
     )
+    group_counts = sample_group.value_counts()
+    logger.info(
+        "Sample groups: "
+        + ", ".join(f"{g}={int(group_counts.get(g, 0))}"
+                    for g in ("normal", "imd", "other"))
+    )
+    if (bool(config.get("untreated_imd_only", False))
+            and "Non-treated" in metadata.columns):
+        cls = pd.to_numeric(metadata["Classification"], errors="coerce")
+        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
+        untreated = pd.to_numeric(metadata["Non-treated"],
+                                 errors="coerce").fillna(0)
+        n_demoted = int(((cls == 1) & (oor == 1) & (untreated != 1)).sum())
+        logger.info(
+            f"untreated_imd_only: {n_demoted} treated IMD samples "
+            "reported in the 'other' group"
+        )
 
     # ------------------------------------------------------------------
     # Cohort split (development vs validation) -- the split is part of

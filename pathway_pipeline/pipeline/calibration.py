@@ -27,19 +27,27 @@ logger = logging.getLogger(__name__)
 
 CLASSIFICATION_COLUMN = "Classification"
 OORDEEL_COLUMN = "Oordeel targeted"
+NON_TREATED_COLUMN = "Non-treated"
 
 
 def assign_groups(metadata: pd.DataFrame,
                   normal_mask: pd.Series = None,
                   normal_classification: int = 0,
-                  normal_oordeel: int = 0) -> pd.Series:
+                  normal_oordeel: int = 0,
+                  untreated_imd_only: bool = False) -> pd.Series:
     """Assign each sample a reporting group: normal, imd, or other.
 
     Normals are the configured reference set (``Classification ==
     normal_classification`` AND ``Oordeel targeted == normal_oordeel``;
     defaults 0/0); IMD samples are ``Classification == 1`` AND
-    ``Oordeel targeted == 1``. The group is reporting/stratification-only
-    evidence and is never used to set thresholds.
+    ``Oordeel targeted == 1``. With ``untreated_imd_only`` (and the
+    ``Non-treated`` column present in the metadata), an IMD sample counts
+    as ``imd`` only when ``Non-treated == 1`` (untreated, a true IMD
+    presentation); treated IMDs (``Non-treated == 0`` or empty) fall to
+    ``other``, since treatment normalizes the metabolome and they are not
+    the phenotype the screen must catch. The group is
+    reporting/stratification-only evidence and is never used to set
+    thresholds.
 
     Args:
         metadata: frame holding the label columns (when present).
@@ -47,12 +55,19 @@ def assign_groups(metadata: pd.DataFrame,
             given it overrides the label rule for the 'normal' group.
         normal_classification: classification value marking normals.
         normal_oordeel: oordeel value marking normals.
+        untreated_imd_only: demote treated IMDs (Non-treated != 1) to
+            'other'; inert when the Non-treated column is absent.
     """
     group = pd.Series("other", index=metadata.index)
     if {CLASSIFICATION_COLUMN, OORDEEL_COLUMN}.issubset(metadata.columns):
         cls = pd.to_numeric(metadata[CLASSIFICATION_COLUMN], errors="coerce")
         oor = pd.to_numeric(metadata[OORDEEL_COLUMN], errors="coerce")
-        group[(cls == 1) & (oor == 1)] = "imd"
+        imd_mask = (cls == 1) & (oor == 1)
+        if untreated_imd_only and NON_TREATED_COLUMN in metadata.columns:
+            untreated = pd.to_numeric(metadata[NON_TREATED_COLUMN],
+                                      errors="coerce").fillna(0)
+            imd_mask = imd_mask & (untreated == 1)
+        group[imd_mask] = "imd"
         if normal_mask is None:
             group[(cls == normal_classification)
                   & (oor == normal_oordeel)] = "normal"
