@@ -490,3 +490,79 @@ def filter_pathways_by_keywords(coverage: pd.DataFrame,
         logger.info(f"Pathway keyword curation: dropped {len(dropped)} "
                     f"pathway(s) matching {keywords}: {names}")
     return kept
+
+
+def prefer_tagged_features(feature_to_hmdb: pd.DataFrame,
+                            feature_columns: List[str]) -> Tuple[pd.DataFrame,
+                                                                 pd.DataFrame]:
+    """Drop plain-named features superseded by a standard-confirmed twin.
+
+    Chemistry-based identity curation (evidence budget #3): feature columns
+    carrying a trailing ``.HMDB########`` tag (or a bare accession) are
+    identified by pure-standard injection upstream, so within a resolved
+    HMDB metabolite the tagged feature is the molecule described and its
+    plain-named twins -- usually co-eluting interlopers caught by name
+    matching, often with razor-thin reference IQRs -- are not. Mixing the
+    two corrupts the metabolite's z at ANY aggregation weight, so the plain
+    twins are removed from scoring before any downstream stage sees them.
+
+    The rule is class-level and label-blind: it reads only column naming
+    and resolved HMDB identity, never flag performance. Tagged-vs-tagged
+    pairs sharing an ID are both kept (both are confirmed; scale^2
+    weighting handles their relative noise). Manual overrides are also
+    identity claims, so they confer the same precedence as a tag.
+
+    Args:
+        feature_to_hmdb: output of :func:`match_features_to_hmdb`.
+        feature_columns: the dataset feature column names (for the
+            tagged-column classification).
+
+    Returns:
+        Tuple ``(curated, dropped)``: the feature->HMDB table without the
+        superseded plain twins, and a per-dropped-feature table with
+        columns ``feature``, ``hmdb_id``, ``superseded_by``.
+    """
+    if feature_to_hmdb.empty:
+        return feature_to_hmdb.copy(), pd.DataFrame(
+            columns=["feature", "hmdb_id", "superseded_by"])
+
+    is_confirmed = {col: (_split_feature_name_and_hmdb(col) is not None)
+                    for col in feature_columns}
+    override_features = set(feature_to_hmdb.loc[
+        feature_to_hmdb["match_method"] == "override", "feature"])
+    for col in override_features:
+        is_confirmed[col] = True
+
+    matched = feature_to_hmdb[feature_to_hmdb["hmdb_id"].notna()]
+    all_by_id = (matched.groupby("hmdb_id")["feature"]
+                 .agg(lambda s: sorted(set(s))).to_dict())
+
+    drop_rows = []
+    drop_features = set()
+    for acc, twins in all_by_id.items():
+        confirmed = [t for t in twins if is_confirmed.get(t, False)]
+        plain = [t for t in twins if not is_confirmed.get(t, False)]
+        if not confirmed or not plain:
+            continue
+        survivor = confirmed[0]
+        for feat in plain:
+            drop_rows.append({
+                "feature": feat,
+                "hmdb_id": acc,
+                "superseded_by": survivor,
+            })
+            drop_features.add(feat)
+
+    dropped = pd.DataFrame(drop_rows,
+                           columns=["feature", "hmdb_id", "superseded_by"])
+    curated = feature_to_hmdb[~feature_to_hmdb["feature"].isin(drop_features)]
+
+    if len(dropped):
+        logger.info(f"Identity curation: dropped {len(dropped)} plain-named "
+                    f"feature(s) superseded by a standard-confirmed "
+                    f"(.HMDB-tagged) twin sharing the same metabolite; "
+                    f"{curated['feature'].nunique()} features remain matched.")
+        for r in dropped.sort_values("feature").itertuples():
+            logger.debug(f"  dropped {r.feature} (HMDB {r.hmdb_id}) in "
+                         f"favor of {r.superseded_by}")
+    return curated, dropped

@@ -85,6 +85,24 @@ Normalization folds Greek symbols and spelled-out Greek words to a single
 canonical token and lipid-shorthand `W` between digits to `OMEGA`, so e.g.
 `PS(18:2ω6/24:1ω9)` == `PS(18:2W6/24:1W9)` == `PS(18:2omega6)`.
 
+### Identity curation (`prefer_tagged_features`)
+
+Feature columns carrying a trailing `.HMDB########` tag are identified by
+pure-standard injection upstream, so within a resolved metabolite the
+tagged feature is definitely the molecule described. When a plain-named
+feature resolves to the same HMDB ID (a co-eluting interloper caught by
+name matching, typically with a razor-thin reference IQR -- e.g. plain
+`Argininosuccinic acid` at IQR 0.075 vs its tagged twin at 1.13), the
+plain twin is dropped from scoring **before any downstream stage sees
+it**: the metabolite's z then comes from the confirmed feature alone,
+instead of averaging a real measurement with a wrong-compound measurement
+at any weight. Tagged-vs-tagged pairs sharing an ID are both kept (both
+confirmed; scale² weighting handles their relative noise), and manual
+overrides carry the same precedence as a tag. The rule is class-level and
+label-blind (column naming and resolved identity only); dropped twins are
+written to `superseded_features.csv`. Set `prefer_tagged_features: false`
+to restore the old behavior of averaging all twins.
+
 ## Pathway Coverage Rule
 
 A pathway is kept only when the fraction of its PathBank-listed metabolites
@@ -181,6 +199,7 @@ Outputs are written to `outputs/pathway_pipeline/`:
 outputs/pathway_pipeline/
 ├── pathway_pipeline.log
 ├── feature_to_hmdb.csv        # feature -> HMDB accession(s) + match method
+├── superseded_features.csv   # plain twins dropped in favor of tagged twins
 ├── feature_to_pathway.csv     # (feature, pathway) links
 ├── pathway_coverage.csv       # per-pathway matched metabolites/features + coverage
 ├── cohort_split.csv           # per-sample development/validation assignment

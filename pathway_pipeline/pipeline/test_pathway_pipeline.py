@@ -23,6 +23,7 @@ from pathway_pipeline.pipeline.pathway_mapping import (
     link_features_to_pathways,
     pathway_coverage,
     filter_pathways_by_keywords,
+    prefer_tagged_features,
 )
 
 
@@ -358,9 +359,9 @@ def test_run_pipeline_wires_floor_overrides_demotion_and_weights(tmp_path):
         "ATP": list(rng.normal(2.0, 0.30, size=n)),
         # Razor-thin normal spread -> small_scale drop.
         "AMP": list(rng.normal(2.0, 0.01, size=n)),
-        # Pathway-mapped artifact feature (tagged to AMP's accession),
-        # demoted by config: z-scored but never scored.
-        "ARTIFACT.HMDB0000045": list(rng.normal(5.0, 0.3, size=n - 1)) + [9.0],
+        # Pathway-mapped artifact feature (tagged to SMP0000055's
+        # HMDB9999999 row), demoted by config: z-scored but never scored.
+        "ARTIFACT.HMDB9999999": list(rng.normal(5.0, 0.3, size=n - 1)) + [9.0],
         # Overridden feature: would otherwise be unmatched in this tiny
         # index; the override pins it to L-Alanine's accession.
         "(+)-Estrone": list(rng.normal(1.0, 0.3, size=n)),
@@ -381,7 +382,7 @@ def test_run_pipeline_wires_floor_overrides_demotion_and_weights(tmp_path):
         "min_pathway_coverage": 0.10,
         "min_reference_scale": 0.08,
         "feature_hmdb_overrides": {"(+)-Estrone": "HMDB0000161"},
-        "demoted_features": ["ARTIFACT.HMDB0000045"],
+        "demoted_features": ["ARTIFACT.HMDB9999999"],
         "min_pathway_features": 2,
         "scale_weighted_metabolites": True,
         "min_stouffer_metabolites": 2,
@@ -416,15 +417,15 @@ def test_run_pipeline_wires_floor_overrides_demotion_and_weights(tmp_path):
     assert estrone["match_method"] == "override"
 
     # Demoted feature keeps its z-scores but never reaches the scores.
-    assert "ARTIFACT.HMDB0000045" in set(zscores.columns)
+    assert "ARTIFACT.HMDB9999999" in set(zscores.columns)
     scores = result["pathway_scores"]
     scored_features = set(
         result["pathway_coverage_scored"]["matched_features"]
         .str.split(";").explode().dropna())
-    assert "ARTIFACT.HMDB0000045" not in scored_features
+    assert "ARTIFACT.HMDB9999999" not in scored_features
     # The demoted feature never contributes a metabolite flag either.
     mflags = pd.read_csv(tmp_path / "out" / "metabolite_flags.csv")
-    assert "ARTIFACT.HMDB0000045" not in set(mflags["metabolite"])
+    assert "ARTIFACT.HMDB9999999" not in set(mflags["metabolite"])
 
     # SMP0000055 lists ATP, L-Alanine, AMP; after the floor drops thin AMP
     # and demotion removes the artifact twin, ATP + L-Alanine remain.
@@ -517,3 +518,64 @@ def test_run_pipeline_keyword_exclusion_keeps_shared_features(tmp_path):
     # The exclusively-lipid feature has no kept pathway and vanishes from
     # scoring entirely.
     assert "DG(16:1(9Z)/22:0/0:0)" not in scored_features
+
+
+def test_prefer_tagged_features_drops_plain_twins():
+    f2h = pd.DataFrame([
+        # Standard-confirmed twin (tagged) + razor-thin plain twin: the
+        # Argininosuccinic acid shape.
+        {"feature": "Argininosuccinic acid.HMDB0000052", "hmdb_id": "HMDB0000052",
+         "match_method": "hmdb_tag", "n_hmdb_ids": 1},
+        {"feature": "Argininosuccinic acid", "hmdb_id": "HMDB0000052",
+         "match_method": "name_exact", "n_hmdb_ids": 1},
+        # Tagged-vs-tagged sharing an ID: both confirmed, both kept.
+        {"feature": "TwinA.HMDB0000001", "hmdb_id": "HMDB0000001",
+         "match_method": "hmdb_tag", "n_hmdb_ids": 1},
+        {"feature": "TwinB.HMDB0000001", "hmdb_id": "HMDB0000001",
+         "match_method": "hmdb_tag", "n_hmdb_ids": 1},
+        # Plain-only metabolite (no tagged twin): untouched.
+        {"feature": "Solo Metabolite", "hmdb_id": "HMDB0000002",
+         "match_method": "name_exact", "n_hmdb_ids": 1},
+        # Unmatched feature: untouched.
+        {"feature": "Unknown compound", "hmdb_id": None,
+         "match_method": "unmatched", "n_hmdb_ids": 0},
+    ])
+    cols = ["Argininosuccinic acid.HMDB0000052", "Argininosuccinic acid",
+            "TwinA.HMDB0000001", "TwinB.HMDB0000001",
+            "Solo Metabolite", "Unknown compound"]
+    curated, dropped = prefer_tagged_features(f2h, feature_columns=cols)
+    assert set(dropped["feature"]) == {"Argininosuccinic acid"}
+    assert dropped.iloc[0]["superseded_by"] == "Argininosuccinic acid.HMDB0000052"
+    assert set(curated["feature"]) == {
+        "Argininosuccinic acid.HMDB0000052",
+        "TwinA.HMDB0000001", "TwinB.HMDB0000001",
+        "Solo Metabolite", "Unknown compound"}
+
+
+def test_prefer_tagged_features_override_confers_precedence():
+    # The overridden plain feature is an identity claim too; it supersedes
+    # its name-matched plain twin.
+    f2h = pd.DataFrame([
+        {"feature": "Niacin", "hmdb_id": "HMDB0001488",
+         "match_method": "override", "n_hmdb_ids": 1},
+        {"feature": "Niacinamide.HMDB0001406", "hmdb_id": "HMDB0001406",
+         "match_method": "hmdb_tag", "n_hmdb_ids": 1},
+        {"feature": "Nicotinic acid(NA).HMDB0001488", "hmdb_id": "HMDB0001488",
+         "match_method": "hmdb_tag", "n_hmdb_ids": 1},
+    ])
+    cols = ["Niacin", "Niacinamide.HMDB0001406",
+            "Nicotinic acid(NA).HMDB0001488"]
+    curated, dropped = prefer_tagged_features(f2h, feature_columns=cols)
+    assert dropped.empty  # Niacin is itself confirmed via the override;
+    # its would-be plain twin does not exist in this fixture.
+    assert len(curated) == 3
+
+    # With a plain name-matched twin on the same ID, the override wins.
+    f2h2 = pd.concat([f2h, pd.DataFrame([
+        {"feature": "Nicotinic acid", "hmdb_id": "HMDB0001488",
+         "match_method": "name_exact", "n_hmdb_ids": 1},
+    ])], ignore_index=True)
+    cols2 = cols + ["Nicotinic acid"]
+    curated2, dropped2 = prefer_tagged_features(f2h2, feature_columns=cols2)
+    assert set(dropped2["feature"]) == {"Nicotinic acid"}
+    assert "Nicotinic acid" not in set(curated2["feature"])

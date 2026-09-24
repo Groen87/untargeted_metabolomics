@@ -34,6 +34,7 @@ from pathway_pipeline.pipeline.hmdb_parser import build_name_index
 from pathway_pipeline.pipeline.pathway_mapping import (
     load_pathbank_pathways,
     match_features_to_hmdb,
+    prefer_tagged_features,
     link_features_to_pathways,
     pathway_coverage,
     filter_pathways_by_keywords,
@@ -182,6 +183,21 @@ def run_pipeline(input_file: str,
         min_name_length=min_name_length,
         overrides=config.get("feature_hmdb_overrides", None),
     )
+    # Identity curation (label-blind, chemistry-based): .HMDB-tagged
+    # features are standard-confirmed upstream, so within a resolved
+    # metabolite they supersede plain-named twins (co-eluting
+    # interlopers caught by name matching). Runs before linking so no
+    # downstream stage ever sees the superseded twins.
+    superseded_features = pd.DataFrame(
+        columns=["feature", "hmdb_id", "superseded_by"])
+    if bool(config.get("prefer_tagged_features", True)):
+        feature_to_hmdb, superseded_features = prefer_tagged_features(
+            feature_to_hmdb, feature_columns=list(features.columns))
+        if bool(config.get("save_mapping_outputs", True)) \
+                and len(superseded_features):
+            superseded_features.to_csv(out / "superseded_features.csv",
+                                       index=False)
+            logger.info(f"Wrote superseded_features.csv to {out}")
 
     _log_section("STEP 4: Load PathBank pathways and link features to pathways")
     pathbank_file = config.get("pathbank_file", "data/pathbank_all_metabolites.csv")

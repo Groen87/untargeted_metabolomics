@@ -34,6 +34,21 @@ feature_hmdb_overrides:
   "Niacin": "HMDB0001488"
   "(+)-Estrone": "HMDB0000145"
 
+# Identity curation (label-blind, chemistry-based): feature columns whose
+# name carries a trailing .HMDB######## tag are identified by pure-standard
+# injection upstream, so within a resolved metabolite the tagged feature is
+# definitely the molecule described. Plain-named twins resolving to the
+# same HMDB ID (co-eluting interlopers caught by name matching, typically
+# with razor-thin reference IQRs, e.g. plain 'Argininosuccinic acid' at IQR
+# 0.075 vs the tagged twin at 1.13) are dropped from scoring before any
+# downstream stage sees them; the metabolite's z then comes from the
+# confirmed feature alone. Tagged-vs-tagged pairs sharing an ID are both
+# kept (both confirmed; scale^2 weighting handles their relative noise).
+# Manual overrides carry the same precedence as a tag. Dropped twins are
+# logged and written to superseded_features.csv. false restores the old
+# behavior of averaging all twins.
+prefer_tagged_features: true
+
 # ============================================================================
 # PathBank Pathways
 # ============================================================================
