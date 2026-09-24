@@ -16,7 +16,12 @@ from pathway_pipeline.pipeline.biomarkers import (
     resolve_biomarker_attachments,
     aggregate_metabolite_zscores,
     flag_biomarker_attachments,
+    load_disease_biomarker_table,
+    match_biomarker_names,
+    match_diseases_to_pathways,
+    resolve_disease_biomarker_table,
 )
+from pathway_pipeline.pipeline.name_utils import normalize_name
 
 
 def _attachments(path, rows):
@@ -162,13 +167,13 @@ def test_aggregate_skips_biomarker_without_zscored_feature():
 # Flagging
 # ---------------------------------------------------------------------------
 
-def _resolved():
+def _resolved(direction=""):
     return pd.DataFrame([
         {"smp_id": "SMP0000056", "pathway_name": "MCAD Deficiency",
-         "hmdb_id": "HMDB0000215", "source": "ref1",
+         "hmdb_id": "HMDB0000215", "source": "ref1", "direction": direction,
          "features": "Octanoylcarnitine", "n_features": 1},
         {"smp_id": "SMP0000055", "pathway_name": "Alanine Metabolism",
-         "hmdb_id": "HMDB0000161", "source": "ref2",
+         "hmdb_id": "HMDB0000161", "source": "ref2", "direction": direction,
          "features": "Alanine;Alanine.HMDB0000161", "n_features": 2},
     ])
 
@@ -192,8 +197,8 @@ def test_flag_biomarker_channel_flags_spike_and_ors():
         threshold_percentile=99.0)
     assert not flags.empty
     assert set(flags.columns) == {"sample_id", "smp_id", "pathway_name",
-                                  "hmdb_id", "abs_z", "threshold", "excess",
-                                  "flagged"}
+                                  "hmdb_id", "direction", "abs_z",
+                                  "threshold", "excess", "flagged"}
     flagged = flags[flags["flagged"]]
     # Both spiked samples flag through the MCAD pathway attachment (a few
     # normal pairs may exceed their own 99th-percentile threshold -- the
@@ -216,3 +221,151 @@ def test_flag_biomarker_channel_empty_inputs():
         pd.DataFrame(), _resolved(), _f2h(), normal_mask=pd.Series(dtype=bool))
     assert flags.empty
     assert summary.empty
+
+
+# ---------------------------------------------------------------------------
+# Direction handling
+# ---------------------------------------------------------------------------
+
+def test_flag_direction_up_ignores_decrease():
+    rng = np.random.default_rng(8)
+    n = 40
+    z = rng.normal(0, 1, size=(n, 2))
+    zscores = pd.DataFrame(
+        z, index=[f"s{i}" for i in range(n)],
+        columns=["Alanine", "Octanoylcarnitine"])
+    normal_mask = pd.Series([True] * (n - 2) + [False, False],
+                            index=zscores.index)
+    # One sample drops octanoylcarnitine hard (z = -12): for an 'up'
+    # biomarker this must NOT flag; for a 'down' biomarker it must.
+    zscores.loc[zscores.index[-2], "Octanoylcarnitine"] = -12.0
+    # Another sample spikes it up (z = +12): must flag under 'up'.
+    zscores.loc[zscores.index[-1], "Octanoylcarnitine"] = 12.0
+
+    up_flags, up_summary = flag_biomarker_attachments(
+        zscores, _resolved(direction="up"), _f2h(),
+        normal_mask=normal_mask, threshold_percentile=99.0)
+    down_flags, down_summary = flag_biomarker_attachments(
+        zscores, _resolved(direction="down"), _f2h(),
+        normal_mask=normal_mask, threshold_percentile=99.0)
+
+    up_bio = up_flags[(up_flags["hmdb_id"] == "HMDB0000215")
+                      & up_flags["flagged"]]["sample_id"]
+    down_bio = down_flags[(down_flags["hmdb_id"] == "HMDB0000215")
+                          & down_flags["flagged"]]["sample_id"]
+    # 'up': only the spiked sample flags; the dropped sample does not.
+    assert zscores.index[-1] in set(up_bio)
+    assert zscores.index[-2] not in set(up_bio)
+    # 'down': only the dropped sample flags.
+    assert zscores.index[-2] in set(down_bio)
+    assert zscores.index[-1] not in set(down_bio)
+
+
+# ---------------------------------------------------------------------------
+# Disease biomarker table (Excel/CSV source)
+# ---------------------------------------------------------------------------
+
+def test_load_disease_table_csv_and_directions(tmp_path):
+    csv = tmp_path / "disease_table.csv"
+    csv.write_text(
+        "Disease,Biomarker,Direction,Source\n"
+        "MCAD deficiency,Octanoylcarnitine,up,ref1\n"
+        "MCAD deficiency,Alanine,Elevated,ref1\n"
+        "Some disease,Alanine,reduced,ref2\n"
+        "Some disease,Alanine,weird-label,ref2\n"
+        ",Alanine,up,ref3\n"
+        "Some disease,,up,ref4\n",
+        encoding="utf-8")
+    table = load_disease_biomarker_table(str(csv))
+    assert len(table) == 4
+    assert set(table["direction"]) == {"up", "down", ""}
+
+
+def test_load_disease_table_missing_file(tmp_path):
+    table = load_disease_biomarker_table(str(tmp_path / "missing.xlsx"))
+    assert table.empty
+    assert list(table.columns) == ["disease", "biomarker", "direction",
+                                   "source"]
+
+
+def test_match_biomarker_names_chain():
+    table = pd.DataFrame([
+        {"disease": "MCAD deficiency", "biomarker": "octanoyl-carnitine",
+         "direction": "up", "source": "ref1"},
+        {"disease": "MCAD deficiency", "biomarker": "Unknown metabolite",
+         "direction": "up", "source": "ref1"},
+    ])
+    name_index = {
+        normalize_name("Octanoylcarnitine"): {"HMDB0000215"},
+        normalize_name("Octanoyl-L-carnitine"): {"HMDB0000215"},
+        normalize_name("L-Alanine"): {"HMDB0000161"},
+    }
+    matched = match_biomarker_names(
+        table, name_index,
+        overrides={"Unknown metabolite": "HMDB0000161"})
+    by_name = {r["biomarker"]: r for _, r in matched.iterrows()}
+    # 'octanoyl-carnitine' resolves loosely to the accession.
+    assert by_name["octanoyl-carnitine"]["hmdb_id"] == "HMDB0000215"
+    assert by_name["octanoyl-carnitine"]["match_method"] in ("name_exact",
+                                                             "name_loose")
+    # The override wins over the failed name chain.
+    assert by_name["Unknown metabolite"]["hmdb_id"] == "HMDB0000161"
+    assert by_name["Unknown metabolite"]["match_method"] == "override"
+
+
+def test_match_diseases_to_pathways_exact_substring_ambiguous():
+    coverage = pd.DataFrame([
+        {"smp_id": "SMP0000056", "pathway_name": "Medium-Chain Acyl-CoA "
+         "Dehydrogenase Deficiency"},
+        {"smp_id": "SMP0000057", "pathway_name": "Short-Chain Acyl-CoA "
+         "Dehydrogenase Deficiency"},
+        {"smp_id": "SMP0000055", "pathway_name": "Alanine Metabolism"},
+    ])
+    table = pd.DataFrame([
+        {"disease": "Medium-Chain Acyl-CoA Dehydrogenase Deficiency",
+         "biomarker": "Octanoylcarnitine", "direction": "up",
+         "source": "ref1"},
+        {"disease": "alanine metabolism", "biomarker": "Alanine",
+         "direction": "", "source": "ref2"},
+        {"disease": "Acyl-CoA Dehydrogenase", "biomarker": "Alanine",
+         "direction": "", "source": "ref3"},
+        {"disease": "Not A Real Disease", "biomarker": "Alanine",
+         "direction": "", "source": "ref4"},
+    ])
+    matched = match_diseases_to_pathways(table, coverage)
+    by_disease = matched.groupby("disease")["match_method"].agg(set)
+    assert by_disease["Medium-Chain Acyl-CoA Dehydrogenase Deficiency"] \
+        == {"exact"}
+    assert by_disease["alanine metabolism"] == {"exact"}
+    # 'Acyl-CoA Dehydrogenase' is a substring of two pathway names ->
+    # ambiguous, never silently matched.
+    assert by_disease["Acyl-CoA Dehydrogenase"] == {"ambiguous"}
+    assert by_disease["Not A Real Disease"] == {"unmatched"}
+    assert (matched.loc[matched["match_method"] == "exact",
+                        "smp_id"].notna()).all()
+
+
+def test_resolve_disease_table_joins_to_directional_attachments():
+    table = pd.DataFrame([
+        {"disease": "MCAD deficiency", "biomarker": "Octanoylcarnitine",
+         "direction": "up", "source": "ref1"},
+        {"disease": "Not A Real Disease", "biomarker": "Octanoylcarnitine",
+         "direction": "up", "source": "ref1"},
+    ])
+    disease_matches = pd.DataFrame([
+        {"disease": "MCAD deficiency", "smp_id": "SMP0000056",
+         "pathway_name": "MCAD Deficiency", "match_method": "exact"},
+        {"disease": "Not A Real Disease", "smp_id": None,
+         "pathway_name": None, "match_method": "unmatched"},
+    ])
+    biomarker_matches = pd.DataFrame([
+        {"biomarker": "Octanoylcarnitine", "hmdb_id": "HMDB0000215",
+         "match_method": "name_exact", "n_hmdb_ids": 1},
+    ])
+    attachments = resolve_disease_biomarker_table(
+        table, disease_matches, biomarker_matches)
+    assert len(attachments) == 1
+    row = attachments.iloc[0]
+    assert row["smp_id"] == "SMP0000056"
+    assert row["hmdb_id"] == "HMDB0000215"
+    assert row["direction"] == "up"

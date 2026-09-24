@@ -61,6 +61,10 @@ from pathway_pipeline.pipeline.calibration import (
 )
 from pathway_pipeline.pipeline.biomarkers import (
     load_biomarker_attachments,
+    load_disease_biomarker_table,
+    match_biomarker_names,
+    match_diseases_to_pathways,
+    resolve_disease_biomarker_table,
     resolve_biomarker_attachments,
     flag_biomarker_attachments,
 )
@@ -329,11 +333,50 @@ def run_pipeline(input_file: str,
     biomarker_attachments = None
     biomarker_features = []
     if bool(config.get("biomarker_channel.enable", True)):
-        attachments_file = config.get(
-            "biomarker_channel.attachments_file",
-            "data/pathway_biomarker_attachments.csv")
-        biomarker_attachments = load_biomarker_attachments(attachments_file)
-        if not biomarker_attachments.empty:
+        # Source 1: disease biomarker table (Excel/CSV from the literature
+        # curator) -- the pipeline resolves biomarker NAMES to HMDB via the
+        # same matching chain as feature names, and DISEASE names to kept
+        # pathways; the full match audit is written to CSV for review
+        # BEFORE the table is frozen.
+        disease_table_file = config.get(
+            "biomarker_channel.disease_table_file", None)
+        if disease_table_file:
+            disease_table = load_disease_biomarker_table(disease_table_file)
+            if not disease_table.empty:
+                biomarker_matches = match_biomarker_names(
+                    disease_table, name_index,
+                    overrides=config.get(
+                        "biomarker_hmdb_overrides", None))
+                disease_matches = match_diseases_to_pathways(
+                    disease_table, coverage)
+                if bool(config.get("save_mapping_outputs", True)):
+                    audit = disease_table.merge(
+                        biomarker_matches.rename(columns={
+                            "match_method": "biomarker_match_method",
+                            "features": "dataset_features"}),
+                        on="biomarker", how="left").merge(
+                        disease_matches.rename(columns={
+                            "match_method": "disease_match_method"}),
+                        on="disease", how="left")
+                    audit.to_csv(out / "disease_table_audit.csv",
+                                 index=False)
+                    logger.info("Wrote disease_table_audit.csv to "
+                                f"{out} -- review unmatched/ambiguous "
+                                "names before freezing the table.")
+                biomarker_attachments = resolve_disease_biomarker_table(
+                    disease_table, disease_matches, biomarker_matches)
+        # Source 2: resolved attachments CSV (smp_id/pathway_name +
+        # hmdb_id already known) -- used when the disease table is absent
+        # or as a curated complement.
+        if biomarker_attachments is None or biomarker_attachments.empty:
+            attachments_file = config.get(
+                "biomarker_channel.attachments_file",
+                "data/pathway_biomarker_attachments.csv")
+            resolved_table = load_biomarker_attachments(attachments_file)
+            if not resolved_table.empty:
+                biomarker_attachments = resolved_table
+        if biomarker_attachments is not None \
+                and not biomarker_attachments.empty:
             _, biomarker_features = resolve_biomarker_attachments(
                 biomarker_attachments, feature_to_hmdb, coverage)
     if biomarker_features:
