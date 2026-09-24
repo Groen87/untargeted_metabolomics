@@ -583,7 +583,8 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
                             normal_mask: pd.Series,
                             threshold_percentile: float = 99.0,
                             feature_scale_weights: Dict[str, float] = None,
-                            max_sample_p: float = 0.05
+                            max_sample_p: float = 0.05,
+                            ratio_tests: pd.DataFrame = None
                             ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Flag samples through disease-keyed, direction-aware biomarkers.
 
@@ -601,6 +602,14 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
     ``max_sample_p``. The channel flags the sample when ANY disease
     flags.
 
+    ``ratio_tests`` (columns ``disease``, ``ratio``, ``direction``)
+    adds declared diagnostic ratios (e.g. acylcarnitine C8/C2 for
+    MCADD) as extra (disease, ratio) tests scored directly from the
+    z-score matrix -- ratios have no HMDB identity, so they bypass
+    the feature aggregation and use their own ratio column's z-score.
+    Ratio tests join the SAME global depth null, so the channel's
+    multiple-testing budget is not inflated by adding them.
+
     Returns:
         Tuple ``(flags, summary)``: ``flags`` with one row per (sample,
         disease, biomarker) carrying ``abs_z`` (directed magnitude),
@@ -616,24 +625,30 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
     summary_cols = ["sample_id", "biomarker_flagged", "n_flagged_biomarkers",
                     "biomarker_depth_p", "max_biomarker_z", "top_biomarker",
                     "top_disease"]
-    if resolved.empty or zscores.empty:
+    ratio_rows = (ratio_tests.drop_duplicates(subset=["disease", "ratio"])
+                  if ratio_tests is not None and not ratio_tests.empty
+                  else pd.DataFrame(columns=["disease", "ratio",
+                                             "direction"]))
+    if ((resolved.empty and ratio_rows.empty) or zscores.empty):
         return (pd.DataFrame(columns=flag_cols),
                 pd.DataFrame(columns=summary_cols))
 
-    biomarker_z = aggregate_metabolite_zscores(
-        zscores, feature_to_hmdb, list(resolved["hmdb_id"].unique()),
-        feature_scale_weights=feature_scale_weights)
-    biomarker_z = biomarker_z.dropna(axis=1, how="all")
-    if biomarker_z.empty:
-        return (pd.DataFrame(columns=flag_cols),
-                pd.DataFrame(columns=summary_cols))
-
+    if resolved.empty:
+        biomarker_z = pd.DataFrame(index=zscores.index)
+    else:
+        biomarker_z = aggregate_metabolite_zscores(
+            zscores, feature_to_hmdb, list(resolved["hmdb_id"].unique()),
+            feature_scale_weights=feature_scale_weights)
+        biomarker_z = biomarker_z.dropna(axis=1, how="all")
     dedup = normal_mask[~normal_mask.index.duplicated(keep="first")]
-    normal_values = biomarker_z.abs()[dedup.reindex(biomarker_z.index,
-                                                    fill_value=False)]
-    with np.errstate(all="ignore"):
-        thresholds = normal_values.quantile(threshold_percentile / 100.0,
-                                            axis=0).fillna(float("inf"))
+    if biomarker_z.empty:
+        thresholds = pd.Series(dtype=float)
+    else:
+        normal_values = biomarker_z.abs()[dedup.reindex(biomarker_z.index,
+                                                        fill_value=False)]
+        with np.errstate(all="ignore"):
+            thresholds = normal_values.quantile(
+                threshold_percentile / 100.0, axis=0).fillna(float("inf"))
 
     # One GLOBAL directed-z matrix across all (disease, biomarker)
     # tests: the depth null must span every test the channel runs.
@@ -642,26 +657,59 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
     # 0.05 => ~97%). Diseases stay in the output for attribution only.
     test_columns = []
     column_meta = []
-    for _, row in resolved.drop_duplicates(
-            subset=["disease", "hmdb_id"]).iterrows():
-        hmdb_id = row["hmdb_id"]
-        if hmdb_id not in biomarker_z.columns:
+    ratio_thresholds = {}
+    if not biomarker_z.empty:
+        for _, row in resolved.drop_duplicates(
+                subset=["disease", "hmdb_id"]).iterrows():
+            hmdb_id = row["hmdb_id"]
+            if hmdb_id not in biomarker_z.columns:
+                continue
+            z = biomarker_z[hmdb_id]
+            direction = row["direction"]
+            if direction == "up":
+                directed_col = z.clip(lower=0)
+            elif direction == "down":
+                directed_col = (-z).clip(lower=0)
+            else:
+                directed_col = z.abs()
+            test_columns.append(directed_col)
+            column_meta.append({
+                "test_id": len(test_columns) - 1,
+                "disease": row["disease"], "biomarker": row.get("biomarker"),
+                "hmdb_id": hmdb_id,
+                "direction": direction, "smp_id": row["smp_id"],
+                "pathway_name": row["pathway_name"]})
+    for _, row in ratio_rows.iterrows():
+        ratio_name = str(row["ratio"]).strip()
+        if ratio_name not in zscores.columns:
+            logger.warning(
+                f"Ratio biomarker '{ratio_name}' for disease "
+                f"'{row['disease']}' has no z-scored column; "
+                "test skipped.")
             continue
-        z = biomarker_z[hmdb_id]
-        direction = row["direction"]
+        z = zscores[ratio_name]
+        direction = str(row.get("direction") or "").strip().lower()
         if direction == "up":
             directed_col = z.clip(lower=0)
         elif direction == "down":
             directed_col = (-z).clip(lower=0)
         else:
             directed_col = z.abs()
+        normal_z = z[dedup.reindex(z.index, fill_value=False)].abs().dropna()
+        ratio_thr = (float(np.nanquantile(
+            normal_z, threshold_percentile / 100.0))
+            if len(normal_z) else float("inf"))
+        ratio_thresholds[ratio_name] = ratio_thr
         test_columns.append(directed_col)
         column_meta.append({
             "test_id": len(test_columns) - 1,
-            "disease": row["disease"], "biomarker": row.get("biomarker"),
-            "hmdb_id": hmdb_id,
-            "direction": direction, "smp_id": row["smp_id"],
-            "pathway_name": row["pathway_name"]})
+            "disease": row["disease"], "biomarker": ratio_name,
+            "hmdb_id": ratio_name,
+            "direction": direction, "smp_id": None,
+            "pathway_name": None})
+    if not test_columns:
+        return (pd.DataFrame(columns=flag_cols),
+                pd.DataFrame(columns=summary_cols))
     if not test_columns:
         return (pd.DataFrame(columns=flag_cols),
                 pd.DataFrame(columns=summary_cols))
@@ -673,7 +721,9 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
     # the depth null is ONE global test: the maximum directed z over all
     # (disease, biomarker) tests.
     thr_by_test = np.asarray(
-        [thresholds.get(m["hmdb_id"], float("inf"))
+        [ratio_thresholds[m["hmdb_id"]]
+         if m["hmdb_id"] in ratio_thresholds
+         else thresholds.get(m["hmdb_id"], float("inf"))
          for m in column_meta], dtype=float)
     directed_arr = directed.values
     sample_max = np.nanmax(directed_arr, axis=1)

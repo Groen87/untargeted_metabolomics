@@ -645,6 +645,19 @@ def run_pipeline(input_file: str,
     # (disease, biomarker). Label-blind by construction.
     # ------------------------------------------------------------------
     biomarker_flags = None
+    ratio_biomarker_specs = config.get(
+        "biomarker_channel.ratio_biomarkers", None) or []
+    ratio_biomarker_tests = None
+    if ratio_biomarker_specs:
+        ratio_biomarker_tests = pd.DataFrame(ratio_biomarker_specs)[
+            ["disease", "ratio", "direction"]]
+        missing = [t for t in ratio_biomarker_tests["ratio"]
+                   if t not in set(zscores_scored.columns)]
+        if missing:
+            logger.warning(
+                f"{len(missing)} declared ratio biomarker(s) have no "
+                f"z-scored column (not derived at STEP 1b?): "
+                f"{sorted(set(missing))}")
     feature_scale_weights = None
     if (bool(config.get("scale_weighted_metabolites", True))
             and not reference_stats.empty):
@@ -664,6 +677,7 @@ def run_pipeline(input_file: str,
                 config.get("biomarker_channel.threshold_percentile", 99.0)),
             feature_scale_weights=feature_scale_weights,
             max_sample_p=float(config.get("max_sample_p", 0.05)),
+            ratio_tests=ratio_biomarker_tests,
         )
     elif (biomarker_attachments is not None
             and not biomarker_attachments.empty

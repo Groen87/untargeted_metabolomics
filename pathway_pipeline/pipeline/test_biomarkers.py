@@ -344,6 +344,48 @@ def test_flag_disease_biomarkers_direction_and_disease_groups(tmp_path):
     assert int(normal_rows["n_flagged_biomarkers"].sum()) <= 3
 
 
+def test_flag_disease_biomarkers_ratio_tests():
+    """Declared ratio tests join the channel: direction-aware, in the
+    same global depth null, and attributed to their disease."""
+    rng = np.random.default_rng(5)
+    n = 40
+    zscores = pd.DataFrame(
+        rng.normal(0, 1, size=(n, 2)),
+        index=[f"s{i}" for i in range(n)],
+        columns=["C8/C2", "Glucose.HMDB0000122"])
+    normal_mask = pd.Series(
+        [True] * (n - 2) + [False, False], index=zscores.index)
+    zscores.loc["s38", "C8/C2"] = 12.0
+    # Wrong direction: C8/C2 DOWN must not flag the 'up' disease.
+    zscores.loc["s39", "C8/C2"] = -12.0
+    resolved = pd.DataFrame(columns=[
+        "disease", "biomarker", "hmdb_id", "direction", "omim",
+        "smp_id", "pathway_name", "source", "features", "n_features"])
+    ratio_tests = pd.DataFrame([
+        {"disease": "MCAD deficiency", "ratio": "C8/C2", "direction": "up"},
+        {"disease": "MCAD deficiency", "ratio": "C8/C10", "direction": "up"},
+    ])
+    # C8/C10 has no z-scored column: the test must be skipped loudly,
+    # not silently scored as zeros.
+    f2h = pd.DataFrame({"feature": ["C8/C2"], "hmdb_id": [None]})
+    flags, summary = flag_disease_biomarkers(
+        zscores, resolved, f2h, normal_mask=normal_mask,
+        threshold_percentile=99.0, max_sample_p=0.05,
+        ratio_tests=ratio_tests)
+    flagged = flags[flags["flagged"]]
+    assert "C8/C2" in set(flagged.loc[flagged["sample_id"] == "s38",
+                                      "biomarker"])
+    assert flags.loc[(flags["sample_id"] == "s38")
+                     & (flags["biomarker"] == "C8/C2"), "disease"].iloc[0] \
+        == "MCAD deficiency"
+    assert "s39" not in set(flagged["sample_id"])
+    row = summary[summary["sample_id"] == "s38"].iloc[0]
+    assert bool(row["biomarker_flagged"])
+    assert row["top_disease"] == "MCAD deficiency"
+    assert row["top_biomarker"] == "C8/C2"
+    assert flags[flags["biomarker"] == "C8/C10"].empty
+
+
 def test_flag_disease_biomarkers_empty_inputs():
     flags, summary = flag_disease_biomarkers(
         pd.DataFrame(), pd.DataFrame(columns=["disease", "hmdb_id"]),

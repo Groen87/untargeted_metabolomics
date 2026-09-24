@@ -350,6 +350,44 @@ biomarker_channel:
   # hmdb_id already known) -- used when the disease table is absent, or
   # alongside it as a complement.
   attachments_file: "data/pathway_biomarker_attachments.csv"
+  # Source 3: declared diagnostic-ratio tests. Each entry makes a
+  # derived ratio (from ratio_features) an extra direction-aware
+  # (disease, ratio) test in this channel -- scored directly from the
+  # ratio's own z-score (ratios have no HMDB identity, so they bypass
+  # the metabolite aggregation), thresholded at the ratio's own
+  # normal-percentile, and joined into the SAME global depth null as
+  # the IEMbase tests, so the multiple-testing budget is NOT inflated.
+  # The disease names below should match the IEMbase table's disease
+  # naming so top_disease attribution stays consistent; the direction
+  # is the textbook direction of the ratio in that disease. Frozen
+  # config declared from textbook chemistry, never from flag
+  # performance. A ratio missing from ratio_features is skipped with a
+  # warning (visible in the run log).
+  ratio_biomarkers:
+    - disease: "Medium-chain acyl-CoA dehydrogenase deficiency"
+      ratio: "C8/C2"
+      direction: "up"
+    - disease: "Medium-chain acyl-CoA dehydrogenase deficiency"
+      ratio: "C8/C10"
+      direction: "up"
+    - disease: "Very-long-chain acyl-CoA dehydrogenase deficiency"
+      ratio: "C14:1/C2"
+      direction: "up"
+    - disease: "Very-long-chain acyl-CoA dehydrogenase deficiency"
+      ratio: "C14:1/C12:1"
+      direction: "up"
+    - disease: "Propionic aciduria"
+      ratio: "C3/C2"
+      direction: "up"
+    - disease: "Methylmalonic aciduria"
+      ratio: "C3/C2"
+      direction: "up"
+    - disease: "Carnitine palmitoyltransferase I deficiency"
+      ratio: "C0/(C16+C18)"
+      direction: "up"
+    - disease: "Carnitine palmitoyltransferase II deficiency"
+      ratio: "(C16+C18:1)/C2"
+      direction: "up"
   threshold_percentile: 99.0
 
 # STEP 9: label-blind development QC (calibration check, noise floor,
