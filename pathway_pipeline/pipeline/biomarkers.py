@@ -629,6 +629,17 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
                   if ratio_tests is not None and not ratio_tests.empty
                   else pd.DataFrame(columns=["disease", "ratio",
                                              "direction"]))
+    if not ratio_rows.empty and not resolved.empty:
+        known = set(resolved["disease"].dropna().astype(str).str.strip())
+        unknown = sorted({str(d).strip() for d in ratio_rows["disease"]}
+                         - known)
+        if unknown:
+            logger.warning(
+                f"{len(unknown)} ratio-test disease name(s) not found in "
+                "the IEMbase table (check the spelling; the test still "
+                "scores but its evidence stays attributed to this name "
+                "instead of merging with the disease's metabolite tests): "
+                + "; ".join(unknown))
     if ((resolved.empty and ratio_rows.empty) or zscores.empty):
         return (pd.DataFrame(columns=flag_cols),
                 pd.DataFrame(columns=summary_cols))

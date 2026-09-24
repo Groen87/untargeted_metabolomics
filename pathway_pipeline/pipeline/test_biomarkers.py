@@ -386,6 +386,55 @@ def test_flag_disease_biomarkers_ratio_tests():
     assert flags[flags["biomarker"] == "C8/C10"].empty
 
 
+def test_flag_disease_biomarkers_ratio_disease_spelling_warning(caplog):
+    """A ratio-test disease name absent from the IEMbase table warns:
+    the test still scores, but its evidence is attributed to the
+    unmatched spelling instead of merging with the disease's
+    metabolite tests."""
+    import logging
+    rng = np.random.default_rng(7)
+    n = 40
+    zscores = pd.DataFrame(
+        rng.normal(0, 1, size=(n, 2)),
+        index=[f"s{i}" for i in range(n)],
+        columns=["C8/C2", "Glucose.HMDB0000122"])
+    normal_mask = pd.Series(
+        [True] * (n - 1) + [False], index=zscores.index)
+    zscores.loc["s39", "C8/C2"] = 12.0
+    resolved = pd.DataFrame([{
+        "disease": "Medium-chain acyl-CoA dehydrogenase deficiency",
+        "biomarker": "Octanoylcarnitine", "hmdb_id": "HMDB0000791",
+        "direction": "up", "omim": "", "smp_id": "SMP0000055",
+        "pathway_name": "Alanine Metabolism", "source": "IEMbase",
+        "features": "Octanoylcarnitine.HMDB0000791", "n_features": 1,
+    }])
+    ratio_tests = pd.DataFrame([
+        {"disease": "Medium-chain acyl-CoA dehydrogenase deficiency",
+         "ratio": "C8/C2", "direction": "up"},
+        {"disease": "MCAD deficiency (misspelled)",
+         "ratio": "C8/C2", "direction": "up"},
+    ])
+    f2h = pd.DataFrame(
+        {"feature": ["Octanoylcarnitine.HMDB0000791"],
+         "hmdb_id": ["HMDB0000791"]})
+    with caplog.at_level(logging.WARNING,
+                          logger="pathway_pipeline.pipeline.biomarkers"):
+        flags, summary = flag_disease_biomarkers(
+            zscores, resolved, f2h, normal_mask=normal_mask,
+            threshold_percentile=99.0, max_sample_p=0.05,
+            ratio_tests=ratio_tests)
+    spelling = [r for r in caplog.records
+                if "ratio-test disease name" in r.getMessage()]
+    assert len(spelling) == 1
+    assert "MCAD deficiency (misspelled)" in spelling[0].getMessage()
+    # The matched spelling raises no warning of its own.
+    assert "Medium-chain acyl-CoA" not in spelling[0].getMessage()
+    # Both tests still score under their own disease names.
+    diseases = set(flags.loc[flags["biomarker"] == "C8/C2", "disease"])
+    assert "MCAD deficiency (misspelled)" in diseases
+    assert "Medium-chain acyl-CoA dehydrogenase deficiency" in diseases
+
+
 def test_flag_disease_biomarkers_empty_inputs():
     flags, summary = flag_disease_biomarkers(
         pd.DataFrame(), pd.DataFrame(columns=["disease", "hmdb_id"]),
