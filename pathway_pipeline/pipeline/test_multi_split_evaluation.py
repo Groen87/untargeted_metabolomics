@@ -61,7 +61,7 @@ def _write_inputs(tmp_path):
 def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
     input_csv, config_path = _write_inputs(tmp_path)
     out_root = tmp_path / "ms"
-    runs, missed = run_multi_split_evaluation(
+    runs, missed, stability = run_multi_split_evaluation(
         input_file=input_csv,
         config_path=config_path,
         output_dir=str(out_root),
@@ -93,7 +93,14 @@ def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
         sel = agg[agg["metric"] == metric].iloc[0]
         assert sel["n_seeds"] == 2
         assert sel["min"] <= sel["mean"] <= sel["max"]
-    _write_report(out_root, [21, 22], runs, agg, missed)
+    assert list(stability["n_splits"].unique()) == [2]
+    assert (stability["flag_rate"] <= 1.0).all()
+    assert (stability["flag_rate"] >= 0.0).all()
+    assert stability["flag_rate"].is_monotonic_decreasing
+    n_samples = runs["n_normal"].iloc[0] + runs["n_imd"].iloc[0] \
+        + runs["n_other"].iloc[0]
+    assert len(stability) == n_samples
+    _write_report(out_root, [21, 22], runs, agg, missed, stability)
     report = (out_root / "MULTI_SPLIT_REPORT.md").read_text()
     assert "Multi-Split Evaluation Report" in report
     assert "sensitivity" in report

@@ -34,6 +34,17 @@ Outputs (default outputs/multi_split_evaluation/)
 - runs/multi_split_aggregate.csv     mean/median/sd/min/max per metric
 - runs/missed_imd_evidence.csv       every missed IMD with its evidence,
                                      one row per (seed, sample)
+- runs/sample_flag_stability.csv     per sample across ALL splits: in how
+                                     many of the pre-declared splits the
+                                     sample flagged (flag_rate), per-channel
+                                     counts, and modal evidence. Sorted by
+                                     flag_rate -- the top rows are the
+                                     robust flags. Unknown/unlabeled samples
+                                     sit in group 'other' and are scored like
+                                     anyone else (flagging never uses
+                                     labels), so this table is where to find
+                                     robustly flagged unknowns for clinical
+                                     chart review.
 - MULTI_SPLIT_REPORT.md              human-readable write-up summary
 - per_seed/seed_<seed>/              full pipeline outputs for each split
                                      (includes each seed's
@@ -145,7 +156,12 @@ def _missed_imds(decisions: pd.DataFrame, validation: pd.Series,
 
 def run_multi_split_evaluation(input_file: str, config_path: str,
                                output_dir: str, seeds: list) -> pd.DataFrame:
-    """Run the frozen pipeline per pre-declared seed; evaluate validation."""
+    """Run the frozen pipeline per pre-declared seed; evaluate validation.
+
+    Returns ``(runs, missed, stability)`` where ``runs`` holds per-seed
+    validation-half metrics, ``missed`` the missed-IMD evidence rows, and
+    ``stability`` the per-sample flag counts across all splits.
+    """
     out_root = Path(output_dir)
     runs_dir = out_root / "runs"
     per_seed = out_root / "per_seed"
@@ -155,6 +171,7 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
     pre_handlers = list(pipeline_logger.handlers)
     rows = []
     missed_frames = []
+    per_sample_frames = []
     for seed in seeds:
         seed_dir = per_seed / f"seed_{seed}"
         seed_dir.mkdir(parents=True, exist_ok=True)
@@ -187,6 +204,15 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
         seed_missed = _missed_imds(decisions, validation, seed)
         missed_frames.append(seed_missed)
         row["n_missed_imd"] = len(seed_missed)
+        stability_cols = [c for c in ("sample_id", "group", "flagged",
+                                      "flagged_pathway_channel",
+                                      "biomarker_flagged", "top_excess",
+                                      "top_pathway_name", "top_biomarker",
+                                      "top_disease")
+                          if c in decisions.columns]
+        per_seed_samples = decisions[stability_cols].copy()
+        per_seed_samples.insert(0, "seed", seed)
+        per_sample_frames.append(per_seed_samples)
         row.update(_normal_context(decisions, ~validation, "dev"))
         row.update(_normal_context(decisions, validation, "val"))
         row["hygiene_excluded"] = _hygiene_excluded(seed_dir)
@@ -197,7 +223,50 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
     missed = (pd.concat(missed_frames, ignore_index=True)
               if missed_frames else pd.DataFrame(
                   columns=["seed", "sample_id", *MISSED_EVIDENCE_COLS]))
-    return runs, missed
+    stability = _sample_flag_stability(per_sample_frames)
+    return runs, missed, stability
+
+
+def _modal_evidence(series: pd.Series) -> str:
+    values = series.dropna().astype(str)
+    values = values[values.str.strip() != ""]
+    if values.empty:
+        return ""
+    return values.value_counts().index[0]
+
+
+def _sample_flag_stability(per_sample_frames: list) -> pd.DataFrame:
+    """Per-sample flag counts across all splits, sorted by flag_rate."""
+    if not per_sample_frames:
+        return pd.DataFrame()
+    all_samples = pd.concat(per_sample_frames, ignore_index=True)
+    all_samples["flagged"] = all_samples["flagged"].astype(bool)
+    grouped = all_samples.groupby("sample_id", sort=False)
+    stability = pd.DataFrame({
+        "group": grouped["group"].first(),
+        "n_splits": grouped.size(),
+        "n_splits_flagged": grouped["flagged"].sum().astype(int),
+        "n_splits_pathway_channel": grouped["flagged_pathway_channel"]
+            .sum().astype(int) if "flagged_pathway_channel"
+            in all_samples.columns else 0,
+        "n_splits_biomarker_channel": grouped["biomarker_flagged"]
+            .sum().astype(int) if "biomarker_flagged"
+            in all_samples.columns else 0,
+        "mean_top_excess": grouped["top_excess"].mean()
+            if "top_excess" in all_samples.columns else float("nan"),
+        "top_pathway_name": grouped["top_pathway_name"]
+            .agg(_modal_evidence) if "top_pathway_name"
+            in all_samples.columns else "",
+        "top_biomarker": grouped["top_biomarker"].agg(_modal_evidence)
+            if "top_biomarker" in all_samples.columns else "",
+        "top_disease": grouped["top_disease"].agg(_modal_evidence)
+            if "top_disease" in all_samples.columns else "",
+    }).reset_index()
+    stability["flag_rate"] = (stability["n_splits_flagged"]
+                              / stability["n_splits"])
+    stability = stability.sort_values(
+        ["flag_rate", "mean_top_excess"], ascending=[False, False])
+    return stability.reset_index(drop=True)
 
 
 def _aggregate(runs: pd.DataFrame) -> pd.DataFrame:
@@ -232,7 +301,8 @@ def _md_table(df: pd.DataFrame, float_fmt: str = "%.3f") -> str:
 
 
 def _write_report(out_root: Path, seeds: list, runs: pd.DataFrame,
-                  agg: pd.DataFrame, missed: pd.DataFrame) -> None:
+                  agg: pd.DataFrame, missed: pd.DataFrame,
+                  stability: pd.DataFrame = None) -> None:
     per_metric = []
     for metric in ("sensitivity", "specificity", "auc"):
         sel = agg[agg["metric"] == metric]
@@ -261,6 +331,18 @@ def _write_report(out_root: Path, seeds: list, runs: pd.DataFrame,
                 show[col] = show[col].map(lambda v: "%.3f" % v
                                          if pd.notna(v) else "")
         missed_table = "\n\n### Missed IMD samples\n\n" + _md_table(show)
+    stability_table = ""
+    if stability is not None and not stability.empty:
+        unknowns = stability[stability["group"] == "other"]
+        flagged_unknowns = unknowns[unknowns["flag_rate"] > 0].head(30)
+        if not flagged_unknowns.empty:
+            show = flagged_unknowns.copy()
+            show["flag_rate"] = show["flag_rate"].map("{:.0%}".format)
+            show["mean_top_excess"] = show["mean_top_excess"].map(
+                lambda v: "%.2f" % v if pd.notna(v) else "")
+            stability_table = ("\n\n### Robustly flagged samples without an "
+                              "IMD label (chart-review candidates; top 30 "
+                              "by flag rate)\n\n" + _md_table(show))
     lines = [
         "# Multi-Split Evaluation Report",
         "",
@@ -286,6 +368,7 @@ def _write_report(out_root: Path, seeds: list, runs: pd.DataFrame,
                         "specificity", "auc", "dev_flag_rate",
                         "val_flag_rate", "hygiene_excluded"]]),
         missed_table,
+        stability_table,
         "",
         "## Files",
         "",
@@ -294,6 +377,11 @@ def _write_report(out_root: Path, seeds: list, runs: pd.DataFrame,
         "per metric",
         "- `runs/missed_imd_evidence.csv` -- every missed IMD with its "
         "evidence",
+        "- `runs/sample_flag_stability.csv` -- per sample across all "
+        "splits: flag rate over splits, per-channel counts, modal "
+        "evidence; sorted by flag rate. Unknowns sit in group 'other' and "
+        "are scored label-blind, so robustly flagged unknowns here are "
+        "the chart-review candidates.",
         "- `per_seed/seed_<seed>/` -- full pipeline outputs per split "
         "(each contains `evaluation_summary.csv` and `config_used.yaml`)",
     ]
@@ -341,7 +429,7 @@ def main():
     logger.info("This protocol consumes the frozen version's one-shot: "
                 "the seed list is fixed before the label-aware read.")
     out_root = Path(args.output_dir)
-    runs, missed = run_multi_split_evaluation(
+    runs, missed, stability = run_multi_split_evaluation(
         input_file=input_file, config_path=str(config_path),
         output_dir=str(out_root), seeds=seeds)
     runs_dir = out_root / "runs"
@@ -349,7 +437,9 @@ def main():
     agg = _aggregate(runs)
     agg.to_csv(runs_dir / "multi_split_aggregate.csv", index=False)
     missed.to_csv(runs_dir / "missed_imd_evidence.csv", index=False)
-    _write_report(out_root, seeds, runs, agg, missed)
+    if not stability.empty:
+        stability.to_csv(runs_dir / "sample_flag_stability.csv", index=False)
+    _write_report(out_root, seeds, runs, agg, missed, stability)
     logger.info("Wrote multi_split_runs.csv, multi_split_aggregate.csv, "
                 "missed_imd_evidence.csv, MULTI_SPLIT_REPORT.md to %s",
                 out_root)
