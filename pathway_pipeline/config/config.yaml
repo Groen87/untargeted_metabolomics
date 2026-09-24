@@ -131,9 +131,40 @@ min_name_length: 3
 # accessions. 'Niacin' is a primary name of both nicotinic acid
 # (HMDB0001488) and nicotinamide (HMDB0001406) in the HMDB index; pin the
 # plain-named feature to nicotinic acid.
+#
+# Ambiguity pins (impact-reviewed): features whose plain name matched
+# multiple HMDB accessions (see ambiguous_features.csv), resolved here to
+# the canonical accession. The short HMDB0000xxxx entry is the curated
+# original; the later 02/03-series entries for the same name are HMDB
+# disease-association or derivative duplicates. Sorted by scored-pathway
+# impact, descending.
 feature_hmdb_overrides:
   "Niacin": "HMDB0001488"
   "(+)-Estrone": "HMDB0000145"
+  "Adenosine monophosphate": "HMDB0000045"
+  "3-phosphoglyceric acid": "HMDB0000807"
+  "Choline O-Sulfate": "HMDB0000097"
+  "lipoic acid": "HMDB0001451"
+  "D-PANTOTHENIC ACID": "HMDB0000210"
+  "Glycerol 3-phosphate": "HMDB0000126"
+  "Palmitic Acid": "HMDB0000220"
+  "D-Gluconic acid": "HMDB0000625"
+  "CAIR": "HMDB0001517"
+  "Coproporphyrin III": "HMDB0000570"
+  "Phenol": "HMDB0000228"
+  "Protoporphyrin IX": "HMDB0000241"
+  "SQUALENE OXIDE": "HMDB0001188"
+  "Testosterone glucuronide": "HMDB0003193"
+  "Vitamin A": "HMDB0000305"
+  "bilirubin": "HMDB0000054"
+  "urobilinogen": "HMDB0001898"
+  "Androsterone glucuronide": "HMDB0002829"
+  "Glutaurine": "HMDB0004195"
+  "Indole-3-acetic acid": "HMDB0000197"
+  "Panthenol": "HMDB0004231"
+  "Sulfoglycolithocholic acid": "HMDB0000698"
+  "Taurochenodeoxycholic acid": "HMDB0000949"
+  "sphinganine 1-phosphate": "HMDB0001383"
 
 # Identity curation (label-blind, chemistry-based): feature columns whose
 # name carries a trailing .HMDB######## tag are identified by pure-standard
@@ -447,6 +478,12 @@ evaluate_dev_half: false
 #   its z drove spurious single-metabolite depth hits (z 13-15 in one
 #   IMD sample), and no IMD pathway biology rides on it. The thiamine
 #   pathway is covered by scored thiamine pyrophosphate
+# - Hexitol: a generic class name for any hexitol configuration
+#   (sorbitol, mannitol, galactitol, ...), not a specific metabolite;
+#   name-matched to multiple unrelated accessions. The specific
+#   disease biomarker galactitol is scored via its own tagged feature
+#   (Galactitol.HMDB0000107), so demoting the generic name loses
+#   nothing
 #
 # NOT scored anyway, so no demotion entry needed (re-add if pathway mapping
 # ever brings them in): thiamine monophosphate (reference IQR below the
@@ -462,6 +499,7 @@ demoted_features:
   - "Tretinoin"
   - "4-Oxotretinoin"
   - "TMP"
+  - "Hexitol"
 
 # Combine features mapping to the same metabolite (HMDB ID) with scale^2
 # weights instead of a plain mean: under a constant absolute analytical
