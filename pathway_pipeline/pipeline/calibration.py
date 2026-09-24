@@ -96,8 +96,9 @@ def stratified_split(groups: pd.Series,
 
 def leave_one_out_hygiene(features: pd.DataFrame,
                           normal_mask: pd.Series,
-                          max_depth: float = 10.0,
-                          max_rounds: int = 10
+                          max_depth: float = 20.0,
+                          max_rounds: int = 10,
+                          max_excluded_fraction: float = None
                           ) -> Tuple[pd.Series, pd.DataFrame]:
     """Exclude candidate normals whose leave-one-out depth is too deep.
 
@@ -115,6 +116,12 @@ def leave_one_out_hygiene(features: pd.DataFrame,
     crosses ``max_depth``. Removing one deep outlier tightens the peer IQR,
     which can reveal borderline candidates a single pass would have hidden.
 
+    A pre-declared ``max_excluded_fraction`` guards against a miscalibrated
+    ``max_depth`` cascading: when the exclusion fraction exceeds the cap,
+    the hygiene stops at the cap (deepest candidates first) and logs a
+    WARNING that the reference is suspect -- inspect the LOO depth
+    distribution and reconsider ``max_depth`` before trusting any flag.
+
     Excluded samples keep their scores in every output; they only leave the
     reference used to calibrate z-scores, pathway thresholds, and nulls.
 
@@ -124,6 +131,8 @@ def leave_one_out_hygiene(features: pd.DataFrame,
         normal_mask: boolean Series marking the candidate normals.
         max_depth: pre-specified exclusion threshold on the LOO max |z|.
         max_rounds: maximum number of iterative exclusion rounds.
+        max_excluded_fraction: optional cap on the fraction of candidates the
+            hygiene may exclude (e.g. 0.10 = at most 10%); None disables it.
 
     Returns:
         Tuple ``(clean_mask, report)``: the reference mask with excluded
@@ -139,6 +148,9 @@ def leave_one_out_hygiene(features: pd.DataFrame,
     remaining = list(ids)
     excluded_ids = []
     depths = {}
+    max_excluded = None
+    if max_excluded_fraction is not None:
+        max_excluded = int(np.floor(max_excluded_fraction * len(ids)))
     for round_no in range(1, max_rounds + 1):
         newly = []
         for sid in remaining:
@@ -155,10 +167,27 @@ def leave_one_out_hygiene(features: pd.DataFrame,
                 newly.append(sid)
         if not newly:
             break
+        # Enforce the pre-declared cap within the round: keep only the
+        # deepest candidates up to the remaining capacity.
+        hit_cap = (max_excluded is not None
+                   and len(excluded_ids) + len(newly) > max_excluded)
+        if hit_cap:
+            capacity = max(0, max_excluded - len(excluded_ids))
+            newly = sorted(newly, key=lambda s: depths.get(s, float("nan")),
+                           reverse=True)[:capacity]
         remaining = [s for s in remaining if s not in newly]
         excluded_ids.extend(newly)
         logger.debug(f"Reference hygiene round {round_no}: excluded "
                      f"{len(newly)} candidate(s), {len(remaining)} remain.")
+        if hit_cap:
+            logger.warning(
+                f"Reference hygiene hit the exclusion cap "
+                f"({len(excluded_ids)} of {len(ids)} candidates >= "
+                f"{max_excluded_fraction:.0%}): the max_depth threshold is "
+                f"likely miscalibrated against the LOO depth distribution. "
+                f"Inspect reference_hygiene.csv and reconsider max_depth "
+                f"before trusting any flag.")
+            break
 
     report = pd.DataFrame({
         "sample_id": ids,
@@ -176,7 +205,8 @@ def leave_one_out_hygiene(features: pd.DataFrame,
         detail = ", ".join(f"{r.sample_id} "
                            f"(|z| {r.loo_max_z:.1f})" for r in bad.itertuples())
         logger.info(f"Reference hygiene: excluded {n_excluded} of {len(ids)} "
-                    f"candidate normals (iterative LOO max |z| > "
+                    f"candidate normals ({n_excluded / len(ids):.0%}; "
+                    f"iterative LOO max |z| > "
                     f"{max_depth}): {detail}.")
     else:
         logger.info(f"Reference hygiene: all {len(ids)} candidate normals "

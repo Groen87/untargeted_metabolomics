@@ -274,3 +274,46 @@ def test_assign_groups_labels():
     }, index=["a", "b", "c", "d"])
     groups = assign_groups(meta)
     assert groups.tolist() == ["normal", "other", "imd", "other"]
+
+
+def test_leave_one_out_hygiene_exclusion_cap_stops_cascade():
+    """The pre-declared exclusion cap stops a miscalibrated max_depth cascade."""
+    rng = np.random.default_rng(12)
+    n = 20
+    df = pd.DataFrame(
+        rng.normal(5.0, 0.1, size=(n, 4)),
+        columns=[f"f{i}" for i in range(4)],
+        index=[f"n{i}" for i in range(n)],
+    )
+    # A far-gross outlier would, in iterative rounds, tighten the peer IQRs
+    # and pull many borderline candidates past a too-low max_depth; the cap
+    # must stop the cascade at the declared fraction.
+    df.loc["n5", :] = df.median() + 50.0
+    mask = pd.Series(True, index=df.index)
+    clean, report = leave_one_out_hygiene(
+        df, mask, max_depth=1.5, max_excluded_fraction=0.10)
+    n_excluded = int(report["excluded"].sum())
+    assert n_excluded <= 2  # 10% of 20 candidates
+    assert int((~clean).sum()) == n_excluded
+    # The deepest candidate is excluded first even under the cap.
+    assert not clean.loc["n5"]
+    # Without the cap the same settings would cascade further.
+    clean_uncapped, report_uncapped = leave_one_out_hygiene(
+        df, mask, max_depth=1.5)
+    assert int(report_uncapped["excluded"].sum()) > n_excluded
+
+
+def test_leave_one_out_hygiene_cap_disabled_by_default():
+    """max_excluded_fraction=None runs the full iterative rounds."""
+    rng = np.random.default_rng(13)
+    n = 30
+    df = pd.DataFrame(
+        rng.normal(5.0, 0.3, size=(n, 4)),
+        columns=[f"f{i}" for i in range(4)],
+        index=[f"n{i}" for i in range(n)],
+    )
+    df.loc["n9", :] = df.median() + 30.0
+    mask = pd.Series(True, index=df.index)
+    clean, report = leave_one_out_hygiene(df, mask, max_depth=20.0)
+    assert not clean.loc["n9"]
+    assert int(report["excluded"].sum()) >= 1

@@ -275,10 +275,15 @@ def run_pipeline(input_file: str,
         pathway_features = sorted(
             set(coverage["matched_features"].str.split(";").explode().dropna())
         ) if not coverage.empty else []
+        max_excluded_fraction = config.get(
+            "reference_hygiene.max_excluded_fraction", None)
         hygiene_mask, hygiene = leave_one_out_hygiene(
             features[pathway_features],
             normal_mask=normal_mask,
-            max_depth=float(config.get("reference_hygiene.max_depth", 10.0)),
+            max_depth=float(config.get("reference_hygiene.max_depth", 20.0)),
+            max_excluded_fraction=(
+                float(max_excluded_fraction)
+                if max_excluded_fraction is not None else None),
         )
         normal_mask = hygiene_mask
     if not normal_mask.any():

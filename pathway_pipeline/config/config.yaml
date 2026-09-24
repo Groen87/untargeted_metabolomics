@@ -95,9 +95,25 @@ normal_oordeel: 0
 # leave-one-out max metabolite |z| exceeds this depth is excluded from the
 # calibration reference (it cannot mask its own disturbance; the peers'
 # median/IQR are computed without it). Replaces hand-picked exclusion lists.
+#
+# max_depth justification (development-half evidence, label-blind):
+# ordinary screened normals routinely reach a max metabolite |z| of ~7
+# (median) to ~16 (p95 of the metabolite-depth null over 205 normals in the
+# 2026-09-23 full-cohort run); a depth of 10 sits INSIDE that ordinary range
+# and, with iterative rounds, cascaded to 41/107 exclusions (the run then
+# flagged 57% of all samples). 20 sits beyond the ordinary-normal range,
+# where the previously hand-confirmed deep disturbances (|z| >= 15-30)
+# actually live.
+#
+# max_excluded_fraction is a pre-declared sanity cap: when hygiene would
+# exclude more than this fraction of candidates, it stops at the cap and
+# logs a WARNING -- a cascade is the signature of a miscalibrated max_depth,
+# not of a contaminated reference. Inspect reference_hygiene.csv and
+# reconsider max_depth; do NOT proceed to evaluation off a capped reference.
 reference_hygiene:
   enable: true
-  max_depth: 10.0
+  max_depth: 20.0
+  max_excluded_fraction: 0.10
 
 # Frozen cohort split (part of the configuration): every sample is assigned
 # once, deterministically, to the development or the validation half.

@@ -152,11 +152,16 @@ label-blind rule (`reference_hygiene` in `config.yaml`): a candidate normal
 is excluded from the calibration reference when its **leave-one-out** max
 metabolite |z| (computed against the other candidate normals' median/IQR,
 so it cannot mask its own disturbance by inflating the reference spread)
-exceeds `reference_hygiene.max_depth` (default 10). The check iterates:
-when an exclusion tightens the peer reference enough to push another
-borderline candidate past the threshold, that candidate is excluded in the
-next round, until no new candidate crosses (capped at 10 rounds). The
-per-candidate LOO depths are written to `reference_hygiene.csv`. Excluded
+exceeds `reference_hygiene.max_depth` (default 20, justified from the
+ordinary-normal LOO depth distribution: a depth inside that range
+cascades and guts the reference). The check iterates: when an exclusion
+tightens the peer reference enough to push another borderline candidate
+past the threshold, that candidate is excluded in the next round, until no
+new candidate crosses (capped at 10 rounds). A pre-declared cap
+(`max_excluded_fraction`, default 10%) stops a miscalibrated threshold's
+cascade: when the cap is hit, the deepest candidates up to the cap are
+excluded, a WARNING is logged, and the reference must not be trusted until
+`max_depth` is reconsidered against `reference_hygiene.csv`. Excluded
 samples keep their scores and group label everywhere; they only leave the
 calibration reference.
 
