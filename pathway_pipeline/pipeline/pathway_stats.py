@@ -248,6 +248,110 @@ def filter_pathways_for_scoring(coverage: pd.DataFrame,
     return scored[out_cols]
 
 
+def prune_redundant_pathways(scored_coverage: pd.DataFrame,
+                             min_jaccard: float = 0.8
+                             ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Collapse near-duplicate pathways to one representative per group.
+
+    PathBank disease pathways are mechanism cartoons sharing a handful of
+    metabolites with their parent metabolic pathway: five pathways driven
+    by the same three metabolites produce five identical flags and inflate
+    multiplicity. Pathways whose SCORED metabolite sets have Jaccard >=
+    ``min_jaccard`` are grouped (connected components over the similarity
+    graph) and each group keeps a single representative, chosen by a
+    pre-declared, composition-based preference -- never by flag
+    performance and never by a disease label:
+
+    1. General metabolic pathway over a disease-specific cartoon
+       (name without 'deficiency'/'disease'/'aciduria', case-insensitive).
+    2. Larger scored metabolite set (more information).
+    3. Alphabetical by pathway name (determinism).
+
+    Args:
+        scored_coverage: output of :func:`filter_pathways_for_scoring`
+            (one row per scored pathway, with ``matched_metabolites``).
+        min_jaccard: Jaccard threshold above which two pathways are
+            near-duplicates.
+
+    Returns:
+        Tuple ``(pruned, dropped)``: the coverage table reduced to the
+        representatives, and a per-dropped-pathway table with columns
+        ``smp_id``, ``pathway_name``, ``represented_by``.
+    """
+    drop_cols = ["smp_id", "pathway_name", "represented_by"]
+    if scored_coverage.empty:
+        return scored_coverage.copy(), pd.DataFrame(columns=drop_cols)
+
+    metabolite_sets = {
+        row["smp_id"]: set(str(row["matched_metabolites"]).split(";"))
+        - {""}
+        for _, row in scored_coverage.iterrows()
+    }
+    metabolite_sets = {k: v for k, v in metabolite_sets.items() if v}
+    names = dict(zip(scored_coverage["smp_id"],
+                     scored_coverage["pathway_name"]))
+    smp_ids = sorted(metabolite_sets)
+
+    # Connected components over the >= min_jaccard similarity graph.
+    parent = {s: s for s in smp_ids}
+
+    def find(s):
+        while parent[s] != s:
+            parent[s] = parent[parent[s]]
+            s = parent[s]
+        return s
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(len(smp_ids)):
+        for j in range(i + 1, len(smp_ids)):
+            a, b = metabolite_sets[smp_ids[i]], metabolite_sets[smp_ids[j]]
+            union_size = len(a | b)
+            if union_size and len(a & b) / union_size >= min_jaccard:
+                union(smp_ids[i], smp_ids[j])
+
+    groups = {}
+    for s in smp_ids:
+        groups.setdefault(find(s), []).append(s)
+
+    def is_general(smp_id):
+        name = str(names.get(smp_id, "")).lower()
+        return not any(k in name for k in ("deficiency", "disease", "aciduria"))
+
+    def rep_key(smp_id):
+        return (0 if is_general(smp_id) else 1,
+                -len(metabolite_sets[smp_id]),
+                str(names.get(smp_id, smp_id)))
+
+    drop_rows = []
+    keep = set()
+    for members in groups.values():
+        rep = sorted(members, key=rep_key)[0]
+        keep.add(rep)
+        for m in members:
+            if m != rep:
+                drop_rows.append({
+                    "smp_id": m,
+                    "pathway_name": names.get(m, m),
+                    "represented_by": rep,
+                })
+
+    dropped = pd.DataFrame(drop_rows, columns=drop_cols)
+    pruned = scored_coverage[scored_coverage["smp_id"].isin(keep)].copy()
+    if len(dropped):
+        logger.info(f"Pathway redundancy pruning: collapsed {len(dropped)} "
+                    f"near-duplicate pathway(s) (Jaccard >= {min_jaccard}) "
+                    f"into {len(groups)} representative group(s); "
+                    f"{len(pruned)} pathways remain for scoring.")
+        by_rep = dropped.groupby("represented_by")["pathway_name"]
+        for rep, members in by_rep.agg(list).items():
+            logger.debug(f"  kept {names.get(rep, rep)} over: {members}")
+    return pruned, dropped
+
+
 def compute_stouffer_scores(zscores: pd.DataFrame,
                              feature_to_pathway: pd.DataFrame,
                              scored_coverage: pd.DataFrame,

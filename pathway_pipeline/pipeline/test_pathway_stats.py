@@ -22,6 +22,7 @@ from pathway_pipeline.pipeline.pathway_stats import (
     summarize_metabolite_flags,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
+    prune_redundant_pathways,
     compute_stouffer_scores,
     flag_pathway_scores,
     summarize_sample_flags,
@@ -175,6 +176,100 @@ def test_filter_pathways_empty_coverage():
                                          available_features=["f1"],
                                          min_pathway_features=3)
     assert scored.empty
+
+
+def _scored_row(smp_id, name, metabolites):
+    metabolites = sorted(metabolites)
+    return {"smp_id": smp_id, "pathway_name": name,
+            "n_metabolites": len(metabolites),
+            "n_matched_metabolites": len(metabolites),
+            "matched_metabolites": ";".join(metabolites),
+            "n_matched_features": len(metabolites),
+            "matched_features": ";".join(metabolites),
+            "coverage": 1.0}
+
+
+def test_prune_redundant_general_beats_disease_cartoon():
+    metabolites = ["H1", "H2", "H3", "H4"]
+    coverage = pd.DataFrame([
+        _scored_row("SMP1", "Urea Cycle", metabolites),
+        _scored_row("SMP2", "Argininosuccinic Aciduria", metabolites),
+        _scored_row("SMP3", "Citrullinemia Type I Disease", metabolites),
+    ])
+    pruned, dropped = prune_redundant_pathways(coverage, min_jaccard=0.8)
+    assert set(pruned["smp_id"]) == {"SMP1"}
+    assert set(dropped["smp_id"]) == {"SMP2", "SMP3"}
+    assert (dropped["represented_by"] == "SMP1").all()
+
+
+def test_prune_redundant_larger_set_breaks_ties():
+    coverage = pd.DataFrame([
+        _scored_row("SMP1", "Beta Deficiency", ["H1", "H2", "H3"]),
+        _scored_row("SMP2", "Alpha Deficiency", ["H1", "H2", "H3", "H4"]),
+    ])
+    # Jaccard 3/4 = 0.75 < 0.8 -> both kept at the default threshold.
+    pruned, dropped = prune_redundant_pathways(coverage, min_jaccard=0.8)
+    assert set(pruned["smp_id"]) == {"SMP1", "SMP2"}
+    assert dropped.empty
+
+    # At 0.7 the group collapses and the larger scored set wins the tie.
+    pruned, dropped = prune_redundant_pathways(coverage, min_jaccard=0.7)
+    assert set(pruned["smp_id"]) == {"SMP2"}
+    assert dropped["smp_id"].tolist() == ["SMP1"]
+    assert dropped["represented_by"].tolist() == ["SMP2"]
+
+
+def test_prune_redundant_jaccard_threshold_respected():
+    coverage = pd.DataFrame([
+        _scored_row("SMP1", "A Pathway", ["H1", "H2", "H3"]),
+        _scored_row("SMP2", "B Pathway", ["H1", "H2", "H4"]),
+        # Jaccard 3/5 = 0.6 < 0.8 -> both kept.
+        _scored_row("SMP3", "C Pathway", ["H1", "H3", "H4", "H5"]),
+    ])
+    pruned, dropped = prune_redundant_pathways(coverage, min_jaccard=0.8)
+    # SMP1 vs SMP2: Jaccard 2/4 = 0.5 -> kept; all pairs below threshold.
+    assert set(pruned["smp_id"]) == {"SMP1", "SMP2", "SMP3"}
+    assert dropped.empty
+
+
+def test_prune_redundant_connected_components_collapse_transitively():
+    # A-B overlap 0.9, B-C overlap 0.9, A-C overlap 0.5 -> one group of three.
+    coverage = pd.DataFrame([
+        _scored_row("SMPA", "Alpha Pathway",
+                    ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10"]),
+        _scored_row("SMPB", "Beta Pathway",
+                    ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H11"]),
+        _scored_row("SMPC", "Gamma Pathway",
+                    ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H11", "H12"]),
+    ])
+    pruned, dropped = prune_redundant_pathways(coverage, min_jaccard=0.8)
+    assert len(pruned) == 1
+    assert len(dropped) == 2
+    assert (dropped["represented_by"] == pruned["smp_id"].iloc[0]).all()
+
+
+def test_prune_redundant_deterministic_and_preserves_rows():
+    coverage = pd.DataFrame([
+        _scored_row("SMP1", "Urea Cycle", ["H1", "H2", "H3"]),
+        _scored_row("SMP2", "Argininosuccinic Aciduria", ["H1", "H2", "H3"]),
+        _scored_row("SMP3", "Unrelated Pathway", ["H4", "H5", "H6"]),
+    ])
+    pruned1, dropped1 = prune_redundant_pathways(coverage)
+    pruned2, dropped2 = prune_redundant_pathways(coverage)
+    pd.testing.assert_frame_equal(pruned1, pruned2)
+    pd.testing.assert_frame_equal(dropped1, dropped2)
+    assert set(pruned1["smp_id"]) == {"SMP1", "SMP3"}
+    assert list(pruned1.columns) == list(coverage.columns)
+
+
+def test_prune_redundant_empty_input():
+    empty = pd.DataFrame(columns=["smp_id", "pathway_name", "n_metabolites",
+                                  "n_matched_metabolites", "matched_metabolites",
+                                  "n_matched_features", "matched_features", "coverage"])
+    pruned, dropped = prune_redundant_pathways(empty)
+    assert pruned.empty
+    assert dropped.empty
+    assert list(dropped.columns) == ["smp_id", "pathway_name", "represented_by"]
 
 
 # ---------------------------------------------------------------------------

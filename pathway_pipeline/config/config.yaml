@@ -85,6 +85,19 @@ min_pathway_coverage: 0.20
 exclude_pathway_keywords:
   - "lipid"
 
+# Pathway redundancy pruning (label-blind): PathBank disease pathways are
+# mechanism cartoons sharing nearly all scored metabolites with their parent
+# metabolic pathway. Five pathways driven by the same three metabolites
+# produce five identical flags and inflate pathway-test multiplicity.
+# Pathways whose SCORED metabolite sets have Jaccard >= redundancy_jaccard are
+# collapsed into connected groups, each keeping one representative chosen by
+# a pre-declared composition-based preference (never flag performance, never
+# disease labels): 1) general metabolic pathway over a disease cartoon
+# (name without 'deficiency'/'disease'), 2) larger scored metabolite set,
+# 3) alphabetical. Dropped pathways are recorded in pruned_pathways.csv.
+prune_redundant_pathways: true
+redundancy_jaccard: 0.8
+
 # ============================================================================
 # Z-scores (stage 2)
 # ============================================================================

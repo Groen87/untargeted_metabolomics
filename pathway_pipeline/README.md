@@ -131,6 +131,32 @@ features the extraction cannot recover. `feature_to_pathway.csv` is
 written before the filter, so the full link table (including excluded
 pathways) is preserved in the outputs for audit.
 
+### Redundancy pruning (`prune_redundant_pathways`, STEP 6)
+
+PathBank disease pathways are mechanism cartoons that share nearly all of
+their scored metabolites with their parent metabolic pathway: five pathways
+driven by the same three metabolites produce five identical flags and
+inflate pathway-test multiplicity under the `max_excess` rule. After the
+scored-coverage filter, pathways whose **scored metabolite sets** have
+Jaccard >= `redundancy_jaccard` (default `0.8`) are collapsed into connected
+groups and each group keeps one representative, chosen by a pre-declared,
+composition-based preference (evidence budget #3-style class-level rule --
+never flag performance, never disease labels):
+
+1. General metabolic pathway over a disease cartoon (name without
+   "deficiency"/"disease"/"aciduria").
+2. Larger scored metabolite set (more information).
+3. Alphabetical by pathway name (determinism).
+
+Dropped pathways are recorded in `pruned_pathways.csv`
+(`smp_id`, `pathway_name`, `represented_by`) for audit. Pruning removes
+duplicate **pathway tests**, not metabolites: every scored metabolite keeps
+its z-score and remains represented through the surviving pathway, so
+sample-level flag counts should barely move -- the reduction is in
+pathway-test multiplicity and flag-evidence inflation. The STEP 9 redundancy
+report runs on the pruned set, so what it reports at the threshold is what
+actually remains.
+
 ## Metabolite Z-Scores (stage 2)
 
 Values must already be log10-transformed upstream. Every pathway-mapped
@@ -305,8 +331,10 @@ into any choice:
    much each pathway's 99th-percentile threshold wobbles; an unstable
    threshold produces borderline flags that flip on reference resampling.
 5. **Pathway redundancy**: pathway pairs whose scored-metabolite sets are
-   near-identical (Jaccard >= 0.8) -- they produce duplicate flags and
-   inflate multiplicity; pruning is label-blind.
+   near-identical (Jaccard >= `redundancy_jaccard`) -- they produce duplicate
+   flags and inflate multiplicity. STEP 6 already prunes these label-blind
+   (see `prune_redundant_pathways`); this report shows what remains at the
+   threshold, e.g. pairs that are similar but below the pruning threshold.
 
 Acting on the output (adding an override or demotion, changing a
 threshold) is a human decision that creates a **new frozen configuration

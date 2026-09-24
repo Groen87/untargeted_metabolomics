@@ -13,8 +13,9 @@ Stages:
    keywords, ``exclude_pathway_keywords``).
 5. Split the cohort into frozen development/validation halves and clean
    the calibration reference with leave-one-out hygiene.
-6-8. Z-score metabolites against the development normals, compute per-
-   pathway Stouffer scores, and flag samples against per-pathway normal
+6-8. Z-score metabolites against the development normals, restrict and
+   de-duplicate pathways (prune_redundant_pathways), compute per-pathway
+   Stouffer scores, and flag samples against per-pathway normal
    percentile thresholds.
 9. Label-blind development QC on the calibration reference.
 10. One-shot label-aware evaluation (only with ``run_evaluation``).
@@ -47,6 +48,7 @@ from pathway_pipeline.pipeline.pathway_stats import (
     summarize_metabolite_flags,
     compute_metabolite_zscores,
     filter_pathways_for_scoring,
+    prune_redundant_pathways,
     compute_stouffer_scores,
     flag_pathway_scores,
     summarize_sample_flags,
@@ -361,6 +363,15 @@ def run_pipeline(input_file: str,
     )
     logger.info(f"{len(scored_coverage)} pathways remain with >= "
                 f"{min_pathway_features} usable matched metabolites.")
+
+    if bool(config.get("prune_redundant_pathways", True)) and not scored_coverage.empty:
+        scored_coverage, pruned_pathways = prune_redundant_pathways(
+            scored_coverage,
+            min_jaccard=float(config.get("redundancy_jaccard", 0.8)),
+        )
+        if len(pruned_pathways) and bool(config.get("save_zscore_outputs", True)):
+            pruned_pathways.to_csv(out / "pruned_pathways.csv", index=False)
+            logger.info("Wrote pruned_pathways.csv to " + str(out))
 
     if bool(config.get("save_zscore_outputs", True)) and not scored_coverage.empty:
         scored_coverage.to_csv(out / "pathway_coverage_scored.csv", index=False)
