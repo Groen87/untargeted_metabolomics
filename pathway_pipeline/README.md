@@ -23,6 +23,7 @@ label-aware evaluation).
 pathway_pipeline/
 ├── __init__.py
 ├── main.py                       # Entry point (feature engineering)
+├── seed_sweep.py                 # Label-blind split-stability sweep (multi-seed)
 ├── config/
 │   ├── __init__.py
 │   ├── config.py                 # Dot-notation Config loader
@@ -452,6 +453,8 @@ configuration version and re-evaluate once.
 python -m pathway_pipeline.main
 python -m pathway_pipeline.main --input data/my_data.csv --output outputs/pathway
 python -m pathway_pipeline.main --config my_config.yaml
+python -m pathway_pipeline.seed_sweep              # 20 seeds, label-blind
+python -m pathway_pipeline.seed_sweep --n-seeds 10 --base-seed 20260923
 ```
 
 ## Testing
