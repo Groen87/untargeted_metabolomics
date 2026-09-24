@@ -204,6 +204,9 @@ def run_pipeline(input_file: str,
         logger.info(
             f"Derived {len(ratio_features)} ratio feature(s): "
             + (", ".join(ratio_features) if ratio_features else "none"))
+        out.mkdir(parents=True, exist_ok=True)
+        ratio_audit.to_csv(out / "ratio_feature_audit.csv", index=False)
+        logger.info(f"Wrote ratio_feature_audit.csv to {out}")
     else:
         logger.info("No ratio features configured.")
 

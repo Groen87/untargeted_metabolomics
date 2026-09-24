@@ -42,8 +42,63 @@ age_column: null
 # ratio_features:
 #   - name: "C8/C2"
 #     numerator: "Octanoylcarnitine.HMDB0000791"
-#     denominator: "L-Acetylcarnitine.HMDB0000221"
-ratio_features: []
+#     denominator: "L-Acetylcarnitine.HMDB0000201"
+# A numerator or denominator may also be a LIST of columns, which is a
+# linear-space sum (log10(10^x + 10^y)); used for CPT1/CPT2 ratios like
+# C0/(C16+C18) and (C16+C18:1)/C2.
+#
+# Declared panel (consensus newborn-screening acylcarnitine ratios;
+# names below use the HMDB-tagged feature naming, i.e. '<name>.<HMDB>').
+# Every parent must exist as an EXACT column name in the input file.
+# The mapping to disease classes is textbook chemistry, declared from
+# published newborn-screening ratio panels -- never from flag
+# performance in this cohort.
+#  - C8/C2, C8/C10: MCADD (medium-chain acyl-CoA dehydrogenase)
+#  - C14:1/C2, C14:1/C12:1: VLCADD (very-long-chain acyl-CoA
+#    dehydrogenase); C14:1 is cis-5-tetradecenoylcarnitine only
+#    (NOT saturated C14:0, NOT the C14:2 diene) per the declared panel
+#  - C3/C2: propionic aciduria / methylmalonic aciduria
+#  - C0/(C16+C18): CPT1 deficiency (carnitine palmitoyltransferase 1)
+#  - (C16+C18:1)/C2: CPT2 deficiency (carnitine palmitoyltransferase 2)
+# Parent species (HMDB):
+#  - C0  L-Carnitine: HMDB0000062
+#  - C2  L-Acetylcarnitine: HMDB0000201
+#  - C3  Propionylcarnitine: HMDB0000824
+#  - C8  Octanoylcarnitine: HMDB0000791
+#  - C10 Decanoylcarnitine: HMDB0000651
+#  - C12:1 Dodecenoylcarnitine: HMDB0251567 (unspecified double-bond
+#       position, the NBS analyte; trans-2/2-/11-isomers have separate
+#       entries) -- verify the exact input column name before freezing
+#  - C14:1 cis-5-Tetradecenoylcarnitine: HMDB0002014
+#  - C16 Palmitoylcarnitine: HMDB0000222
+#  - C18 Stearoylcarnitine: HMDB0000848
+#  - C18:1 Oleoylcarnitine: HMDB0005065
+ratio_features:
+  - name: "C8/C2"
+    numerator: "Octanoylcarnitine.HMDB0000791"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C8/C10"
+    numerator: "Octanoylcarnitine.HMDB0000791"
+    denominator: "Decanoylcarnitine.HMDB0000651"
+  - name: "C14:1/C2"
+    numerator: "cis-5-Tetradecenoylcarnitine.HMDB0002014"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C14:1/C12:1"
+    numerator: "cis-5-Tetradecenoylcarnitine.HMDB0002014"
+    denominator: "Dodecenoylcarnitine.HMDB0251567"
+  - name: "C3/C2"
+    numerator: "Propionylcarnitine.HMDB0000824"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C0/(C16+C18)"
+    numerator: "L-Carnitine.HMDB0000062"
+    denominator:
+      - "Palmitoylcarnitine.HMDB0000222"
+      - "Stearoylcarnitine.HMDB0000848"
+  - name: "(C16+C18:1)/C2"
+    numerator:
+      - "Palmitoylcarnitine.HMDB0000222"
+      - "Oleoylcarnitine.HMDB0005065"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
 
 # Cohort definition for reporting: with untreated_imd_only, an IMD sample
 # (Classification == 1 AND Oordeel targeted == 1) counts as 'imd' only when

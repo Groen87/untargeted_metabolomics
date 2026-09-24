@@ -63,20 +63,55 @@ def classify_samples(metadata: pd.DataFrame,
     return normal_mask
 
 
+def _ratio_terms(value) -> List[str]:
+    """Normalize a numerator/denominator spec to a list of column names.
+
+    A bare string is one term; a list is a linear-space sum of the named
+    columns. Empty entries are dropped so blank specs fail cleanly as
+    incomplete.
+    """
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if value is None:
+        return []
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _term_log10_sum(features: pd.DataFrame, terms: List[str]) -> pd.Series:
+    """Collapse one side of a ratio to a single log10 column.
+
+    A single term passes through unchanged. A multi-term side is summed
+    in linear space (``log10(sum(10^x))``) and re-log10'd; the sum needs
+    every parent present (a missing area makes the whole sum undefined,
+    matching the single-term NaN rule).
+    """
+    if len(terms) == 1:
+        return pd.to_numeric(features[terms[0]], errors="coerce")
+    linear_sum = None
+    for term in terms:
+        values = 10 ** pd.to_numeric(features[term], errors="coerce")
+        linear_sum = values if linear_sum is None else linear_sum + values
+    return np.log10(linear_sum)
+
+
 def derive_ratio_features(features: pd.DataFrame,
-                          ratio_specs: List[Dict[str, str]]
+                          ratio_specs: List[Dict[str, object]]
                           ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Derive configured ratio features from log10-transformed areas.
 
     Each spec is ``{"name": ..., "numerator": ..., "denominator": ...}``
-    with exact feature column names. On log10 values a difference IS the
+    where numerator/denominator is either one exact feature column name
+    or a list of column names (a linear-space sum, e.g. C16+C18 for the
+    CPT1 ratio C0/(C16+C18)). On log10 values a difference IS the
     log-ratio: ``log(numerator) - log(denominator) = log(num/den)``, so
     the derived column is the ratio, calibrated against the normal
-    reference exactly like any measured feature. Samples missing either
-    parent get NaN for the ratio (a ratio over a missing area is not a
-    value). Diagnostic ratios (e.g. acylcarnitine C8/C2) carry clinical
-    information the individual species cannot: carnitine-status effects
-    cancel in the numerator/denominator, isolating the enzyme block.
+    reference exactly like any measured feature. A sum term is taken in
+    linear space (``log10(10^x + 10^y)``) because a sum of log10 values
+    is not the log of the sum. Samples missing any parent get NaN for
+    the ratio (a ratio over a missing area is not a value). Diagnostic
+    ratios (e.g. acylcarnitine C8/C2) carry clinical information the
+    individual species cannot: carnitine-status effects cancel in the
+    numerator/denominator, isolating the enzyme block.
 
     The derived name must not collide with an existing column; specs whose
     parents are missing from the matrix or whose name collides are skipped
@@ -86,35 +121,39 @@ def derive_ratio_features(features: pd.DataFrame,
         Tuple ``(features_with_ratios, audit)``: the input frame plus one
         column per derivable ratio, and an audit frame with columns
         ``name``, ``numerator``, ``denominator``, ``status``
-        ('derived'/'missing_parent'/'name_collision').
+        ('derived'/'missing_parent'/'name_collision'). Sum specs are
+        reported with '+'-joined parent names.
     """
     audit_rows = []
     derived = features.copy()
     for spec in ratio_specs or []:
         name = str(spec.get("name", "")).strip()
-        num = str(spec.get("numerator", "")).strip()
-        den = str(spec.get("denominator", "")).strip()
-        if not name or not num or not den:
-            audit_rows.append({"name": name, "numerator": num,
-                               "denominator": den,
+        num_terms = _ratio_terms(spec.get("numerator"))
+        den_terms = _ratio_terms(spec.get("denominator"))
+        num_label = "+".join(num_terms)
+        den_label = "+".join(den_terms)
+        if not name or not num_terms or not den_terms:
+            audit_rows.append({"name": name, "numerator": num_label,
+                               "denominator": den_label,
                                "status": "incomplete_spec"})
             continue
         if name in features.columns:
-            audit_rows.append({"name": name, "numerator": num,
-                               "denominator": den,
+            audit_rows.append({"name": name, "numerator": num_label,
+                               "denominator": den_label,
                                "status": "name_collision"})
             continue
-        missing = [c for c in (num, den) if c not in features.columns]
+        missing = [c for c in num_terms + den_terms
+                   if c not in features.columns]
         if missing:
-            audit_rows.append({"name": name, "numerator": num,
-                               "denominator": den,
+            audit_rows.append({"name": name, "numerator": num_label,
+                               "denominator": den_label,
                                "status": f"missing_parent: {','.join(missing)}"})
             continue
-        num_values = pd.to_numeric(derived[num], errors="coerce")
-        den_values = pd.to_numeric(derived[den], errors="coerce")
+        num_values = _term_log10_sum(derived, num_terms)
+        den_values = _term_log10_sum(derived, den_terms)
         derived[name] = num_values - den_values
-        audit_rows.append({"name": name, "numerator": num,
-                           "denominator": den, "status": "derived"})
+        audit_rows.append({"name": name, "numerator": num_label,
+                           "denominator": den_label, "status": "derived"})
     audit = pd.DataFrame(
         audit_rows,
         columns=["name", "numerator", "denominator", "status"])

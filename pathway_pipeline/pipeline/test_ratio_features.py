@@ -52,6 +52,28 @@ def test_derive_ratio_features_audit_paths():
     assert list(derived.columns) == ["A", "B"]
 
 
+def test_derive_ratio_features_sum_spec():
+    """List specs sum in linear space: log10(10^a + 10^b) - log10(10^c)."""
+    rng = np.random.default_rng(9)
+    n = 10
+    df = pd.DataFrame({
+        "C16": rng.normal(1.0, 0.2, size=n),
+        "C18": rng.normal(1.2, 0.2, size=n),
+        "C2": rng.normal(2.0, 0.2, size=n),
+    }, index=[f"s{i}" for i in range(n)])
+    df.loc["s5", "C16"] = np.nan
+    specs = [{"name": "(C16+C18)/C2",
+              "numerator": ["C16", "C18"],
+              "denominator": "C2"}]
+    derived, audit = derive_ratio_features(df, specs)
+    assert list(audit["status"]) == ["derived"]
+    assert audit.loc[0, "numerator"] == "C16+C18"
+    expected = (np.log10(10 ** df["C16"] + 10 ** df["C18"])
+                - df["C2"])
+    np.testing.assert_allclose(derived["(C16+C18)/C2"], expected)
+    assert pd.isna(derived.loc["s5", "(C16+C18)/C2"])
+
+
 def test_ratio_feature_reaches_metabolite_scoring_not_pathways(tmp_path):
     """A configured ratio is z-scored and flag-eligible but never
     pathway-mapped or Stouffer-scored, and the empty default changes
