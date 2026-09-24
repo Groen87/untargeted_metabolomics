@@ -227,31 +227,16 @@ evaluate_dev_half: false
 # (an allowed evidence budget -- no group/disease counts informed this
 # list). Demoted features keep their z-scores in metabolite_zscores.csv but
 # never contribute to pathway Stouffer sums, metabolite flags, or threshold
-# calibration. Entries must be EXACT feature column names (unmatched
-# entries are logged as warnings). Re-promote by removing an entry.
+# calibration. Entries must be EXACT feature column names of features that
+# are actually z-scored; the pipeline logs a warning for unmatched entries.
 #
-# Pre-analytical artifacts:
-# - thiamine monophosphate: noise-floor feature (reference IQR 0.054,
-#   below the scale floor anyway)
+# Justifications:
 # - Reduced Glutathione: oxidation-labile (classic pre-analytical artifact)
 # - Urocanic acid.HMDB0000301: light- and heat-labile
 # - hexahydro-2-oxo-thieno(3,4-d)imidazole-4-pentanoic acid: biotin
 #   degradation product
-# - creatinine: strong age dependence (pediatric reference ranges span an
-#   order of magnitude); deviations track maturation, not IMD
-#
-# Exogenous / medication-dominated features (drug, diet, or herbal
-# exposure -- not IMD-informative; a minority of exposed normals would
-# otherwise inflate the reference null distributions and produce
-# non-specific pathway flags):
-# - caffeine, theophylline, methylxanthine, 1,3,7-Trimethyluric acid:
-#   caffeine metabolism chain (coffee/tea/bronchodilator; theophylline is
-#   also therapeutically given to neonates)
 # - Premarin: conjugated EQUINE estrogen drug preparation, not a human
 #   metabolite
-# - Diphyllin: plant lignan (herbal exposure)
-# - Myrmicacin: ant-derived fatty acid, no human endogenous role (likely a
-#   spurious library match)
 # - Safingol: non-endogenous stereoisomer of sphinganine (investigational
 #   drug; likely a stereo-misassignment of sphinganine, which is scored
 #   separately)
@@ -259,21 +244,17 @@ evaluate_dev_half: false
 #   signaling molecule, but endogenous levels are low-nM; in an untargeted
 #   screen these features reflect retinoid MEDICATION use, and no IMD
 #   presents through retinoic acid
+#
+# NOT scored anyway, so no demotion entry needed (re-add if pathway mapping
+# ever brings them in): thiamine monophosphate (reference IQR below the
+# scale floor), creatinine (strong age dependence, but not pathway-mapped),
+# Caffeine, Theophylline, methylxanthine, 1,3,7-Trimethyluric acid,
+# Diphyllin, Myrmicacin (exogenous/medication, but not pathway-mapped).
 demoted_features:
-  # pre-analytical artifacts
-  - "thiamine monophosphate"
   - "Reduced Glutathione"
   - "Urocanic acid.HMDB0000301"
   - "hexahydro-2-oxo-1h-thieno(3,4-d)imidazole-4-pentanoic acid"
-  - "creatinine"
-  # exogenous / medication-dominated
-  - "Caffeine"
-  - "Theophylline"
-  - "methylxanthine"
-  - "1,3,7-Trimethyluric acid"
   - "Premarin"
-  - "Diphyllin"
-  - "Myrmicacin"
   - "Safingol"
   - "Tretinoin"
   - "4-Oxotretinoin"
