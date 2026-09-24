@@ -212,6 +212,21 @@ def summarize_evaluation(sample_decisions: pd.DataFrame,
         logger.info(f"Group '{r['group']}': {int(r['n_flagged'])} of "
                     f"{int(r['n'])} flagged.")
 
+    missed = imds[~imds["flagged"].astype(bool)] if n_imd else imds
+    if len(missed):
+        logger.info(f"Missed IMD samples ({len(missed)}):")
+        evidence_cols = [c for c in ("n_flagged_pathways", "sample_p_value",
+                                     "top_pathway_name", "top_excess",
+                                     "max_metabolite_z", "top_metabolite",
+                                     "n_flagged_biomarkers", "top_biomarker",
+                                     "top_disease")
+                         if c in missed.columns]
+        for _, m in missed.iterrows():
+            parts = [f"{c}={m[c]}" for c in evidence_cols]
+            logger.info(f"  {m['sample_id']}: " + ", ".join(parts))
+    elif n_imd:
+        logger.info("No missed IMD samples in this half.")
+
     return {
         "half": half,
         "sensitivity": sens, "sensitivity_ci": (sens_lo, sens_hi),
