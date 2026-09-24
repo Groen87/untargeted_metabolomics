@@ -29,10 +29,15 @@ Usage:
 import argparse
 import copy
 import logging
+import sys
 from pathlib import Path
 
 import pandas as pd
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from pathway_pipeline.main import run_pipeline
 
@@ -160,6 +165,9 @@ def _log_summary(runs: pd.DataFrame) -> None:
     )
 
 
+DEFAULT_CONFIG = REPO_ROOT / "pathway_pipeline" / "config" / "config.yaml"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Label-blind split-stability sweep: normal flag rates "
@@ -168,8 +176,10 @@ def main():
     parser.add_argument("--input", default=None,
                         help="Path to the feature matrix CSV "
                              "(default: input_file from the config).")
-    parser.add_argument("--config", default="pathway_pipeline/config/config.yaml",
-                        help="Path to the frozen config YAML.")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG),
+                        help="Path to the frozen config YAML (default: the "
+                             "repo's pathway_pipeline/config/config.yaml, "
+                             "resolved from this script's location).")
     parser.add_argument("--output-dir", default="outputs/seed_sweep",
                         help="Directory for per-seed outputs and the sweep "
                              "CSV (default: outputs/seed_sweep).")
@@ -182,10 +192,17 @@ def main():
                         help="Explicit comma-separated seed list; overrides "
                              "--n-seeds/--base-seed.")
     args = parser.parse_args()
-    with open(args.config) as f:
+    config_path = Path(args.config)
+    if not config_path.is_absolute() and not config_path.exists():
+        candidate = (Path.cwd() / config_path)
+        config_path = (candidate if candidate.exists()
+                       else REPO_ROOT / config_path)
+    with open(config_path) as f:
         config = yaml.safe_load(f) or {}
     input_file = args.input or config.get(
         "input_file", "data/merged_data_with_classification.csv")
+    if not Path(input_file).is_absolute() and not Path(input_file).exists():
+        input_file = str(REPO_ROOT / input_file)
     seeds = _seed_values(args)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s - %(levelname)s - %(message)s")
