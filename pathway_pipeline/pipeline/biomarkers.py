@@ -634,83 +634,89 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
     with np.errstate(all="ignore"):
         thresholds = normal_values.quantile(threshold_percentile / 100.0,
                                             axis=0).fillna(float("inf"))
-    normal_ids = [s for s, v in dedup.reindex(biomarker_z.index,
-                                              fill_value=False).items() if v]
 
-    flag_frames = []
-    depth_frames = []
-    for disease, sub in resolved.groupby("disease", sort=True):
-        sub = sub.drop_duplicates(subset=["hmdb_id"])
-        directions = dict(zip(sub["hmdb_id"], sub["direction"]))
-        view = dict(zip(sub["hmdb_id"], zip(sub["smp_id"],
-                                            sub["pathway_name"])))
-        cols = {}
-        for hmdb_id, direction in directions.items():
-            if hmdb_id not in biomarker_z.columns:
-                continue
-            z = biomarker_z[hmdb_id]
-            if direction == "up":
-                cols[hmdb_id] = z.clip(lower=0)
-            elif direction == "down":
-                cols[hmdb_id] = (-z).clip(lower=0)
-            else:
-                cols[hmdb_id] = z.abs()
-        if not cols:
+    # One GLOBAL directed-z matrix across all (disease, biomarker)
+    # tests: the depth null must span every test the channel runs.
+    # Running per-disease tests at p <= max_sample_p each would give
+    # ~1 - (1 - p)^n_diseases false positives per sample (73 tests at
+    # 0.05 => ~97%). Diseases stay in the output for attribution only.
+    test_columns = []
+    column_meta = []
+    for _, row in resolved.drop_duplicates(
+            subset=["disease", "hmdb_id"]).iterrows():
+        hmdb_id = row["hmdb_id"]
+        if hmdb_id not in biomarker_z.columns:
             continue
-        directed = pd.DataFrame(cols, index=biomarker_z.index)
-        thr = thresholds.reindex(directed.columns).fillna(float("inf"))
-        long = (directed.rename_axis("sample_id").reset_index()
-                .melt(id_vars="sample_id", var_name="hmdb_id",
-                      value_name="abs_z"))
-        long["direction"] = long["hmdb_id"].map(directions)
-        long["smp_id"] = long["hmdb_id"].map(lambda h: view[h][0])
-        long["pathway_name"] = long["hmdb_id"].map(lambda h: view[h][1])
-        long["threshold"] = long["hmdb_id"].map(thr)
-        with np.errstate(all="ignore"):
-            long["excess"] = long["abs_z"] / long["threshold"]
-        long["flagged"] = long["abs_z"] > long["threshold"]
-        long["disease"] = disease
-        long = long[flag_cols]
-        flag_frames.append(long)
-
-        if normal_ids:
-            normal_max = directed.loc[directed.index.isin(normal_ids)]
-            sample_max = directed.max(axis=1)
-            if len(normal_max):
-                nmax = normal_max.max(axis=1).values
-                smax = sample_max.values
-                with np.errstate(all="ignore"):
-                    depth_p = pd.Series(
-                        np.mean(smax[:, None] <= nmax[None, :], axis=1),
-                        index=directed.index, dtype=float)
-            else:
-                depth_p = pd.Series(np.nan, index=directed.index)
+        z = biomarker_z[hmdb_id]
+        direction = row["direction"]
+        if direction == "up":
+            directed_col = z.clip(lower=0)
+        elif direction == "down":
+            directed_col = (-z).clip(lower=0)
         else:
-            depth_p = pd.Series(np.nan, index=directed.index)
-        depth_frames.append(pd.DataFrame({
-            "sample_id": directed.index,
-            "disease": disease,
-            "depth_p": depth_p.values,
-            "max_z": directed.max(axis=1).values,
-        }))
+            directed_col = z.abs()
+        test_columns.append(directed_col)
+        column_meta.append({
+            "test_id": len(test_columns) - 1,
+            "disease": row["disease"], "hmdb_id": hmdb_id,
+            "direction": direction, "smp_id": row["smp_id"],
+            "pathway_name": row["pathway_name"]})
+    if not test_columns:
+        return (pd.DataFrame(columns=flag_cols),
+                pd.DataFrame(columns=summary_cols))
 
-    flags = (pd.concat(flag_frames, ignore_index=True)
-             if flag_frames else pd.DataFrame(columns=flag_cols))
-    depths = (pd.concat(depth_frames, ignore_index=True)
-              if depth_frames else pd.DataFrame(
-                  columns=["sample_id", "disease", "depth_p", "max_z"]))
+    directed = pd.concat(test_columns, axis=1)
+    directed.columns = range(len(test_columns))
+    meta = pd.DataFrame(column_meta)
+    # Thresholds stay per-biomarker (each biomarker's own normal range);
+    # the depth null is ONE global test: the maximum directed z over all
+    # (disease, biomarker) tests.
+    thr_by_test = np.asarray(
+        [thresholds.get(m["hmdb_id"], float("inf"))
+         for m in column_meta], dtype=float)
+    directed_arr = directed.values
+    sample_max = np.nanmax(directed_arr, axis=1)
+
+    is_normal = dedup.reindex(directed.index, fill_value=False).values
+    normal_rows = directed_arr[is_normal]
+    with np.errstate(all="ignore"):
+        normal_null = (np.nanmax(normal_rows, axis=1)
+                       if normal_rows.size else np.array([]))
+        normal_null = normal_null[~np.isnan(normal_null)]
+        if len(normal_null):
+            depth_p = np.mean(sample_max[:, None] <= normal_null[None, :],
+                              axis=1)
+        else:
+            depth_p = np.full(len(sample_max), np.nan)
+
+    flags = pd.DataFrame({
+        "sample_id": np.repeat(directed.index.values, directed.shape[1]),
+        "test_id": np.tile(np.arange(directed.shape[1]), directed.shape[0]),
+        "abs_z": directed_arr.ravel(order="C"),
+    })
+    flags["threshold"] = flags["test_id"].map(pd.Series(thr_by_test))
+    flags = flags.merge(meta, on="test_id", how="left")
+    with np.errstate(all="ignore"):
+        flags["excess"] = flags["abs_z"] / flags["threshold"]
+    flags["flagged"] = flags["abs_z"] > flags["threshold"]
+
     pair_flags = flags[flags["flagged"]] if not flags.empty else flags
-    per_disease = (pair_flags.groupby(["sample_id", "disease"])
-                   .agg(n_flagged=("flagged", "size")).reset_index()
-                   if not pair_flags.empty else pd.DataFrame(
-                       columns=["sample_id", "disease", "n_flagged"]))
-    per_disease = per_disease.merge(depths, on=["sample_id", "disease"],
-                                    how="left")
-    per_disease["rule"] = ((per_disease["n_flagged"] >= 1)
-                           & (per_disease["depth_p"] <= max_sample_p))
-    best = (per_disease[per_disease["rule"]]
-            .sort_values(["sample_id", "depth_p"])
-            .groupby("sample_id", as_index=False).first())
+    any_pair = (pair_flags.groupby("sample_id").size() > 0
+                if len(pair_flags) else pd.Series(dtype=bool))
+    ok_depth = pd.Series(depth_p <= max_sample_p, index=directed.index)
+    channel_decision = (any_pair.reindex(directed.index, fill_value=False)
+                        & ok_depth.reindex(directed.index, fill_value=False))
+    channel_decision = channel_decision.fillna(False)
+
+    best = (pair_flags.assign(
+        depth_p=pd.Series(depth_p, index=directed.index)
+        .reindex(pair_flags["sample_id"]).values)
+        if len(pair_flags) else pd.DataFrame(
+            columns=["sample_id", "disease", "depth_p", "abs_z"]))
+    if len(best):
+        best = best[best["depth_p"] <= max_sample_p]
+        best = (best.sort_values("abs_z", ascending=False)
+                .groupby("sample_id", as_index=False).first())
 
     samples = pd.Index(zscores.index, name="sample_id")
     summary = pd.DataFrame({"sample_id": samples})
@@ -734,7 +740,7 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
         summary["max_biomarker_z"] = np.nan
         summary["top_biomarker"] = None
     summary["biomarker_flagged"] = summary["sample_id"].isin(
-        set(best["sample_id"]))
+        set(channel_decision[channel_decision].index))
     for col, fill in (("n_flagged_biomarkers", 0), ("max_biomarker_z", np.nan),
                       ("top_biomarker", None), ("top_disease", None),
                       ("biomarker_depth_p", np.nan)):
@@ -742,7 +748,10 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
             summary[col] = summary[col].where(summary[col].notna(), fill)
     summary = summary[summary_cols]
     n_diseases = resolved["disease"].nunique()
-    logger.info(f"Disease biomarker channel: {n_diseases} disease group(s), "
+    n_tests = int(directed.shape[1])
+    logger.info(f"Disease biomarker channel: {n_diseases} disease group(s) "
+                f"({n_tests} directed tests, ONE global depth null at "
+                f"p <= {max_sample_p}); "
                 f"{int(summary['biomarker_flagged'].sum())} of "
                 f"{len(summary)} samples flagged through the channel.")
     return flags, summary

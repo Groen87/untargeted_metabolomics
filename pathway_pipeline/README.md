@@ -367,11 +367,16 @@ the sample decision**: `sample_decisions.csv` gains
 per-(sample, pathway, biomarker) flag lands in `biomarker_flags.csv` for
 audit. Duplicate features of the same biomarker are combined with the same
 scale^2 weighting as the Stouffer channel. When the disease table drives the
-channel, a sample flags the DISEASE when an attached biomarker exceeds its
-normal-percentile threshold AND the sample's maximum directed biomarker z
-beats that disease's biomarker-restricted depth null at the frozen
-`max_sample_p`; the channel flags the sample when ANY disease flags, and
-`top_disease` records the best (lowest depth p) flagging disease.
+channel, each (disease, biomarker) pair is one directed test (direction
+arrows gate which tail may flag), and a sample flags when any test exceeds
+its biomarker's normal-percentile threshold AND the sample's maximum
+directed z beats ONE GLOBAL depth null -- the maximum directed z of the
+reference normals across ALL tests -- at the frozen `max_sample_p`. The
+global null is essential for calibration: running one depth test per
+disease would multiply the false-positive rate (73 disease tests at 0.05
+each flags ~97% of normal samples). Diseases never affect the decision
+rule; they attribute the flag (`top_disease`, `biomarker_flags.csv`) for
+interpretation.
 
 ## Development QC (STEP 9, label-blind)
 
