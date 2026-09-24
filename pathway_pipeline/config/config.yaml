@@ -155,6 +155,7 @@ feature_hmdb_overrides:
   "Protoporphyrin IX": "HMDB0000241"
   "SQUALENE OXIDE": "HMDB0001188"
   "Testosterone glucuronide": "HMDB0003193"
+  "Phosphomevalonic acid": "HMDB0001343"
   "Vitamin A": "HMDB0000305"
   "bilirubin": "HMDB0000054"
   "urobilinogen": "HMDB0001898"
