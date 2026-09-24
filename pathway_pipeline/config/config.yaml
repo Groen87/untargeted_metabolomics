@@ -58,12 +58,16 @@ age_column: null
 #    dehydrogenase); C14:1 is cis-5-tetradecenoylcarnitine only
 #    (NOT saturated C14:0, NOT the C14:2 diene) per the declared panel
 #  - C3/C2: propionic aciduria / methylmalonic aciduria
+#  - C5/C2: isovaleric aciduria (C5 is isovalerylcarnitine)
+#  - C5DC/C16: glutaric aciduria type I (C5DC is glutarylcarnitine)
 #  - C0/(C16+C18): CPT1 deficiency (carnitine palmitoyltransferase 1)
 #  - (C16+C18:1)/C2: CPT2 deficiency (carnitine palmitoyltransferase 2)
 # Parent species (HMDB):
 #  - C0  L-Carnitine: HMDB0000062
 #  - C2  L-Acetylcarnitine: HMDB0000201
 #  - C3  Propionylcarnitine: HMDB0000824
+#  - C5  Isovalerylcarnitine: HMDB0000688
+#  - C5DC Glutarylcarnitine: HMDB0013130
 #  - C8  Octanoylcarnitine: HMDB0000791
 #  - C10 Decanoylcarnitine: HMDB0000651
 #  - C12:1 trans-2-Dodecenoylcarnitine: HMDB0013326 (the lab's
@@ -90,6 +94,12 @@ ratio_features:
   - name: "C3/C2"
     numerator: "Propionylcarnitine.HMDB0000824"
     denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C5/C2"
+    numerator: "Isovalerylcarnitine.HMDB0000688"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C5DC/C16"
+    numerator: "Glutarylcarnitine.HMDB0013130"
+    denominator: "Palmitoylcarnitine.HMDB0000222"
   - name: "C0/(C16+C18)"
     numerator: "L-Carnitine.HMDB0000062"
     denominator:
@@ -382,6 +392,12 @@ biomarker_channel:
       direction: "up"
     - disease: "Methylmalonic aciduria"
       ratio: "C3/C2"
+      direction: "up"
+    - disease: "Isovaleryl-CoA dehydrogenase deficiency"
+      ratio: "C5/C2"
+      direction: "up"
+    - disease: "Glutaryl-CoA dehydrogenase deficiency"
+      ratio: "C5DC/C16"
       direction: "up"
     - disease: "Carnitine palmitoyltransferase I deficiency"
       ratio: "C0/(C16+C18)"
