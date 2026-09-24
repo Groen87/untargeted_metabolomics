@@ -67,7 +67,8 @@ age_column: null
 #  - C8  Octanoylcarnitine: HMDB0000791
 #  - C10 Decanoylcarnitine: HMDB0000651
 #  - C12:1 trans-2-Dodecenoylcarnitine: HMDB0013326 (the lab's
-#       measured C12:1 isomer)
+#       measured C12:1 isomer; PLAIN column name, untagged in the
+#       input file)
 #  - C14:1 Tetradecenoylcarnitine: HMDB0258884 (the lab's measured
 #       C14:1 species)
 #  - C16 Palmitoylcarnitine: HMDB0000222
@@ -85,7 +86,7 @@ ratio_features:
     denominator: "L-Acetylcarnitine.HMDB0000201"
   - name: "C14:1/C12:1"
     numerator: "Tetradecenoylcarnitine.HMDB0258884"
-    denominator: "trans-2-Dodecenoylcarnitine.HMDB0013326"
+    denominator: "trans-2-Dodecenoylcarnitine"
   - name: "C3/C2"
     numerator: "Propionylcarnitine.HMDB0000824"
     denominator: "L-Acetylcarnitine.HMDB0000201"
