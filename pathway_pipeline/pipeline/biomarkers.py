@@ -611,8 +611,8 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
         ``top_disease``.
     """
     flag_cols = ["sample_id", "disease", "smp_id", "pathway_name",
-                 "hmdb_id", "direction", "abs_z", "threshold", "excess",
-                 "flagged"]
+                 "biomarker", "hmdb_id", "direction", "abs_z", "threshold",
+                 "excess", "flagged"]
     summary_cols = ["sample_id", "biomarker_flagged", "n_flagged_biomarkers",
                     "biomarker_depth_p", "max_biomarker_z", "top_biomarker",
                     "top_disease"]
@@ -658,7 +658,8 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
         test_columns.append(directed_col)
         column_meta.append({
             "test_id": len(test_columns) - 1,
-            "disease": row["disease"], "hmdb_id": hmdb_id,
+            "disease": row["disease"], "biomarker": row.get("biomarker"),
+            "hmdb_id": hmdb_id,
             "direction": direction, "smp_id": row["smp_id"],
             "pathway_name": row["pathway_name"]})
     if not test_columns:

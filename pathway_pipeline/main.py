@@ -658,6 +658,44 @@ def run_pipeline(input_file: str,
                     f"(pathway channel alone: "
                     f"{int(decisions_labeled['flagged_pathway_channel'].sum())}).")
 
+        # Label-blind calibration readout: flag rates among NORMALS only
+        # (evidence budget #1 -- normals stats are free; IMD labels stay
+        # untouched until the frozen STEP 10 read) plus per-disease and
+        # per-biomarker attribution of the flags.
+        normal_ids = set(decisions_labeled.loc[
+            decisions_labeled["group"] == "normal", "sample_id"])
+        dev_normal = normal_ids & set(decisions_labeled.loc[
+            ~decisions_labeled["validation"].fillna(False), "sample_id"])
+        val_normal = normal_ids - dev_normal
+        for name, ids in (("development", dev_normal),
+                          ("validation", val_normal)):
+            if ids:
+                sub = decisions_labeled[
+                    decisions_labeled["sample_id"].isin(ids)]
+                logger.info(
+                    f"Channel calibration check ({name} normals): "
+                    f"{int(sub['biomarker_flagged'].sum())} of "
+                    f"{len(sub)} flagged through the biomarker channel "
+                    f"({sub['biomarker_flagged'].mean():.1%}); combined "
+                    f"decision: {int(sub['flagged'].sum())} of {len(sub)} "
+                    f"({sub['flagged'].mean():.1%}).")
+        flagged_pairs = biomarker_flags[biomarker_flags["flagged"]]
+        if not flagged_pairs.empty:
+            if "disease" in flagged_pairs.columns:
+                per_disease = (flagged_pairs.groupby("disease").size()
+                               .sort_values(ascending=False))
+                logger.info("Flagged biomarker pairs per disease (top 15):")
+                for disease, count in per_disease.head(15).items():
+                    logger.info(f"  {disease}: {count}")
+            name_cols = (["hmdb_id", "biomarker"]
+                         if "biomarker" in flagged_pairs.columns
+                         else ["hmdb_id"])
+            hot = (flagged_pairs.groupby(name_cols).size()
+                   .sort_values(ascending=False))
+            logger.info("Biomarkers driving the flags (top 10):")
+            for key, count in hot.head(10).items():
+                logger.info(f"  {key}: {count}")
+
     # ------------------------------------------------------------------
     # STEP 9: label-blind development QC. Every check runs on the
     # calibration reference (development normals) or on measurement
