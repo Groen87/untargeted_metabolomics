@@ -24,6 +24,7 @@ pathway_pipeline/
 ├── __init__.py
 ├── main.py                       # Entry point (feature engineering)
 ├── seed_sweep.py                 # Label-blind split-stability sweep (multi-seed)
+├── multi_split_evaluation.py     # Pre-declared multi-split one-shot evaluation
 ├── config/
 │   ├── __init__.py
 │   ├── config.py                 # Dot-notation Config loader
@@ -455,7 +456,16 @@ python -m pathway_pipeline.main --input data/my_data.csv --output outputs/pathwa
 python -m pathway_pipeline.main --config my_config.yaml
 python -m pathway_pipeline.seed_sweep              # 20 seeds, label-blind
 python -m pathway_pipeline.seed_sweep --n-seeds 10 --base-seed 20260923
+python -m pathway_pipeline.multi_split_evaluation  # multi-split one-shot
 ```
+
+The multi-split evaluation is the label-aware one-shot protocol for a
+frozen version: a pre-declared seed list is fixed before any label-aware
+read, the validation half of each split is evaluated, and results are
+aggregated (mean/median/range) into
+`outputs/multi_split_evaluation/` -- `MULTI_SPLIT_REPORT.md` for the
+write-up, `runs/*.csv` for per-seed metrics and missed-IMD evidence,
+`per_seed/` for the full per-split audit trail.
 
 ## Testing
 
