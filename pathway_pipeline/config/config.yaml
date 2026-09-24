@@ -19,6 +19,32 @@ non_feature_columns:
   - "Non-treated"
 age_column: null
 
+# Diagnostic ratio features (STEP 1b): derived from the log10-transformed
+# areas as numerator - denominator, which IS the log-ratio
+# (log A - log B = log A/B). On log10 values each unit is a decade, so the
+# z-score of a ratio against the normal reference expresses how far the
+# RATIO deviates -- carnitine-status effects that move both species
+# together cancel out, isolating the enzyme block (the diagnostic logic
+# behind acylcarnitine ratios like C8/C2 in newborn screening).
+# Each entry needs: name (must not collide with an existing column),
+# numerator, denominator (EXACT feature column names from the input).
+# Ratios are NOT metabolites: they are excluded from HMDB matching and
+# pathway mapping, and join the scored set the way attached biomarkers
+# do -- metabolite z-scores, metabolite flags (STEP 8c report-only), and
+# the per-sample metabolite summary. They never enter pathway Stouffer
+# scores and never change the sample decision unless a later frozen
+# version wires them into a channel.
+# The list is frozen config, declared from textbook/consensus chemistry
+# (e.g. published newborn-screening ratio panels) -- NEVER from flag
+# performance or disease labels. Populating it creates a NEW frozen
+# configuration version requiring its own one-shot evaluation.
+# Example:
+# ratio_features:
+#   - name: "C8/C2"
+#     numerator: "Octanoylcarnitine.HMDB0000791"
+#     denominator: "L-Acetylcarnitine.HMDB0000221"
+ratio_features: []
+
 # Cohort definition for reporting: with untreated_imd_only, an IMD sample
 # (Classification == 1 AND Oordeel targeted == 1) counts as 'imd' only when
 # Non-treated == 1 (untreated, a true IMD presentation). Treated IMDs

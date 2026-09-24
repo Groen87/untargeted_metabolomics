@@ -48,6 +48,7 @@ from pathway_pipeline.pipeline.pathway_stats import (
     flag_metabolite_scores,
     summarize_metabolite_flags,
     compute_metabolite_zscores,
+    derive_ratio_features,
     filter_pathways_for_scoring,
     prune_redundant_pathways,
     compute_stouffer_scores,
@@ -177,6 +178,35 @@ def run_pipeline(input_file: str,
         age_column=config.get("age_column", None),
     )
 
+    # ------------------------------------------------------------------
+    # STEP 1b: derive configured ratio features (log-difference of the
+    # log10 areas = log-ratio). Diagnostic ratios (e.g. acylcarnitine
+    # C8/C2) isolate an enzyme block from carnitine-status effects that
+    # move the individual species together. The spec list is frozen
+    # config, declared from textbook chemistry -- never from flag
+    # performance. Derived ratios are NOT metabolites: they stay out of
+    # HMDB matching and pathway mapping, and join the scored set the way
+    # attached biomarkers do (metabolite z-scores and flags).
+    # ------------------------------------------------------------------
+    _log_section("STEP 1b: Derive ratio features")
+    ratio_specs = config.get("ratio_features", None) or []
+    ratio_features = []
+    if ratio_specs:
+        features, ratio_audit = derive_ratio_features(features, ratio_specs)
+        ratio_features = sorted(
+            ratio_audit.loc[ratio_audit["status"] == "derived", "name"])
+        bad = ratio_audit[ratio_audit["status"] != "derived"]
+        if len(bad):
+            logger.warning(
+                f"{len(bad)} ratio feature spec(s) could not be derived: "
+                + "; ".join(f"{r['name']} ({r['status']})"
+                            for _, r in bad.iterrows()))
+        logger.info(
+            f"Derived {len(ratio_features)} ratio feature(s): "
+            + (", ".join(ratio_features) if ratio_features else "none"))
+    else:
+        logger.info("No ratio features configured.")
+
     _log_section("STEP 2: Build HMDB name index")
     hmdb_xml = config.get("hmdb_xml_file", "data/hmdb_metabolites.xml")
     min_name_length = int(config.get("min_name_length", 3))
@@ -188,8 +218,10 @@ def run_pipeline(input_file: str,
                        "Only HMDB-tagged features will be matched.")
 
     _log_section("STEP 3: Match features to HMDB accessions")
+    metabolite_columns = [c for c in features.columns
+                          if c not in set(ratio_features)]
     feature_to_hmdb = match_features_to_hmdb(
-        feature_columns=list(features.columns),
+        feature_columns=metabolite_columns,
         name_index=name_index,
         min_name_length=min_name_length,
         overrides=config.get("feature_hmdb_overrides", None),
@@ -203,7 +235,7 @@ def run_pipeline(input_file: str,
         columns=["feature", "hmdb_id", "superseded_by"])
     if bool(config.get("prefer_tagged_features", True)):
         feature_to_hmdb, superseded_features = prefer_tagged_features(
-            feature_to_hmdb, feature_columns=list(features.columns))
+            feature_to_hmdb, feature_columns=metabolite_columns)
         if bool(config.get("save_mapping_outputs", True)) \
                 and len(superseded_features):
             superseded_features.to_csv(out / "superseded_features.csv",
@@ -393,6 +425,9 @@ def run_pipeline(input_file: str,
                         f"({len(extra)} not pathway-mapped).")
         pathway_features = sorted(set(pathway_features)
                                   | set(biomarker_features))
+    if ratio_features:
+        pathway_features = sorted(set(pathway_features)
+                                  | set(ratio_features))
     logger.info(f"Z-scoring {len(pathway_features)} pathway-mapped features "
                 f"(of {features.shape[1]} total).")
     features_scored = features[pathway_features]

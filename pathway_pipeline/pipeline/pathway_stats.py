@@ -63,6 +63,64 @@ def classify_samples(metadata: pd.DataFrame,
     return normal_mask
 
 
+def derive_ratio_features(features: pd.DataFrame,
+                          ratio_specs: List[Dict[str, str]]
+                          ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Derive configured ratio features from log10-transformed areas.
+
+    Each spec is ``{"name": ..., "numerator": ..., "denominator": ...}``
+    with exact feature column names. On log10 values a difference IS the
+    log-ratio: ``log(numerator) - log(denominator) = log(num/den)``, so
+    the derived column is the ratio, calibrated against the normal
+    reference exactly like any measured feature. Samples missing either
+    parent get NaN for the ratio (a ratio over a missing area is not a
+    value). Diagnostic ratios (e.g. acylcarnitine C8/C2) carry clinical
+    information the individual species cannot: carnitine-status effects
+    cancel in the numerator/denominator, isolating the enzyme block.
+
+    The derived name must not collide with an existing column; specs whose
+    parents are missing from the matrix or whose name collides are skipped
+    and reported in the audit frame.
+
+    Returns:
+        Tuple ``(features_with_ratios, audit)``: the input frame plus one
+        column per derivable ratio, and an audit frame with columns
+        ``name``, ``numerator``, ``denominator``, ``status``
+        ('derived'/'missing_parent'/'name_collision').
+    """
+    audit_rows = []
+    derived = features.copy()
+    for spec in ratio_specs or []:
+        name = str(spec.get("name", "")).strip()
+        num = str(spec.get("numerator", "")).strip()
+        den = str(spec.get("denominator", "")).strip()
+        if not name or not num or not den:
+            audit_rows.append({"name": name, "numerator": num,
+                               "denominator": den,
+                               "status": "incomplete_spec"})
+            continue
+        if name in features.columns:
+            audit_rows.append({"name": name, "numerator": num,
+                               "denominator": den,
+                               "status": "name_collision"})
+            continue
+        missing = [c for c in (num, den) if c not in features.columns]
+        if missing:
+            audit_rows.append({"name": name, "numerator": num,
+                               "denominator": den,
+                               "status": f"missing_parent: {','.join(missing)}"})
+            continue
+        num_values = pd.to_numeric(derived[num], errors="coerce")
+        den_values = pd.to_numeric(derived[den], errors="coerce")
+        derived[name] = num_values - den_values
+        audit_rows.append({"name": name, "numerator": num,
+                           "denominator": den, "status": "derived"})
+    audit = pd.DataFrame(
+        audit_rows,
+        columns=["name", "numerator", "denominator", "status"])
+    return derived, audit
+
+
 def compute_metabolite_zscores(features: pd.DataFrame,
                                normal_mask: pd.Series,
                                iqr_scale: bool = True,
