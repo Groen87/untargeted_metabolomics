@@ -61,7 +61,7 @@ def _write_inputs(tmp_path):
 def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
     input_csv, config_path = _write_inputs(tmp_path)
     out_root = tmp_path / "ms"
-    runs, missed, stability = run_multi_split_evaluation(
+    runs, missed, stability, miss_freq = run_multi_split_evaluation(
         input_file=input_csv,
         config_path=config_path,
         output_dir=str(out_root),
@@ -73,9 +73,12 @@ def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
                 "auc_ci_high", "dev_flag_rate", "val_flag_rate",
                 "n_missed_imd"):
         assert key in runs.columns, key
-    assert runs["n_normal"].eq(30).all()
-    assert runs["n_imd"].eq(4).all()
-    assert runs["n_other"].eq(2).all()
+    assert runs["n_normal"].eq(15).all()
+    assert runs["n_imd"].eq(2).all()
+    assert runs["n_total_normal"].eq(30).all()
+    assert runs["n_total_imd"].eq(4).all()
+    assert runs["n_total_other"].eq(2).all()
+    assert (runs["n_imd"] <= runs["n_total_imd"]).all()
     assert runs["n_missed_imd"].eq(len(missed[missed["seed"] == 21])
                                    if not missed.empty else 0).iloc[0] \
         or runs["n_missed_imd"].iloc[0] == 0
@@ -97,10 +100,22 @@ def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
     assert (stability["flag_rate"] <= 1.0).all()
     assert (stability["flag_rate"] >= 0.0).all()
     assert stability["flag_rate"].is_monotonic_decreasing
-    n_samples = runs["n_normal"].iloc[0] + runs["n_imd"].iloc[0] \
-        + runs["n_other"].iloc[0]
+    n_samples = runs["n_total_normal"].iloc[0] \
+        + runs["n_total_imd"].iloc[0] + runs["n_total_other"].iloc[0]
     assert len(stability) == n_samples
-    _write_report(out_root, [21, 22], runs, agg, missed, stability)
+    assert len(miss_freq) == 4
+    assert (miss_freq["n_splits_validation"] >= 0).all()
+    assert (miss_freq["n_splits_validation"] <= 2).all()
+    assert (miss_freq["n_splits_validation"].sum()
+            + runs["n_imd"].sum()) == 2 * 4
+    assert (miss_freq["miss_rate"].dropna() <= 1.0).all()
+    assert (miss_freq["miss_rate"].fillna(0.0)
+            .is_monotonic_decreasing)
+    assert (miss_freq["n_splits_missed"]
+            <= miss_freq["n_splits_validation"]).all()
+    _write_report(out_root, [21, 22], runs, agg, missed, stability,
+                  miss_freq)
     report = (out_root / "MULTI_SPLIT_REPORT.md").read_text()
     assert "Multi-Split Evaluation Report" in report
     assert "sensitivity" in report
+    assert "IMD miss frequency" in report

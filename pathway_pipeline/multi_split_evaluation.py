@@ -158,9 +158,10 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
                                output_dir: str, seeds: list) -> pd.DataFrame:
     """Run the frozen pipeline per pre-declared seed; evaluate validation.
 
-    Returns ``(runs, missed, stability)`` where ``runs`` holds per-seed
-    validation-half metrics, ``missed`` the missed-IMD evidence rows, and
-    ``stability`` the per-sample flag counts across all splits.
+    Returns ``(runs, missed, stability, miss_freq)`` where ``runs`` holds
+    per-seed validation-half metrics, ``missed`` the missed-IMD evidence
+    rows, ``stability`` the per-sample flag counts across all splits, and
+    ``miss_freq`` per-IMD miss counts over splits.
     """
     out_root = Path(output_dir)
     runs_dir = out_root / "runs"
@@ -205,6 +206,7 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
         missed_frames.append(seed_missed)
         row["n_missed_imd"] = len(seed_missed)
         stability_cols = [c for c in ("sample_id", "group", "flagged",
+                                      "validation",
                                       "flagged_pathway_channel",
                                       "biomarker_flagged", "top_excess",
                                       "top_pathway_name", "top_biomarker",
@@ -217,14 +219,15 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
         row.update(_normal_context(decisions, validation, "val"))
         row["hygiene_excluded"] = _hygiene_excluded(seed_dir)
         for group in ("normal", "imd", "other"):
-            row[f"n_{group}"] = int((groups == group).sum())
+            row[f"n_total_{group}"] = int((groups == group).sum())
         rows.append(row)
     runs = pd.DataFrame(rows)
     missed = (pd.concat(missed_frames, ignore_index=True)
               if missed_frames else pd.DataFrame(
                   columns=["seed", "sample_id", *MISSED_EVIDENCE_COLS]))
     stability = _sample_flag_stability(per_sample_frames)
-    return runs, missed, stability
+    miss_freq = _imd_miss_frequency(missed, per_sample_frames, len(seeds))
+    return runs, missed, stability, miss_freq
 
 
 def _modal_evidence(series: pd.Series) -> str:
@@ -233,6 +236,47 @@ def _modal_evidence(series: pd.Series) -> str:
     if values.empty:
         return ""
     return values.value_counts().index[0]
+
+
+def _imd_miss_frequency(missed: pd.DataFrame, per_sample_frames: list,
+                         n_seeds: int) -> pd.DataFrame:
+    """Per IMD: in how many splits it landed in validation and was missed.
+
+    Combining the missed-IMD evidence with the per-seed group/split
+    membership distinguishes systematic misses (missed in most splits
+    whenever in validation -- phenotype/coverage problem) from split
+    lottery (missed in a small minority).
+    """
+    if not per_sample_frames:
+        return pd.DataFrame()
+    all_samples = pd.concat(per_sample_frames, ignore_index=True)
+    imd = all_samples[all_samples["group"] == "imd"]
+    if imd.empty:
+        return pd.DataFrame(columns=["sample_id", "n_splits_validation",
+                                     "n_splits_missed", "miss_rate",
+                                     "mean_top_excess", "top_pathway_name",
+                                     "top_biomarker"])
+    imd["validation"] = imd["validation"].fillna(False).astype(bool)
+    grouped = imd.groupby("sample_id", sort=False)
+    freq = pd.DataFrame({
+        "n_splits_validation": grouped["validation"].sum().astype(int),
+        "mean_top_excess": grouped["top_excess"].mean()
+        if "top_excess" in imd.columns else float("nan"),
+        "top_pathway_name": grouped["top_pathway_name"].agg(_modal_evidence)
+        if "top_pathway_name" in imd.columns else "",
+        "top_biomarker": grouped["top_biomarker"].agg(_modal_evidence)
+        if "top_biomarker" in imd.columns else "",
+    })
+    miss_counts = (missed[missed["sample_id"].isin(freq.index)]
+                   .groupby("sample_id").size()
+                   if not missed.empty else pd.Series(
+                       dtype=int))
+    freq["n_splits_missed"] = (freq.index.map(miss_counts).fillna(0)
+                               .astype(int))
+    freq["miss_rate"] = freq["n_splits_missed"] / freq["n_splits_validation"]
+    freq = freq.sort_values(["miss_rate", "n_splits_missed"],
+                            ascending=False)
+    return freq.reset_index()
 
 
 def _sample_flag_stability(per_sample_frames: list) -> pd.DataFrame:
@@ -302,7 +346,8 @@ def _md_table(df: pd.DataFrame, float_fmt: str = "%.3f") -> str:
 
 def _write_report(out_root: Path, seeds: list, runs: pd.DataFrame,
                   agg: pd.DataFrame, missed: pd.DataFrame,
-                  stability: pd.DataFrame = None) -> None:
+                  stability: pd.DataFrame = None,
+                  miss_freq: pd.DataFrame = None) -> None:
     per_metric = []
     for metric in ("sensitivity", "specificity", "auc"):
         sel = agg[agg["metric"] == metric]
@@ -323,6 +368,17 @@ def _write_report(out_root: Path, seeds: list, runs: pd.DataFrame,
             f"val-half normal flag rate {val.iloc[0]['mean']:.3f} "
             f"(sd {val.iloc[0]['sd']:.3f}) -- the gap is the pathway "
             f"channel's split-dependent max-excess threshold.")
+    miss_freq_table = ""
+    if miss_freq is not None and not miss_freq.empty:
+        show = miss_freq.copy()
+        show["miss_rate"] = show["miss_rate"].map("{:.0%}".format)
+        show["mean_top_excess"] = show["mean_top_excess"].map(
+            lambda v: "%.2f" % v if pd.notna(v) else "")
+        miss_freq_table = ("\n\n### IMD miss frequency over splits\n\n"
+                           "Systematic misses (high miss_rate whenever in "
+                           "validation) point at phenotype/coverage gaps; "
+                           "low miss_rate is split lottery.\n\n"
+                           + _md_table(show))
     missed_table = ""
     if not missed.empty:
         show = missed.copy()
@@ -368,6 +424,7 @@ def _write_report(out_root: Path, seeds: list, runs: pd.DataFrame,
                         "specificity", "auc", "dev_flag_rate",
                         "val_flag_rate", "hygiene_excluded"]]),
         missed_table,
+        miss_freq_table,
         stability_table,
         "",
         "## Files",
@@ -377,6 +434,9 @@ def _write_report(out_root: Path, seeds: list, runs: pd.DataFrame,
         "per metric",
         "- `runs/missed_imd_evidence.csv` -- every missed IMD with its "
         "evidence",
+        "- `runs/imd_miss_frequency.csv` -- per IMD: splits in validation "
+        "vs splits missed and miss rate -- separates systematic misses "
+        "from split lottery",
         "- `runs/sample_flag_stability.csv` -- per sample across all "
         "splits: flag rate over splits, per-channel counts, modal "
         "evidence; sorted by flag rate. Unknowns sit in group 'other' and "
@@ -429,7 +489,7 @@ def main():
     logger.info("This protocol consumes the frozen version's one-shot: "
                 "the seed list is fixed before the label-aware read.")
     out_root = Path(args.output_dir)
-    runs, missed, stability = run_multi_split_evaluation(
+    runs, missed, stability, miss_freq = run_multi_split_evaluation(
         input_file=input_file, config_path=str(config_path),
         output_dir=str(out_root), seeds=seeds)
     runs_dir = out_root / "runs"
@@ -439,7 +499,9 @@ def main():
     missed.to_csv(runs_dir / "missed_imd_evidence.csv", index=False)
     if not stability.empty:
         stability.to_csv(runs_dir / "sample_flag_stability.csv", index=False)
-    _write_report(out_root, seeds, runs, agg, missed, stability)
+    if not miss_freq.empty:
+        miss_freq.to_csv(runs_dir / "imd_miss_frequency.csv", index=False)
+    _write_report(out_root, seeds, runs, agg, missed, stability, miss_freq)
     logger.info("Wrote multi_split_runs.csv, multi_split_aggregate.csv, "
                 "missed_imd_evidence.csv, MULTI_SPLIT_REPORT.md to %s",
                 out_root)
