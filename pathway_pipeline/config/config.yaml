@@ -440,6 +440,13 @@ evaluate_dev_half: false
 #   signaling molecule, but endogenous levels are low-nM; in an untargeted
 #   screen these features reflect retinoid MEDICATION use, and no IMD
 #   presents through retinoic acid
+# - TMP: a 4-way ambiguous name (thymidine monophosphate HMDB0001227,
+#   thiamine monophosphate HMDB0002666, tetramethylpyrazine
+#   HMDB0036584, trimethyl phosphate HMDB0259237 -- all name_exact
+#   matches); the column is chemically unidentifiable from its name,
+#   its z drove spurious single-metabolite depth hits (z 13-15 in one
+#   IMD sample), and no IMD pathway biology rides on it. The thiamine
+#   pathway is covered by scored thiamine pyrophosphate
 #
 # NOT scored anyway, so no demotion entry needed (re-add if pathway mapping
 # ever brings them in): thiamine monophosphate (reference IQR below the
@@ -454,6 +461,7 @@ demoted_features:
   - "Safingol"
   - "Tretinoin"
   - "4-Oxotretinoin"
+  - "TMP"
 
 # Combine features mapping to the same metabolite (HMDB ID) with scale^2
 # weights instead of a plain mean: under a constant absolute analytical
