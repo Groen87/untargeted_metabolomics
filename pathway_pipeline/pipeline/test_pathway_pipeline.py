@@ -676,3 +676,108 @@ def test_run_pipeline_biomarker_channel_flags_unmapped_biomarker(tmp_path):
     # Flags table recorded the (sample, pathway, biomarker) evidence.
     bio_flags = pd.read_csv(tmp_path / "out" / "biomarker_flags.csv")
     assert (bio_flags["hmdb_id"] == "HMDB0000215").any()
+
+
+def test_run_pipeline_disease_table_channel(tmp_path):
+    """Smoke test: the IEMbase-style disease table drives the biomarker
+    channel end to end -- the table's HMDB codes join the z-score set,
+    direction arrows gate which tail may flag, and a disease without a
+    kept PathBank pathway still scores."""
+    import numpy as np
+    import yaml
+    from pathway_pipeline.main import run_pipeline
+
+    xml = _write_hmdb_xml(tmp_path)
+    pathbank = _write_pathbank_csv(tmp_path)
+    names = _write_pathway_names_csv(tmp_path)
+
+    disease_table = tmp_path / "disease_table.csv"
+    pd.DataFrame([
+        {"Disease": "MCAD deficiency", "OMIM": "603361",
+         "Biochemical_Markers": "Octanoylcarnitine \u2191; Glucose \u2193",
+         "PathBank disease pathway": "MCAD (PathBank PW000216)",
+         "SMPDB code (SMP)": "SMP0000055",
+         "HMDB codes of named metabolites":
+             "Octanoylcarnitine (HMDB0000215); Glucose (HMDB0000122)"},
+        {"Disease": "MTHFR deficiency", "OMIM": "236250",
+         "Biochemical_Markers": "Methionine \u2193",
+         "PathBank disease pathway": "Not found in PathBank",
+         "SMPDB code (SMP)": "",
+         "HMDB codes of named metabolites":
+             "Methionine (HMDB0000696)"},
+    ]).to_csv(disease_table, index=False)
+
+    rng = np.random.default_rng(23)
+    n_normal, n_other = 30, 3
+    n = n_normal + n_other
+    oct_spikes = rng.normal(1.0, 0.01, size=n)
+    oct_spikes[-1] = 8.0
+    glu_drops = rng.normal(1.0, 0.01, size=n)
+    glu_drops[-1] = -6.0
+    data = {
+        "Sample": [f"s{i}" for i in range(n)],
+        "Classification": [0] * n_normal + [1] * n_other,
+        "Oordeel targeted": [0] * n_normal + [1] * n_other,
+        "Alanine": list(rng.normal(2.0, 0.30, size=n)),
+        "ATP": list(rng.normal(2.0, 0.30, size=n)),
+        "AMP": list(rng.normal(2.0, 0.30, size=n)),
+        "Octanoylcarnitine.HMDB0000215": list(oct_spikes),
+        "Glucose.HMDB0000122": list(glu_drops),
+    }
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame(data).to_csv(input_csv, index=False)
+    config = {
+        "input_file": str(input_csv),
+        "output_dir": str(tmp_path / "out"),
+        "patient_id_column": "Sample",
+        "non_feature_columns": ["Oordeel targeted", "Classification"],
+        "hmdb_xml_file": xml,
+        "use_hmdb_cache": False,
+        "pathbank_file": pathbank,
+        "pathbank_pathway_names_file": names,
+        "min_pathway_coverage": 0.10,
+        "min_pathway_features": 2,
+        "min_stouffer_metabolites": 2,
+        "sample_rule": "max_excess",
+        "max_sample_p": 0.05,
+        "biomarker_channel": {
+            "enable": True,
+            "disease_table_file": str(disease_table),
+            "attachments_file": str(tmp_path / "missing_attachments.csv"),
+        },
+        "save_mapping_outputs": True,
+        "save_zscore_outputs": True,
+        "save_stouffer_outputs": True,
+        "save_flagging_outputs": True,
+    }
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    result = run_pipeline(
+        input_file=str(input_csv),
+        output_dir=str(tmp_path / "out"),
+        config_path=str(config_path),
+    )
+    decisions = result["sample_decisions"]
+    # The audit CSV exists and reports the pathway status per row: MCAD's
+    # SMP is kept; MTHFR has no PathBank pathway at all.
+    audit = pd.read_csv(tmp_path / "out" / "disease_table_audit.csv")
+    assert len(audit) == 3
+    assert set(audit.loc[audit["disease"] == "MCAD deficiency",
+                        "pathway_status"]) == {"kept"}
+    assert set(audit.loc[audit["disease"] == "MTHFR deficiency",
+                        "pathway_status"]) == {"no_pathbank_pathway"}
+    # The biomarker features joined the z-score set.
+    assert "Octanoylcarnitine.HMDB0000215" in set(result["zscores"].columns)
+    assert "Glucose.HMDB0000122" in set(result["zscores"].columns)
+    # The spiked sample flags through the channel; the drop flags MCAD's
+    # 'down' glucose too (either way the disease flags).
+    spiked = decisions[decisions["sample_id"] == f"s{n - 1}"].iloc[0]
+    assert bool(spiked["biomarker_flagged"])
+    assert bool(spiked["flagged"])
+    assert "top_disease" in decisions.columns
+    assert spiked["top_disease"] == "MCAD deficiency"
+    # Flags table records the (sample, disease, biomarker) evidence.
+    bio_flags = pd.read_csv(tmp_path / "out" / "biomarker_flags.csv")
+    assert (bio_flags["disease"] == "MCAD deficiency").any()
+    assert set(bio_flags["direction"]) <= {"up", "down", ""}

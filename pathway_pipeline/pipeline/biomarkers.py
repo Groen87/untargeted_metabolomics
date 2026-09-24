@@ -23,9 +23,11 @@ the pathway max_excess rule). The channel ORs into the sample decision.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import numpy as np
 import pandas as pd
 
 from pathway_pipeline.pipeline.pathway_stats import (
@@ -294,3 +296,453 @@ def flag_biomarker_attachments(zscores: pd.DataFrame,
         depth["n_flagged_biomarkers"] >= 1)
     depth = depth[summary_cols]
     return biomarker_flags, depth
+
+
+# ---------------------------------------------------------------------------
+# IEMbase-style disease biomarker table (Excel/CSV) -> disease-keyed channel
+# ---------------------------------------------------------------------------
+
+DISEASE_TABLE_LONG_COLUMNS = ["disease", "biomarker", "hmdb_id", "direction",
+                              "omim", "smp_id", "pathway_name", "source"]
+DISEASE_RESOLVED_COLUMNS = DISEASE_TABLE_LONG_COLUMNS + ["features",
+                                                         "n_features"]
+DISEASE_AUDIT_COLUMNS = ["disease", "biomarker", "hmdb_id", "direction",
+                         "omim", "smp_id", "pathway_name", "pathway_status",
+                         "features", "n_features", "status"]
+
+_ARROWS = {"\u2191": "up", "\u2193": "down"}
+
+
+def _split_top_level(text: str) -> List[str]:
+    """Split on semicolons that are NOT inside parentheses/brackets."""
+    parts, depth, current = [], 0, ""
+    for char in str(text or ""):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        if char == ";" and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += char
+    parts.append(current)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _marker_direction(marker: str) -> str:
+    for arrow, direction in _ARROWS.items():
+        if arrow in marker:
+            return direction
+    return ""
+
+
+def _clean_marker_name(marker: str) -> str:
+    name = re.sub(r"[\u2191\u2193]", "", str(marker or ""))
+    name = name.replace("*", " ").strip()
+    return re.sub(r"\s+", " ", name)
+
+
+def _clean_pathway_name(name: str) -> str:
+    return re.sub(r"\s*\(PathBank PW\d+\)\s*$", "",
+                  str(name or "").strip()).strip()
+
+
+def _normalize_header(header: str) -> str:
+    return re.sub(r"\s+", " ", str(header or "").strip().lower()
+                  .replace("_", " "))
+
+
+def _column_lookup(headers: List[str]) -> Dict[str, str]:
+    """Map semantic roles to the actual header by prefix (case-insensitive)."""
+    roles = {
+        "disease": "disease",
+        "omim": "omim",
+        "markers": "biochemical markers",
+        "pathway": "pathbank",
+        "smp": "smpdb code",
+        "hmdb": "hmdb codes",
+    }
+    lookup = {}
+    for header in headers:
+        norm = _normalize_header(header)
+        for role, prefix in roles.items():
+            if norm == prefix or norm.startswith(prefix):
+                lookup.setdefault(role, header)
+    return lookup
+
+
+def _read_table_rows(table_path: str) -> List[List]:
+    path = Path(table_path)
+    if path.suffix.lower() in (".xlsx", ".xls"):
+        try:
+            import openpyxl
+        except ImportError:
+            logger.error(f"Reading {path.name} requires openpyxl "
+                         "(pip install openpyxl); disease biomarker "
+                         "table disabled.")
+            return []
+        workbook = openpyxl.load_workbook(str(path), read_only=True)
+        sheet = workbook[workbook.sheetnames[0]]
+        rows = [list(r) for r in sheet.iter_rows(values_only=True)]
+        workbook.close()
+        return rows
+    frame = pd.read_csv(path)
+    return [list(frame.columns)] + frame.astype(object).values.tolist()
+
+
+def load_disease_biomarker_table(table_path: str) -> pd.DataFrame:
+    """Load an IEMbase-style disease-biomarker table (Excel or CSV).
+
+    Expected columns (header matching is prefix-based and
+    case-insensitive): ``Disease``, ``OMIM``, ``Biochemical_Markers``
+    (marker names with arrows: up, down, or no arrow for either
+    direction), ``PathBank disease pathway``, ``SMPDB code (SMP)``, and
+    ``HMDB codes of named metabolites`` (semicolon-separated entries
+    positionally aligned with the markers; entries may carry multiple
+    HMDB codes, and ``(no HMDB entry found)`` entries are skipped with
+    a warning).
+
+    Returns:
+        DataFrame with one row per (disease, biomarker, HMDB code):
+        ``disease``, ``biomarker``, ``hmdb_id``, ``direction`` ('up'/
+        'down'/'' ), ``omim``, ``smp_id``, ``pathway_name``, ``source``.
+        Empty when the file is absent or unreadable.
+    """
+    path = Path(table_path)
+    if not path.exists():
+        logger.warning(f"Disease biomarker table not found ({table_path}); "
+                       "disease table source disabled.")
+        return pd.DataFrame(columns=DISEASE_TABLE_LONG_COLUMNS)
+    try:
+        rows = _read_table_rows(table_path)
+    except (OSError, pd.errors.ParserError, ValueError) as exc:
+        logger.warning(f"Could not read disease biomarker table "
+                       f"({table_path}): {exc}; source disabled.")
+        return pd.DataFrame(columns=DISEASE_TABLE_LONG_COLUMNS)
+    if len(rows) < 2:
+        logger.warning(f"Disease biomarker table {table_path} has no data "
+                       "rows; source disabled.")
+        return pd.DataFrame(columns=DISEASE_TABLE_LONG_COLUMNS)
+
+    def _cell(row, role):
+        header = lookup.get(role)
+        if header is None:
+            return None
+        idx = rows[0].index(header)
+        value = row[idx] if idx < len(row) else None
+        return None if value is None or pd.isna(value) else value
+
+    lookup = _column_lookup(rows[0])
+    if "disease" not in lookup or "markers" not in lookup \
+            or "hmdb" not in lookup:
+        logger.warning(f"Disease biomarker table {table_path} lacks the "
+                       "Disease / Biochemical_Markers / HMDB-codes columns; "
+                       "source disabled.")
+        return pd.DataFrame(columns=DISEASE_TABLE_LONG_COLUMNS)
+
+    out_rows = []
+    n_no_code = 0
+    n_misaligned = 0
+    for row in rows[1:]:
+        disease = str(_cell(row, "disease") or "").strip()
+        if not disease:
+            continue
+        omim = str(_cell(row, "omim") or "").strip() or None
+        smp_match = re.search(r"SMP\d+",
+                              str(_cell(row, "smp") or "").upper())
+        smp_id = smp_match.group() if smp_match else None
+        pathway_name = _clean_pathway_name(_cell(row, "pathway"))
+        source = f"IEMbase; OMIM {omim}" if omim else "IEMbase"
+        raw_markers = str(_cell(row, "markers") or "").strip()
+        if raw_markers.lower() in ("none", ""):
+            continue
+        markers = _split_top_level(raw_markers)
+        entries = _split_top_level(_cell(row, "hmdb"))
+        if len(markers) != len(entries):
+            n_misaligned += 1
+            logger.warning(f"Disease '{disease}': {len(markers)} marker(s) "
+                           f"but {len(entries)} HMDB entry(ies); aligning "
+                           "the shorter list.")
+        for marker, entry in zip(markers, entries):
+            direction = _marker_direction(marker)
+            biomarker = _clean_marker_name(marker)
+            codes = [c.upper() for c in re.findall(r"HMDB\d+", entry)]
+            if not codes:
+                n_no_code += 1
+                continue
+            for hmdb_id in codes:
+                out_rows.append({
+                    "disease": disease,
+                    "biomarker": biomarker,
+                    "hmdb_id": hmdb_id,
+                    "direction": direction,
+                    "omim": omim,
+                    "smp_id": smp_id,
+                    "pathway_name": pathway_name or None,
+                    "source": source,
+                })
+
+    table = pd.DataFrame(out_rows, columns=DISEASE_TABLE_LONG_COLUMNS)
+    if n_no_code:
+        logger.info(f"Disease table: skipped {n_no_code} marker(s) without "
+                    "an HMDB code ('no HMDB entry found').")
+    if n_misaligned:
+        logger.warning(f"Disease table: {n_misaligned} disease row(s) had "
+                       "misaligned marker/HMDB lists.")
+    logger.info(f"Loaded {len(table)} disease-biomarker attachment(s) "
+                f"({table['disease'].nunique() if len(table) else 0} "
+                f"diseases) from {table_path}.")
+    return table
+
+
+def resolve_disease_biomarkers(table: pd.DataFrame,
+                               feature_to_hmdb: pd.DataFrame,
+                               coverage: pd.DataFrame
+                               ) -> Tuple[pd.DataFrame, List[str], pd.DataFrame]:
+    """Resolve disease-biomarker rows to dataset features and kept pathways.
+
+    HMDB codes resolve to dataset feature columns via the feature -> HMDB
+    mapping (rows without a matched feature are reported in the audit and
+    skipped). The workbook's SMP code links the disease to a KEPT pathway
+    when one survives the coverage/keyword/pruning filters -- purely for
+    reporting; a disease with no kept pathway still scores through the
+    channel (the disease itself is the group).
+
+    Returns:
+        Tuple ``(resolved, features, audit)``: resolved attachments
+        (DISEASE_RESOLVED_COLUMNS), the sorted list of dataset features
+        carrying disease biomarkers, and the full audit table
+        (DISEASE_AUDIT_COLUMNS, one row per table row).
+    """
+    empty_resolved = pd.DataFrame(columns=DISEASE_RESOLVED_COLUMNS)
+    if table.empty:
+        return empty_resolved, [], pd.DataFrame(columns=DISEASE_AUDIT_COLUMNS)
+
+    feature_sets = (feature_to_hmdb.dropna(subset=["hmdb_id"])
+                    .groupby("hmdb_id")["feature"]
+                    .agg(lambda s: sorted(set(s))))
+    kept = (coverage[["smp_id", "pathway_name"]].drop_duplicates()
+            if not coverage.empty else pd.DataFrame(
+                columns=["smp_id", "pathway_name"]))
+    kept_smps = set(kept["smp_id"])
+    smp_to_name = dict(zip(kept["smp_id"], kept["pathway_name"]))
+
+    resolved_rows = []
+    audit_rows = []
+    for _, row in table.iterrows():
+        feats = feature_sets.get(row["hmdb_id"], [])
+        has_smp = pd.notna(row["smp_id"]) and str(row["smp_id"]).strip()
+        if has_smp and row["smp_id"] in kept_smps:
+            pathway_status = "kept"
+            smp_id, pathway_name = row["smp_id"], smp_to_name[row["smp_id"]]
+        elif has_smp:
+            pathway_status = "not_in_kept_set"
+            smp_id, pathway_name = None, row["pathway_name"]
+        else:
+            pathway_status = "no_pathbank_pathway"
+            smp_id, pathway_name = None, row["pathway_name"]
+        status = "scored" if feats else "no_dataset_feature"
+        audit_rows.append({
+            "disease": row["disease"], "biomarker": row["biomarker"],
+            "hmdb_id": row["hmdb_id"], "direction": row["direction"],
+            "omim": row["omim"], "smp_id": row["smp_id"],
+            "pathway_name": row["pathway_name"],
+            "pathway_status": pathway_status,
+            "features": ";".join(feats), "n_features": len(feats),
+            "status": status,
+        })
+        if feats:
+            resolved_rows.append({
+                "disease": row["disease"], "biomarker": row["biomarker"],
+                "hmdb_id": row["hmdb_id"], "direction": row["direction"],
+                "omim": row["omim"], "smp_id": smp_id,
+                "pathway_name": pathway_name, "source": row["source"],
+                "features": ";".join(feats), "n_features": len(feats),
+            })
+
+    resolved = pd.DataFrame(resolved_rows,
+                            columns=DISEASE_RESOLVED_COLUMNS)
+    audit = pd.DataFrame(audit_rows, columns=DISEASE_AUDIT_COLUMNS)
+    features = sorted({f for feats in resolved["features"] for f in
+                       str(feats).split(";") if f})
+    n_no_feature = int((audit["status"] == "no_dataset_feature").sum())
+    if n_no_feature:
+        logger.warning(f"{n_no_feature} disease-biomarker row(s) match no "
+                       "dataset feature (see disease_table_audit.csv).")
+    n_kept = int((audit["pathway_status"] == "kept").sum())
+    logger.info(f"Disease table: {len(resolved)} attachment(s) resolved to "
+                f"dataset features across {resolved['disease'].nunique() if len(resolved) else 0} "
+                f"disease(s); {n_kept} row(s) link to a kept pathway.")
+    return resolved, features, audit
+
+
+def flag_disease_biomarkers(zscores: pd.DataFrame,
+                            resolved: pd.DataFrame,
+                            feature_to_hmdb: pd.DataFrame,
+                            normal_mask: pd.Series,
+                            threshold_percentile: float = 99.0,
+                            feature_scale_weights: Dict[str, float] = None,
+                            max_sample_p: float = 0.05
+                            ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Flag samples through disease-keyed, direction-aware biomarkers.
+
+    Per disease, each biomarker's z is directed by its literature
+    direction ('up' keeps only increases, 'down' only decrease
+    magnitude, no arrow keeps |z|) -- directions are honored per
+    (disease, biomarker), so a metabolite that rises in one disease and
+    falls in another is scored correctly for both. Thresholds stay the
+    direction-agnostic ``threshold_percentile`` percentile of the
+    reference normals' |z| (the prior restricts WHICH tail may flag,
+    not the normal range). The per-disease depth null is the maximum
+    directed z of the reference normals over that disease's biomarkers;
+    a sample flags the disease when at least one biomarker exceeds its
+    threshold AND its maximum directed z beats that null at the frozen
+    ``max_sample_p``. The channel flags the sample when ANY disease
+    flags.
+
+    Returns:
+        Tuple ``(flags, summary)``: ``flags`` with one row per (sample,
+        disease, biomarker) carrying ``abs_z`` (directed magnitude),
+        ``threshold``, ``excess``, ``flagged``; ``summary`` with one row
+        per sample: ``biomarker_flagged`` (final channel decision),
+        ``n_flagged_biomarkers``, ``biomarker_depth_p`` (depth p of the
+        best-flagging disease), ``max_biomarker_z``, ``top_biomarker``,
+        ``top_disease``.
+    """
+    flag_cols = ["sample_id", "disease", "smp_id", "pathway_name",
+                 "hmdb_id", "direction", "abs_z", "threshold", "excess",
+                 "flagged"]
+    summary_cols = ["sample_id", "biomarker_flagged", "n_flagged_biomarkers",
+                    "biomarker_depth_p", "max_biomarker_z", "top_biomarker",
+                    "top_disease"]
+    if resolved.empty or zscores.empty:
+        return (pd.DataFrame(columns=flag_cols),
+                pd.DataFrame(columns=summary_cols))
+
+    biomarker_z = aggregate_metabolite_zscores(
+        zscores, feature_to_hmdb, list(resolved["hmdb_id"].unique()),
+        feature_scale_weights=feature_scale_weights)
+    biomarker_z = biomarker_z.dropna(axis=1, how="all")
+    if biomarker_z.empty:
+        return (pd.DataFrame(columns=flag_cols),
+                pd.DataFrame(columns=summary_cols))
+
+    dedup = normal_mask[~normal_mask.index.duplicated(keep="first")]
+    normal_values = biomarker_z.abs()[dedup.reindex(biomarker_z.index,
+                                                    fill_value=False)]
+    with np.errstate(all="ignore"):
+        thresholds = normal_values.quantile(threshold_percentile / 100.0,
+                                            axis=0).fillna(float("inf"))
+    normal_ids = [s for s, v in dedup.reindex(biomarker_z.index,
+                                              fill_value=False).items() if v]
+
+    flag_frames = []
+    depth_frames = []
+    for disease, sub in resolved.groupby("disease", sort=True):
+        sub = sub.drop_duplicates(subset=["hmdb_id"])
+        directions = dict(zip(sub["hmdb_id"], sub["direction"]))
+        view = dict(zip(sub["hmdb_id"], zip(sub["smp_id"],
+                                            sub["pathway_name"])))
+        cols = {}
+        for hmdb_id, direction in directions.items():
+            if hmdb_id not in biomarker_z.columns:
+                continue
+            z = biomarker_z[hmdb_id]
+            if direction == "up":
+                cols[hmdb_id] = z.clip(lower=0)
+            elif direction == "down":
+                cols[hmdb_id] = (-z).clip(lower=0)
+            else:
+                cols[hmdb_id] = z.abs()
+        if not cols:
+            continue
+        directed = pd.DataFrame(cols, index=biomarker_z.index)
+        thr = thresholds.reindex(directed.columns).fillna(float("inf"))
+        long = (directed.rename_axis("sample_id").reset_index()
+                .melt(id_vars="sample_id", var_name="hmdb_id",
+                      value_name="abs_z"))
+        long["direction"] = long["hmdb_id"].map(directions)
+        long["smp_id"] = long["hmdb_id"].map(lambda h: view[h][0])
+        long["pathway_name"] = long["hmdb_id"].map(lambda h: view[h][1])
+        long["threshold"] = long["hmdb_id"].map(thr)
+        with np.errstate(all="ignore"):
+            long["excess"] = long["abs_z"] / long["threshold"]
+        long["flagged"] = long["abs_z"] > long["threshold"]
+        long["disease"] = disease
+        long = long[flag_cols]
+        flag_frames.append(long)
+
+        if normal_ids:
+            normal_max = directed.loc[directed.index.isin(normal_ids)]
+            sample_max = directed.max(axis=1)
+            if len(normal_max):
+                nmax = normal_max.max(axis=1).values
+                smax = sample_max.values
+                with np.errstate(all="ignore"):
+                    depth_p = pd.Series(
+                        np.mean(smax[:, None] <= nmax[None, :], axis=1),
+                        index=directed.index, dtype=float)
+            else:
+                depth_p = pd.Series(np.nan, index=directed.index)
+        else:
+            depth_p = pd.Series(np.nan, index=directed.index)
+        depth_frames.append(pd.DataFrame({
+            "sample_id": directed.index,
+            "disease": disease,
+            "depth_p": depth_p.values,
+            "max_z": directed.max(axis=1).values,
+        }))
+
+    flags = (pd.concat(flag_frames, ignore_index=True)
+             if flag_frames else pd.DataFrame(columns=flag_cols))
+    depths = (pd.concat(depth_frames, ignore_index=True)
+              if depth_frames else pd.DataFrame(
+                  columns=["sample_id", "disease", "depth_p", "max_z"]))
+    pair_flags = flags[flags["flagged"]] if not flags.empty else flags
+    per_disease = (pair_flags.groupby(["sample_id", "disease"])
+                   .agg(n_flagged=("flagged", "size")).reset_index()
+                   if not pair_flags.empty else pd.DataFrame(
+                       columns=["sample_id", "disease", "n_flagged"]))
+    per_disease = per_disease.merge(depths, on=["sample_id", "disease"],
+                                    how="left")
+    per_disease["rule"] = ((per_disease["n_flagged"] >= 1)
+                           & (per_disease["depth_p"] <= max_sample_p))
+    best = (per_disease[per_disease["rule"]]
+            .sort_values(["sample_id", "depth_p"])
+            .groupby("sample_id", as_index=False).first())
+
+    samples = pd.Index(zscores.index, name="sample_id")
+    summary = pd.DataFrame({"sample_id": samples})
+    summary = summary.merge(best[["sample_id", "disease", "depth_p"]]
+                            .rename(columns={
+                                "disease": "top_disease",
+                                "depth_p": "biomarker_depth_p"}),
+                            on="sample_id", how="left")
+    if not pair_flags.empty:
+        counts = pair_flags.groupby("sample_id").agg(
+            n_flagged_biomarkers=("flagged", "size"),
+            max_biomarker_z=("abs_z", "max")).reset_index()
+        top = (pair_flags.sort_values("abs_z", ascending=False)
+               .groupby("sample_id", as_index=False).first()[
+                   ["sample_id", "hmdb_id"]])
+        summary = summary.merge(counts, on="sample_id", how="left")
+        summary = summary.merge(top.rename(columns={
+            "hmdb_id": "top_biomarker"}), on="sample_id", how="left")
+    else:
+        summary["n_flagged_biomarkers"] = 0
+        summary["max_biomarker_z"] = np.nan
+        summary["top_biomarker"] = None
+    summary["biomarker_flagged"] = summary["sample_id"].isin(
+        set(best["sample_id"]))
+    for col, fill in (("n_flagged_biomarkers", 0), ("max_biomarker_z", np.nan),
+                      ("top_biomarker", None), ("top_disease", None),
+                      ("biomarker_depth_p", np.nan)):
+        if col in summary.columns:
+            summary[col] = summary[col].where(summary[col].notna(), fill)
+    summary = summary[summary_cols]
+    n_diseases = resolved["disease"].nunique()
+    logger.info(f"Disease biomarker channel: {n_diseases} disease group(s), "
+                f"{int(summary['biomarker_flagged'].sum())} of "
+                f"{len(summary)} samples flagged through the channel.")
+    return flags, summary

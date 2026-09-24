@@ -243,6 +243,22 @@ metabolite_flag_percentile: 99.0
 # biomarker_flags.csv for audit.
 biomarker_channel:
   enable: true
+  # Source 1: IEMbase-style disease biomarker table (Excel or CSV). One
+  # row per disease with columns: Disease, OMIM, Biochemical_Markers
+  # (marker names with up/down direction arrows), PathBank disease
+  # pathway, SMPDB code (SMP), HMDB codes of named metabolites
+  # (positionally aligned with the markers; entries may carry multiple
+  # codes; 'no HMDB entry found' entries are skipped). DISEASES are the
+  # grouping unit; the SMP code links a disease to a kept pathway for
+  # reporting only -- a disease without a kept pathway still scores.
+  # Directions are honored per (disease, biomarker): 'up' keeps only
+  # increases, 'down' only decreases. The full resolution audit is
+  # written to disease_table_audit.csv -- review it before freezing the
+  # table. Set to null to disable this source.
+  disease_table_file: "pathway_pipeline/iembase-diseases-with-pathbank-pathways-and-hmdb-codes.xlsx"
+  # Source 2: resolved attachments CSV (smp_id or pathway_name +
+  # hmdb_id already known) -- used when the disease table is absent, or
+  # alongside it as a complement.
   attachments_file: "data/pathway_biomarker_attachments.csv"
   threshold_percentile: 99.0
 

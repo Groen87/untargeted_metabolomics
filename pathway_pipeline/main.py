@@ -63,6 +63,9 @@ from pathway_pipeline.pipeline.biomarkers import (
     load_biomarker_attachments,
     resolve_biomarker_attachments,
     flag_biomarker_attachments,
+    load_disease_biomarker_table,
+    resolve_disease_biomarkers,
+    flag_disease_biomarkers,
 )
 from pathway_pipeline.pipeline.develop import run_development_qc
 from pathway_pipeline.pipeline.evaluate import summarize_evaluation
@@ -328,14 +331,41 @@ def run_pipeline(input_file: str,
     ) if not coverage.empty else []
     biomarker_attachments = None
     biomarker_features = []
+    disease_table = None
+    disease_resolved = None
     if bool(config.get("biomarker_channel.enable", True)):
+        # Source 1: IEMbase-style disease biomarker table (Excel/CSV with
+        # biomarker names, direction arrows, and per-metabolite HMDB
+        # codes). Diseases are the grouping unit -- the workbook's SMP
+        # code links a disease to a kept PathBank pathway for reporting
+        # only; a disease without a kept pathway still scores.
+        disease_table_file = config.get(
+            "biomarker_channel.disease_table_file", None)
+        if disease_table_file:
+            disease_table = load_disease_biomarker_table(disease_table_file)
+            if not disease_table.empty:
+                disease_resolved, disease_features, disease_audit = (
+                    resolve_disease_biomarkers(
+                        disease_table, feature_to_hmdb, coverage)
+                )
+                if bool(config.get("save_mapping_outputs", True)):
+                    disease_audit.to_csv(out / "disease_table_audit.csv",
+                                         index=False)
+                    logger.info("Wrote disease_table_audit.csv to "
+                                f"{out} -- review unmatched/unscored "
+                                "rows before freezing the table.")
+                biomarker_features.extend(disease_features)
+        # Source 2: resolved attachments CSV (smp_id/pathway_name +
+        # hmdb_id already known).
         attachments_file = config.get(
             "biomarker_channel.attachments_file",
             "data/pathway_biomarker_attachments.csv")
         biomarker_attachments = load_biomarker_attachments(attachments_file)
         if not biomarker_attachments.empty:
-            _, biomarker_features = resolve_biomarker_attachments(
+            _, att_features = resolve_biomarker_attachments(
                 biomarker_attachments, feature_to_hmdb, coverage)
+            biomarker_features.extend(att_features)
+    biomarker_features = sorted(set(biomarker_features))
     if biomarker_features:
         extra = sorted(set(biomarker_features) - set(pathway_features))
         if extra:
@@ -553,10 +583,32 @@ def run_pipeline(input_file: str,
     # channel ORs into the sample decision: flagged when an attached
     # biomarker exceeds its normal-percentile threshold AND the sample's
     # maximum attached-biomarker |z| beats the biomarker-restricted depth
-    # null of the reference normals. Label-blind by construction.
+    # null of the reference normals. When the disease table is present,
+    # DISEASES are the grouping unit and directions are honored per
+    # (disease, biomarker). Label-blind by construction.
     # ------------------------------------------------------------------
     biomarker_flags = None
-    if (biomarker_attachments is not None
+    feature_scale_weights = None
+    if (bool(config.get("scale_weighted_metabolites", True))
+            and not reference_stats.empty):
+        feature_scale_weights = {
+            row["feature"]: float(row["scale"]) ** 2
+            for _, row in reference_stats.iterrows()}
+    if (disease_resolved is not None
+            and not disease_resolved.empty
+            and not zscores_scored.empty):
+        _log_section("STEP 8d: Disease biomarker channel (IEMbase table)")
+        biomarker_flags, biomarker_summary = flag_disease_biomarkers(
+            zscores_scored,
+            disease_resolved,
+            feature_to_hmdb,
+            normal_mask=normal_mask,
+            threshold_percentile=float(
+                config.get("biomarker_channel.threshold_percentile", 99.0)),
+            feature_scale_weights=feature_scale_weights,
+            max_sample_p=float(config.get("max_sample_p", 0.05)),
+        )
+    elif (biomarker_attachments is not None
             and not biomarker_attachments.empty
             and not zscores_scored.empty):
         _log_section("STEP 8d: Biomarker attachment channel "
@@ -567,12 +619,6 @@ def run_pipeline(input_file: str,
             logger.warning("No biomarker attachment resolved to a kept "
                            "pathway with a matched feature; channel inert.")
         else:
-            feature_scale_weights = None
-            if (bool(config.get("scale_weighted_metabolites", True))
-                    and not reference_stats.empty):
-                feature_scale_weights = {
-                    row["feature"]: float(row["scale"]) ** 2
-                    for _, row in reference_stats.iterrows()}
             biomarker_flags, biomarker_summary = flag_biomarker_attachments(
                 zscores_scored,
                 resolved_attachments,
@@ -582,34 +628,35 @@ def run_pipeline(input_file: str,
                     config.get("biomarker_channel.threshold_percentile", 99.0)),
                 feature_scale_weights=feature_scale_weights,
             )
-            max_sample_p = float(config.get("max_sample_p", 0.05))
-            biomarker_summary["biomarker_flagged"] = (
-                (biomarker_summary["n_flagged_biomarkers"].fillna(0) >= 1)
-                & (biomarker_summary["biomarker_depth_p"].fillna(1.0)
-                   <= max_sample_p)
-            )
-            if bool(config.get("save_flagging_outputs", True)):
-                biomarker_flags.to_csv(out / "biomarker_flags.csv",
-                                       index=False)
-                logger.info(f"Wrote biomarker_flags.csv to {out}")
-            decisions_labeled["flagged_pathway_channel"] = decisions_labeled[
-                "flagged"]
-            merged = decisions_labeled.merge(
-                biomarker_summary, on="sample_id", how="left")
-            for col in biomarker_summary.columns:
-                if col != "sample_id":
-                    decisions_labeled[col] = merged[col]
-            decisions_labeled["flagged"] = (
-                decisions_labeled["flagged_pathway_channel"].astype(bool)
-                | decisions_labeled["biomarker_flagged"].fillna(False)
-                .astype(bool))
-            n_bio = int(biomarker_summary["biomarker_flagged"].sum())
-            logger.info(f"Biomarker channel: {n_bio} of "
-                        f"{len(decisions_labeled)} samples flagged through "
-                        f"attached biomarkers; combined decision: "
-                        f"{int(decisions_labeled['flagged'].sum())} flagged "
-                        f"(pathway channel alone: "
-                        f"{int(decisions_labeled['flagged_pathway_channel'].sum())}).")
+    if biomarker_flags is not None and not biomarker_flags.empty:
+        max_sample_p = float(config.get("max_sample_p", 0.05))
+        biomarker_summary["biomarker_flagged"] = (
+            (biomarker_summary["n_flagged_biomarkers"].fillna(0) >= 1)
+            & (biomarker_summary["biomarker_depth_p"].fillna(1.0)
+               <= max_sample_p)
+        )
+        if bool(config.get("save_flagging_outputs", True)):
+            biomarker_flags.to_csv(out / "biomarker_flags.csv",
+                                   index=False)
+            logger.info(f"Wrote biomarker_flags.csv to {out}")
+        decisions_labeled["flagged_pathway_channel"] = decisions_labeled[
+            "flagged"]
+        merged = decisions_labeled.merge(
+            biomarker_summary, on="sample_id", how="left")
+        for col in biomarker_summary.columns:
+            if col != "sample_id":
+                decisions_labeled[col] = merged[col]
+        decisions_labeled["flagged"] = (
+            decisions_labeled["flagged_pathway_channel"].astype(bool)
+            | decisions_labeled["biomarker_flagged"].fillna(False)
+            .astype(bool))
+        n_bio = int(biomarker_summary["biomarker_flagged"].sum())
+        logger.info(f"Biomarker channel: {n_bio} of "
+                    f"{len(decisions_labeled)} samples flagged through "
+                    f"attached biomarkers; combined decision: "
+                    f"{int(decisions_labeled['flagged'].sum())} flagged "
+                    f"(pathway channel alone: "
+                    f"{int(decisions_labeled['flagged_pathway_channel'].sum())}).")
 
     # ------------------------------------------------------------------
     # STEP 9: label-blind development QC. Every check runs on the

@@ -216,3 +216,137 @@ def test_flag_biomarker_channel_empty_inputs():
         pd.DataFrame(), _resolved(), _f2h(), normal_mask=pd.Series(dtype=bool))
     assert flags.empty
     assert summary.empty
+
+
+# ---------------------------------------------------------------------------
+# IEMbase-style disease biomarker table
+# ---------------------------------------------------------------------------
+
+from pathway_pipeline.pipeline.biomarkers import (
+    load_disease_biomarker_table,
+    resolve_disease_biomarkers,
+    flag_disease_biomarkers,
+)
+
+
+def _write_disease_table(path):
+    df = pd.DataFrame([
+        {"Disease": "MCAD deficiency", "OMIM": "603361",
+         "Abbreviation IEMbase": "MCADD",
+         "Biochemical_Markers": "Octanoylcarnitine \u2191; Glucose \u2193",
+         "PathBank disease pathway": "MCAD (PathBank PW000216)",
+         "SMPDB code (SMP)": "SMP0000555",
+         "HMDB codes of named metabolites":
+             "Octanoylcarnitine (HMDB0000215); Glucose (HMDB0000122)"},
+        {"Disease": "MTHFR deficiency", "OMIM": "236250",
+         "Abbreviation IEMbase": "MTHFR",
+         "Biochemical_Markers": "Methionine \u2193; Homocysteine \u2191",
+         "PathBank disease pathway": "Not found in PathBank",
+         "SMPDB code (SMP)": "",
+         "HMDB codes of named metabolites":
+             "Methionine (HMDB0000696); Homocysteine (no HMDB entry found)"},
+    ])
+    df.to_csv(path, index=False)
+    return str(path)
+
+
+def test_load_disease_table_parses_rows_directions_and_codes(tmp_path):
+    table = load_disease_biomarker_table(
+        _write_disease_table(tmp_path / "disease.csv"))
+    assert len(table) == 3  # homocysteine has no code -> skipped
+    mcad = table[table["disease"] == "MCAD deficiency"]
+    assert set(mcad["hmdb_id"]) == {"HMDB0000215", "HMDB0000122"}
+    assert dict(zip(mcad["hmdb_id"], mcad["direction"])) == {
+        "HMDB0000215": "up", "HMDB0000122": "down"}
+    assert set(mcad["biomarker"]) == {"Octanoylcarnitine", "Glucose"}
+    assert mcad["smp_id"].iloc[0] == "SMP0000555"
+    mthfr = table[table["disease"] == "MTHFR deficiency"]
+    assert len(mthfr) == 1
+    assert mthfr["direction"].iloc[0] == "down"
+    assert pd.isna(mthfr["smp_id"].iloc[0])
+    assert mthfr["pathway_name"].iloc[0] == "Not found in PathBank"
+
+
+def test_load_disease_table_missing_file(tmp_path):
+    table = load_disease_biomarker_table(str(tmp_path / "missing.xlsx"))
+    assert table.empty
+
+
+def test_resolve_disease_biomarkers_reports_and_filters(tmp_path):
+    table = load_disease_biomarker_table(
+        _write_disease_table(tmp_path / "disease.csv"))
+    f2h = pd.DataFrame([
+        {"feature": "Octanoylcarnitine.HMDB0000215", "hmdb_id": "HMDB0000215"},
+        {"feature": "Glucose.HMDB0000122", "hmdb_id": "HMDB0000122"},
+        {"feature": "Methionine", "hmdb_id": "HMDB0000696"},
+    ])
+    coverage = pd.DataFrame([
+        {"smp_id": "SMP0000555", "pathway_name": "MCAD"}])
+    resolved, features, audit = resolve_disease_biomarkers(
+        table, f2h, coverage)
+    # All three codes resolve to dataset features; MCAD's SMP is in the
+    # kept set, MTHFR's disease scores without a kept pathway.
+    assert set(resolved["hmdb_id"]) == {"HMDB0000215", "HMDB0000122",
+                                       "HMDB0000696"}
+    assert set(features) == {"Octanoylcarnitine.HMDB0000215",
+                             "Glucose.HMDB0000122", "Methionine"}
+    assert len(audit) == 3
+    # Pathway link reported only when the SMP is kept.
+    mcad_row = audit[audit["disease"] == "MCAD deficiency"]
+    assert set(mcad_row["pathway_status"]) == {"kept"}
+    mthfr_row = audit[audit["disease"] == "MTHFR deficiency"]
+    assert set(mthfr_row["pathway_status"]) == {"no_pathbank_pathway"}
+
+
+def test_flag_disease_biomarkers_direction_and_disease_groups(tmp_path):
+    table = load_disease_biomarker_table(
+        _write_disease_table(tmp_path / "disease.csv"))
+    f2h = pd.DataFrame([
+        {"feature": "Octanoylcarnitine.HMDB0000215", "hmdb_id": "HMDB0000215"},
+        {"feature": "Glucose.HMDB0000122", "hmdb_id": "HMDB0000122"},
+        {"feature": "Methionine", "hmdb_id": "HMDB0000696"},
+    ])
+    coverage = pd.DataFrame([
+        {"smp_id": "SMP0000555", "pathway_name": "MCAD"}])
+    resolved, _, _ = resolve_disease_biomarkers(table, f2h, coverage)
+
+    rng = np.random.default_rng(3)
+    n = 43
+    zscores = pd.DataFrame(
+        rng.normal(0, 1, size=(n, 3)),
+        index=[f"s{i}" for i in range(n)],
+        columns=["Octanoylcarnitine.HMDB0000215", "Glucose.HMDB0000122",
+                 "Methionine"])
+    # The last three samples are 'patients' (excluded from the reference).
+    normal_mask = pd.Series(
+        [True] * (n - 3) + [False, False, False], index=zscores.index)
+    # One sample: methionine drops hard (MTHFR 'down' biomarker).
+    zscores.loc["s40", "Methionine"] = -14.0
+    # Another: octanoylcarnitine rises hard (MCAD 'up' biomarker).
+    zscores.loc["s41", "Octanoylcarnitine.HMDB0000215"] = 14.0
+    # And a sample with methionine RISING: must NOT flag MTHFR ('down').
+    zscores.loc["s42", "Methionine"] = 14.0
+
+    flags, summary = flag_disease_biomarkers(
+        zscores, resolved, f2h, normal_mask=normal_mask,
+        threshold_percentile=99.0, max_sample_p=0.05)
+
+    flagged_diseases = flags[flags["flagged"]].groupby(
+        "sample_id")["disease"].apply(set).to_dict()
+    assert "MTHFR deficiency" in flagged_diseases.get("s40", set())
+    assert "MCAD deficiency" in flagged_diseases.get("s41", set())
+    assert "MTHFR deficiency" not in flagged_diseases.get("s42", set())
+    row = summary[summary["sample_id"] == "s40"].iloc[0]
+    assert bool(row["biomarker_flagged"])
+    assert row["top_disease"] == "MTHFR deficiency"
+    # Normals rarely flag (threshold at the 99th percentile).
+    normal_rows = summary[summary["sample_id"].isin(zscores.index[:-3])]
+    assert int(normal_rows["n_flagged_biomarkers"].sum()) <= 3
+
+
+def test_flag_disease_biomarkers_empty_inputs():
+    flags, summary = flag_disease_biomarkers(
+        pd.DataFrame(), pd.DataFrame(columns=["disease", "hmdb_id"]),
+        _f2h(), normal_mask=pd.Series(dtype=bool))
+    assert flags.empty
+    assert summary.empty

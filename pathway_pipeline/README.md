@@ -320,16 +320,39 @@ curated prior knowledge as a **separate, openly declared channel**: PathBank
 pathways are never modified, so the pathway channel stays pure and any
 performance difference between the channels is attributable and auditable.
 
-The attachment table (`data/pathway_biomarker_attachments.csv`, columns
-`smp_id` OR `pathway_name`, `hmdb_id`, `source`) is user-curated from
-systematic literature sources (biomarker tables in reviews / newborn-
-screening guidelines), with the citation per row in `source`. Curation rules
-evidence budget #3: attachments are chosen from textbook knowledge only,
-never from which samples the pipeline flagged or missed, and the table is
-frozen before the STEP 10 read. The knowledge is gene/disease-level, so it
-is label-blind by construction -- the same table would be declared for any
-cohort. A missing file disables the channel with a warning until the table
-is provided.
+Attachments come from two complementary sources:
+
+1. **IEMbase-style disease biomarker table**
+   (`biomarker_channel.disease_table_file`): an Excel (`.xlsx`, requires
+   `openpyxl`) or CSV file with one row per disease and columns `Disease`,
+   `OMIM`, `Biochemical_Markers` (marker names with ↑/↓ direction arrows;
+   no arrow = either direction), `PathBank disease pathway`, `SMPDB code
+   (SMP)`, and `HMDB codes of named metabolites` (semicolon-separated,
+   positionally aligned with the markers; an entry may carry multiple
+   codes; `(no HMDB entry found)` entries are skipped with a message).
+   No name resolution is needed -- the HMDB codes are in the table. The
+   pipeline splits each row into one (disease, biomarker, HMDB code)
+   attachment. DISEASES are the grouping unit: the SMP code links a
+   disease to a KEPT pathway for reporting only, and a disease without a
+   kept PathBank pathway still scores (the disease itself is the group).
+   Directions are honored per (disease, biomarker): `up` keeps only
+   increases, `down` keeps only decreases -- so a metabolite that rises
+   in one disease and falls in another is scored correctly for both.
+   The full resolution audit lands in `disease_table_audit.csv` (one row
+   per table row with `pathway_status` and `status`): review it before
+   freezing the table.
+2. **Resolved attachments CSV** (`biomarker_channel.attachments_file`,
+   columns `smp_id` OR `pathway_name`, `hmdb_id`, `source`): used when
+   the disease table is absent, or alongside it as a complement.
+
+Both are user-curated from systematic literature sources (biomarker tables
+in reviews / newborn-screening guidelines), with the citation per row in
+`source`. Curation rules (evidence budget #3): attachments are chosen from
+textbook knowledge only, never from which samples the pipeline flagged or
+missed, and the tables are frozen before the STEP 10 read. The knowledge is
+gene/disease-level, so it is label-blind by construction -- the same table
+would be declared for any cohort. A missing file disables the channel with
+a warning until the table is provided.
 
 Mechanics: attached biomarkers are z-scored against the same development
 normals (even when no kept PathBank pathway maps their feature -- the
@@ -343,7 +366,12 @@ the sample decision**: `sample_decisions.csv` gains
 `biomarker_depth_p`, `max_biomarker_z`, and `top_biomarker`, and every
 per-(sample, pathway, biomarker) flag lands in `biomarker_flags.csv` for
 audit. Duplicate features of the same biomarker are combined with the same
-scale^2 weighting as the Stouffer channel.
+scale^2 weighting as the Stouffer channel. When the disease table drives the
+channel, a sample flags the DISEASE when an attached biomarker exceeds its
+normal-percentile threshold AND the sample's maximum directed biomarker z
+beats that disease's biomarker-restricted depth null at the frozen
+`max_sample_p`; the channel flags the sample when ANY disease flags, and
+`top_disease` records the best (lowest depth p) flagging disease.
 
 ## Development QC (STEP 9, label-blind)
 
