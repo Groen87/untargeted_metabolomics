@@ -402,7 +402,7 @@ biomarker_channel:
   # terms for a panel to score at all (a starved panel is skipped,
   # keeping the disease's max-z tests alive).
   disease_pathways:
-    enable: false
+    enable: true
     min_panel_metabolites: 2
   # Source 2: resolved attachments CSV (smp_id or pathway_name +
   # hmdb_id already known) -- used when the disease table is absent, or
@@ -434,7 +434,7 @@ biomarker_channel:
     - disease: "Very-long-chain acyl-CoA dehydrogenase deficiency"
       ratio: "C14:1/C12:1"
       direction: "up"
-    - disease: "PCCA-related Propionic acidemia"
+    - disease: "Propionic acidemia"
       ratio: "C3/C2"
       direction: "up"
     - disease: "Methylmalonic aciduria"
@@ -463,8 +463,8 @@ development_qc_bootstrap: 200
 # STEP 10: one-shot label-aware evaluation of the frozen config. Enable
 # only when the configuration is frozen. Reading the validation metrics
 # and then changing the config invalidates the validation half.
-run_evaluation: false
-evaluate_dev_half: false
+run_evaluation: true
+evaluate_dev_half: true
 
 # Demoted artifact features, justified by CHEMISTRY/ANALYTICAL PRIORS ONLY
 # (an allowed evidence budget -- no group/disease counts informed this
