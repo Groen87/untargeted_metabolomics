@@ -942,3 +942,140 @@ def test_run_pipeline_disease_table_channel(tmp_path):
     bio_flags = pd.read_csv(tmp_path / "out" / "biomarker_flags.csv")
     assert (bio_flags["disease"] == "MCAD deficiency").any()
     assert set(bio_flags["direction"]) <= {"up", "down", ""}
+
+
+def test_run_pipeline_disease_panel_promotion(tmp_path, caplog):
+    """Smoke test: enabling disease_pathways promotes each IEMbase
+    disease panel into the pathway channel as a pseudo-pathway, drops
+    the PathBank pathway matching a promoted panel's SMP code, and
+    removes the promoted diseases' metabolite tests from the max-z
+    biomarker channel (double-count guard)."""
+    import logging
+    import yaml
+    import numpy as np
+    from pathway_pipeline.main import run_pipeline
+
+    xml = _write_hmdb_xml(tmp_path)
+    pathbank = _write_pathbank_csv(tmp_path)
+    names = _write_pathway_names_csv(tmp_path)
+    disease_table = tmp_path / "disease_table.csv"
+    pd.DataFrame([
+        {"Disease": "MCAD deficiency", "OMIM": "603361",
+         "Biochemical_Markers": "Octanoylcarnitine \u2191; Glucose \u2193",
+         "PathBank disease pathway": "MCAD (PathBank PW000216)",
+         "SMPDB code (SMP)": "SMP0000055",
+         "HMDB codes of named metabolites":
+             "Octanoylcarnitine (HMDB0000215); Glucose (HMDB0000122)"},
+        {"Disease": "MTHFR deficiency", "OMIM": "236250",
+         "Biochemical_Markers": "Methionine \u2193",
+         "PathBank disease pathway": "Not found in PathBank",
+         "SMPDB code (SMP)": "",
+         "HMDB codes of named metabolites":
+             "Methionine (HMDB0000696)"},
+        {"Disease": "CBS deficiency", "OMIM": "236200",
+         "Biochemical_Markers": "Methionine \u2191; Alanine \u2193",
+         "PathBank disease pathway": "Not found in PathBank",
+         "SMPDB code (SMP)": "",
+         "HMDB codes of named metabolites":
+             "Methionine (HMDB0000696); Alanine (HMDB0000161)"},
+    ]).to_csv(disease_table, index=False)
+
+    # The input has features for both disease panels; no PathBank
+    # pathway maps them, so pathway_scores starts empty-ish and the
+    # panels are the sole scored pseudo-pathways for these diseases.
+    rng = np.random.default_rng(31)
+    n_normal, n_other = 30, 3
+    n = n_normal + n_other
+    methionine = rng.normal(1.0, 0.01, size=n)
+    methionine[-1] = -5.0
+    data = {
+        "Sample": [f"s{i}" for i in range(n)],
+        "Classification": [0] * n_normal + [1] * n_other,
+        "Oordeel targeted": [0] * n_normal + [1] * n_other,
+        "Alanine": list(rng.normal(2.0, 0.30, size=n)),
+        "ATP": list(rng.normal(2.0, 0.30, size=n)),
+        "AMP": list(rng.normal(2.0, 0.30, size=n)),
+        "Octanoylcarnitine.HMDB0000215":
+            list(rng.normal(1.0, 0.01, size=n)),
+        "Glucose.HMDB0000122": list(rng.normal(1.0, 0.01, size=n)),
+        "Methionine.HMDB0000696": list(methionine),
+    }
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame(data).to_csv(input_csv, index=False)
+
+    config = {
+        "input_file": str(input_csv),
+        "output_dir": str(tmp_path / "out"),
+        "patient_id_column": "Sample",
+        "non_feature_columns": ["Oordeel targeted", "Classification"],
+        "hmdb_xml_file": xml,
+        "use_hmdb_cache": False,
+        "pathbank_file": pathbank,
+        "pathbank_pathway_names_file": names,
+        "min_pathway_coverage": 0.10,
+        "min_pathway_features": 2,
+        "min_stouffer_metabolites": 2,
+        "sample_rule": "max_excess",
+        "max_sample_p": 0.05,
+        "biomarker_channel": {
+            "enable": True,
+            "disease_table_file": str(disease_table),
+            "attachments_file": str(tmp_path / "missing_attachments.csv"),
+            "disease_pathways": {
+                "enable": True,
+                "min_panel_metabolites": 2,
+            },
+        },
+        "save_mapping_outputs": True,
+        "save_zscore_outputs": True,
+        "save_stouffer_outputs": True,
+        "save_flagging_outputs": True,
+    }
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+
+    with caplog.at_level(logging.INFO, logger="pathway_pipeline.main"):
+        result = run_pipeline(
+            input_file=str(input_csv),
+            output_dir=str(tmp_path / "out"),
+            config_path=str(config_path),
+        )
+
+    pathway_scores = result["pathway_scores"]
+    panel_names = set(pathway_scores["pathway_name"])
+    # The two-marker panels scored as pseudo-pathways.
+    assert "MCAD deficiency" in panel_names
+    assert "CBS deficiency" in panel_names
+    # MTHFR has a single biomarker: below min_panel_metabolites, so it
+    # starves by design and stays out of the pathway channel.
+    assert "MTHFR deficiency" not in panel_names
+    # The synthetic key is used when the disease has no SMP code.
+    panel_smps = set(pathway_scores["smp_id"])
+    assert "DISEASE-cbs-deficiency" in panel_smps
+    # MCAD's SMP0000055 panel replaced the PathBank pathway of the same
+    # SMP (Alanine Metabolism is gone; the smp_id carries the panel).
+    assert "Alanine Metabolism" not in panel_names
+    mcad = pathway_scores[pathway_scores["smp_id"] == "SMP0000055"]
+    assert set(mcad["pathway_name"]) == {"MCAD deficiency"}
+    assert mcad["sample_id"].nunique() == n
+    # The panel artifact exists and matches the promoted rows.
+    panels_csv = tmp_path / "out" / "disease_panel_scores.csv"
+    assert panels_csv.exists()
+    panels = pd.read_csv(panels_csv)
+    assert set(panels["pathway_name"]) == {"MCAD deficiency",
+                                           "CBS deficiency"}
+    # Double-count guard: the promoted diseases' metabolite tests left
+    # the max-z biomarker channel, while the starved MTHFR panel keeps
+    # its max-z test alive there.
+    bio_flags_path = tmp_path / "out" / "biomarker_flags.csv"
+    assert bio_flags_path.exists()
+    bio_flags = pd.read_csv(bio_flags_path)
+    assert not (bio_flags["disease"] == "MCAD deficiency").any()
+    assert not (bio_flags["disease"] == "CBS deficiency").any()
+    assert (bio_flags["disease"] == "MTHFR deficiency").any()
+    # The promotion and the guard are logged.
+    assert any("Disease panel promotion" in r.getMessage()
+               for r in caplog.records)
+    assert any("Double-count guard" in r.getMessage()
+               for r in caplog.records)

@@ -227,6 +227,7 @@ from pathway_pipeline.pipeline.biomarkers import (
     resolve_disease_biomarkers,
     flag_disease_biomarkers,
     audit_unlinked_disease_markers,
+    build_disease_panel_scores,
 )
 
 
@@ -471,3 +472,206 @@ def test_flag_disease_biomarkers_empty_inputs():
         _f2h(), normal_mask=pd.Series(dtype=bool))
     assert flags.empty
     assert summary.empty
+
+
+def _panel_resolved(rows):
+    """Build a minimal IEMbase resolved table for panel tests."""
+    return pd.DataFrame(rows, columns=[
+        "disease", "biomarker", "hmdb_id", "direction", "omim",
+        "smp_id", "pathway_name", "source", "features", "n_features"])
+
+
+def _panel_f2h(pairs):
+    return pd.DataFrame(pairs, columns=["feature", "hmdb_id"])
+
+
+def test_build_disease_panel_scores_direction_aware_sum():
+    """Up members contribute +z, down members -z; a marker moving
+    against its arrow cancels the panel instead of inflating it."""
+    zscores = pd.DataFrame(
+        {"FeatA.HMDB0000001": [5.0, -5.0, 5.0],
+         "FeatB.HMDB0000002": [1.0, 1.0, -4.0]},
+        index=["s0", "s1", "s2"])
+    normal_mask = pd.Series([True, True, True], index=zscores.index)
+    resolved = _panel_resolved([
+        {"disease": "Test disease", "biomarker": "A", "hmdb_id": "HMDB0000001",
+         "direction": "up", "omim": "", "smp_id": "SMP0000001",
+         "pathway_name": "Test disease", "source": "IEMbase",
+         "features": "FeatA.HMDB0000001", "n_features": 1},
+        {"disease": "Test disease", "biomarker": "B", "hmdb_id": "HMDB0000002",
+         "direction": "down", "omim": "", "smp_id": "SMP0000001",
+         "pathway_name": "Test disease", "source": "IEMbase",
+         "features": "FeatB.HMDB0000002", "n_features": 1},
+    ])
+    scores = build_disease_panel_scores(
+        zscores, resolved, _panel_f2h([
+            ("FeatA.HMDB0000001", "HMDB0000001"),
+            ("FeatB.HMDB0000002", "HMDB0000002")]),
+        normal_mask=normal_mask, min_metabolites=2)
+    assert list(scores["smp_id"]) == ["SMP0000001"] * 3
+    by_sample = scores.set_index("sample_id")
+    # s0: up +5 fires, down marker at +1 moves against its arrow -> 0.
+    assert by_sample.loc["s0", "z_stouffer"] == pytest.approx(5.0 / np.sqrt(2))
+    assert by_sample.loc["s0", "z_stouffer_abs"] == pytest.approx(
+        5.0 / np.sqrt(2))
+    # s1: up marker fell -> 0; down marker at +1 fell -> 0 against arrow.
+    assert by_sample.loc["s1", "z_stouffer"] == pytest.approx(0.0)
+    # s2: up +5 and down marker at -4 both moved as predicted:
+    # directed sum = 5 + 4 = 9 over sqrt(2).
+    assert by_sample.loc["s2", "z_stouffer"] == pytest.approx(9.0 / np.sqrt(2))
+    assert (scores["n_metabolites_used"] == 2).all()
+
+
+def test_build_disease_panel_scores_ratio_joins_panel():
+    """A declared ratio test for a disease becomes a member term of that
+    disease's panel sum (same directed arithmetic)."""
+    zscores = pd.DataFrame(
+        {"FeatA.HMDB0000001": [3.0], "C8/C2": [4.0]},
+        index=["s0"])
+    normal_mask = pd.Series([True], index=zscores.index)
+    resolved = _panel_resolved([
+        {"disease": "MCAD deficiency", "biomarker": "A",
+         "hmdb_id": "HMDB0000001", "direction": "up", "omim": "",
+         "smp_id": None, "pathway_name": "MCAD deficiency",
+         "source": "IEMbase", "features": "FeatA.HMDB0000001",
+         "n_features": 1},
+    ])
+    ratio_tests = pd.DataFrame([
+        {"disease": "MCAD deficiency", "ratio": "C8/C2", "direction": "up"}])
+    scores = build_disease_panel_scores(
+        zscores, resolved, _panel_f2h([
+            ("FeatA.HMDB0000001", "HMDB0000001")]),
+        normal_mask=normal_mask, min_metabolites=2,
+        ratio_tests=ratio_tests)
+    assert len(scores) == 1
+    assert scores["smp_id"].iloc[0] == "DISEASE-mcad-deficiency"
+    assert scores["n_metabolites_used"].iloc[0] == 2
+    assert scores["z_stouffer"].iloc[0] == pytest.approx(7.0 / np.sqrt(2))
+    # Without the ratio the panel starves below min_metabolites.
+    scores_no_ratio = build_disease_panel_scores(
+        zscores, resolved, _panel_f2h([
+            ("FeatA.HMDB0000001", "HMDB0000001")]),
+        normal_mask=normal_mask, min_metabolites=2)
+    assert scores_no_ratio.empty
+
+
+def test_build_disease_panel_scores_name_matched_members():
+    """A no-HMDB Excel marker whose name matched dataset features joins
+    the panel through the audit output (matched_features != '')."""
+    zscores = pd.DataFrame(
+        {"FeatA.HMDB0000001": [2.0], "Homocitrulline": [3.0],
+         "Unmatched": [10.0]},
+        index=["s0"])
+    normal_mask = pd.Series([True], index=zscores.index)
+    resolved = _panel_resolved([
+        {"disease": "ASL deficiency", "biomarker": "A",
+         "hmdb_id": "HMDB0000001", "direction": "up", "omim": "",
+         "smp_id": None, "pathway_name": "ASL deficiency",
+         "source": "IEMbase", "features": "FeatA.HMDB0000001",
+         "n_features": 1},
+    ])
+    name_matched = pd.DataFrame([
+        {"disease": "ASL deficiency", "marker": "Homocitrulline",
+         "direction": "up", "matched_features": "Homocitrulline",
+         "name_index_accessions": ""},
+        {"disease": "ASL deficiency", "marker": "Unmatched marker",
+         "direction": "up", "matched_features": "",
+         "name_index_accessions": "HMDB9999999"},
+    ])
+    scores = build_disease_panel_scores(
+        zscores, resolved, _panel_f2h([
+            ("FeatA.HMDB0000001", "HMDB0000001")]),
+        normal_mask=normal_mask, min_metabolites=2,
+        name_matched=name_matched)
+    assert len(scores) == 1
+    assert scores["n_metabolites_used"].iloc[0] == 2
+    assert scores["z_stouffer"].iloc[0] == pytest.approx(5.0 / np.sqrt(2))
+
+
+def test_build_disease_panel_scores_min_metabolites_skip():
+    """A panel whose usable member count is below min_metabolites emits
+    no rows; the empty-name-matched rows are not counted as members."""
+    zscores = pd.DataFrame(
+        {"FeatA.HMDB0000001": [2.0], "FeatB.HMDB0000002": [2.0]},
+        index=["s0", "s1"])
+    zscores.loc["s1", "FeatB.HMDB0000002"] = np.nan
+    normal_mask = pd.Series([True, True], index=zscores.index)
+    resolved = _panel_resolved([
+        {"disease": "Lonely disease", "biomarker": "A",
+         "hmdb_id": "HMDB0000001", "direction": "up", "omim": "",
+         "smp_id": None, "pathway_name": "Lonely disease",
+         "source": "IEMbase", "features": "FeatA.HMDB0000001",
+         "n_features": 1},
+        {"disease": "Pair disease", "biomarker": "A",
+         "hmdb_id": "HMDB0000001", "direction": "up", "omim": "",
+         "smp_id": "SMP0000009", "pathway_name": "Pair disease",
+         "source": "IEMbase", "features": "FeatA.HMDB0000001",
+         "n_features": 1},
+        {"disease": "Pair disease", "biomarker": "B",
+         "hmdb_id": "HMDB0000002", "direction": "up", "omim": "",
+         "smp_id": "SMP0000009", "pathway_name": "Pair disease",
+         "source": "IEMbase", "features": "FeatB.HMDB0000002",
+         "n_features": 1},
+    ])
+    scores = build_disease_panel_scores(
+        zscores, resolved, _panel_f2h([
+            ("FeatA.HMDB0000001", "HMDB0000001"),
+            ("FeatB.HMDB0000002", "HMDB0000002")]),
+        normal_mask=normal_mask, min_metabolites=2)
+    diseases = set(scores["pathway_name"])
+    assert "Lonely disease" not in diseases
+    assert "Pair disease" in diseases
+    pair = scores[scores["pathway_name"] == "Pair disease"]
+    # s1 lost one member to NaN -> below min_metabolites for that sample.
+    assert set(pair["sample_id"]) == {"s0"}
+    assert (pair["n_metabolites_used"] == 2).all()
+
+
+def test_build_disease_panel_scores_same_metabolite_weighting():
+    """Two features of one HMDB metabolite combine by the scale^2-weighted
+    mean (the pathway channel's rule) and count as ONE member term."""
+    zscores = pd.DataFrame(
+        {"FeatA1.HMDB0000001": [2.0, 2.0],
+         "FeatA2.HMDB0000001": [4.0, np.nan],
+         "FeatB.HMDB0000002": [3.0, 3.0]},
+        index=["s0", "s1"])
+    normal_mask = pd.Series([True, True], index=zscores.index)
+    resolved = _panel_resolved([
+        {"disease": "Dup disease", "biomarker": "A",
+         "hmdb_id": "HMDB0000001", "direction": "up", "omim": "",
+         "smp_id": None, "pathway_name": "Dup disease",
+         "source": "IEMbase", "features":
+             "FeatA1.HMDB0000001;FeatA2.HMDB0000001", "n_features": 2},
+        {"disease": "Dup disease", "biomarker": "B",
+         "hmdb_id": "HMDB0000002", "direction": "up", "omim": "",
+         "smp_id": None, "pathway_name": "Dup disease",
+         "source": "IEMbase", "features": "FeatB.HMDB0000002",
+         "n_features": 1},
+    ])
+    weights = {"FeatA1.HMDB0000001": 4.0, "FeatA2.HMDB0000001": 1.0,
+               "FeatB.HMDB0000002": 1.0}
+    scores = build_disease_panel_scores(
+        zscores, resolved, _panel_f2h([
+            ("FeatA1.HMDB0000001", "HMDB0000001"),
+            ("FeatA2.HMDB0000001", "HMDB0000001"),
+            ("FeatB.HMDB0000002", "HMDB0000002")]),
+        normal_mask=normal_mask, min_metabolites=2,
+        feature_scale_weights=weights)
+    by_sample = scores.set_index("sample_id")
+    # s0: weighted mean of A = (2*4 + 4*1)/5 = 2.4; sum = 2.4 + 3.
+    assert by_sample.loc["s0", "z_stouffer"] == pytest.approx(
+        5.4 / np.sqrt(2))
+    assert by_sample.loc["s0", "n_metabolites_used"] == 2
+    # s1: FeatA2 is NaN, so the weighted mean falls back to FeatA1 = 2.
+    assert by_sample.loc["s1", "z_stouffer"] == pytest.approx(
+        5.0 / np.sqrt(2))
+
+
+def test_build_disease_panel_scores_empty_inputs():
+    scores = build_disease_panel_scores(
+        pd.DataFrame(), _panel_resolved([]), _panel_f2h([]),
+        normal_mask=pd.Series(dtype=bool))
+    assert scores.empty
+    assert list(scores.columns) == [
+        "sample_id", "smp_id", "pathway_name", "n_metabolites_used",
+        "z_stouffer", "z_stouffer_abs"]

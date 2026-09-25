@@ -70,6 +70,7 @@ from pathway_pipeline.pipeline.biomarkers import (
     resolve_disease_biomarkers,
     flag_disease_biomarkers,
     audit_unlinked_disease_markers,
+    build_disease_panel_scores,
 )
 from pathway_pipeline.pipeline.develop import run_development_qc
 from pathway_pipeline.pipeline.evaluate import summarize_evaluation
@@ -404,6 +405,7 @@ def run_pipeline(input_file: str,
     biomarker_features = []
     disease_table = None
     disease_resolved = None
+    unlinked = None
     if bool(config.get("biomarker_channel.enable", True)):
         # Source 1: IEMbase-style disease biomarker table (Excel/CSV with
         # biomarker names, direction arrows, and per-metabolite HMDB
@@ -602,6 +604,80 @@ def run_pipeline(input_file: str,
                     f"({n_normal} normals in the reference).")
 
     # ------------------------------------------------------------------
+    # STEP 7b: disease panel promotion (IEMbase panels as pseudo-
+    # pathways). Each disease's resolved biomarkers, name-matched
+    # no-HMDB markers, and declared ratio tests aggregate into ONE
+    # direction-aware Stouffer sum that enters the pathway channel as a
+    # pseudo-pathway; a PathBank pathway whose smp_id equals a
+    # promoted panel's SMP code is dropped (the panel replaces it).
+    # Promoted panels' metabolite tests leave the max-z biomarker
+    # channel at STEP 8d (double-count guard).
+    # ------------------------------------------------------------------
+    promoted_diseases = []
+    if bool(config.get("biomarker_channel.disease_pathways.enable", False)):
+        _log_section("STEP 7b: Disease panel promotion (IEMbase panels)")
+        if disease_resolved is None or disease_resolved.empty:
+            logger.warning("disease_pathways.enable is true but no IEMbase "
+                           "disease table resolved; skipping panel "
+                           "promotion.")
+        else:
+            ratio_specs = (config.get(
+                "biomarker_channel.ratio_biomarkers", None) or [])
+            ratio_tests_for_panels = None
+            if ratio_specs:
+                ratio_tests_for_panels = pd.DataFrame(ratio_specs)[
+                    ["disease", "ratio", "direction"]]
+            name_matched = None
+            if unlinked is not None and not unlinked.empty:
+                name_matched = unlinked[
+                    unlinked["matched_features"].fillna("") != ""]
+            panel_scores = build_disease_panel_scores(
+                zscores_scored,
+                disease_resolved,
+                feature_to_hmdb,
+                normal_mask=normal_mask,
+                ratio_tests=ratio_tests_for_panels,
+                min_metabolites=int(config.get(
+                    "biomarker_channel.disease_pathways.min_panel_metabolites",
+                    2)),
+                max_abs_z=max_abs_z,
+                feature_scale_weights=feature_scale_weights,
+                name_matched=name_matched,
+            )
+            if panel_scores.empty:
+                logger.warning("Disease panel promotion: no panel reached "
+                               "the minimum member count; pathway channel "
+                               "unchanged.")
+            else:
+                promoted_diseases = sorted(panel_scores["pathway_name"]
+                                           .unique())
+                panel_smps_real = {s for s in panel_scores["smp_id"].unique()
+                                   if not str(s).startswith("DISEASE-")}
+                replaced = pathway_scores["smp_id"].isin(panel_smps_real)
+                n_replaced = int(replaced.sum())
+                n_replaced_pathways = int(
+                    pathway_scores.loc[replaced, "smp_id"].nunique())
+                if n_replaced:
+                    pathway_scores = pd.concat(
+                        [pathway_scores[~replaced], panel_scores],
+                        ignore_index=True)
+                else:
+                    pathway_scores = pd.concat(
+                        [pathway_scores, panel_scores], ignore_index=True)
+                logger.info(
+                    f"Disease panel promotion: {len(promoted_diseases)} "
+                    f"panel(s) scored as pseudo-pathways "
+                    f"({int(panel_scores['sample_id'].nunique())} samples); "
+                    f"replaced {n_replaced_pathways} PathBank pathway(s) "
+                    f"matching a panel SMP code ({n_replaced} sample x "
+                    "pathway rows dropped). Promoted diseases leave the "
+                    "max-z biomarker channel at STEP 8d.")
+                if bool(config.get("save_stouffer_outputs", True)):
+                    panel_scores.to_csv(out / "disease_panel_scores.csv",
+                                       index=False)
+                    logger.info("Wrote disease_panel_scores.csv to " + str(out))
+
+    # ------------------------------------------------------------------
     # Stage 4: flag samples against each pathway's own normal range
     # ------------------------------------------------------------------
     if not bool(config.get("run_flagging", True)):
@@ -717,16 +793,32 @@ def run_pipeline(input_file: str,
             and not disease_resolved.empty
             and not zscores_scored.empty):
         _log_section("STEP 8d: Disease biomarker channel (IEMbase table)")
+        channel_resolved = disease_resolved
+        channel_ratio_tests = ratio_biomarker_tests
+        if promoted_diseases:
+            keep = ~channel_resolved["disease"].isin(promoted_diseases)
+            n_tests_before = len(channel_resolved)
+            channel_resolved = channel_resolved[keep]
+            if channel_ratio_tests is not None and not channel_ratio_tests.empty:
+                channel_ratio_tests = channel_ratio_tests[
+                    ~channel_ratio_tests["disease"].isin(promoted_diseases)]
+            logger.info(
+                "Double-count guard: removed the metabolite tests of the "
+                f"{len(promoted_diseases)} promoted panel disease(s) from "
+                "the max-z channel; "
+                f"{len(channel_resolved)} of {n_tests_before} (disease, "
+                "biomarker) rows remain (their evidence flows through the "
+                "panel scores).")
         biomarker_flags, biomarker_summary = flag_disease_biomarkers(
             zscores_scored,
-            disease_resolved,
+            channel_resolved,
             feature_to_hmdb,
             normal_mask=normal_mask,
             threshold_percentile=float(
                 config.get("biomarker_channel.threshold_percentile", 99.0)),
             feature_scale_weights=feature_scale_weights,
             max_sample_p=float(config.get("max_sample_p", 0.05)),
-            ratio_tests=ratio_biomarker_tests,
+            ratio_tests=channel_ratio_tests,
         )
     elif (biomarker_attachments is not None
             and not biomarker_attachments.empty

@@ -924,3 +924,184 @@ def audit_unlinked_disease_markers(table_path: str,
                 "name_index_accessions": accessions,
             })
     return pd.DataFrame(out_rows, columns=cols)
+
+
+def build_disease_panel_scores(zscores: pd.DataFrame,
+                               resolved: pd.DataFrame,
+                               feature_to_hmdb: pd.DataFrame,
+                               normal_mask: pd.Series,
+                               ratio_tests: pd.DataFrame = None,
+                               min_metabolites: int = 2,
+                               max_abs_z: float = None,
+                               feature_scale_weights: Dict[str, float] = None,
+                               name_matched: pd.DataFrame = None
+                               ) -> pd.DataFrame:
+    """Score each IEMbase disease panel as a direction-aware Stouffer sum.
+
+    A promoted panel behaves like a pathway: one row per (sample,
+    disease) carrying the panel's aggregate statistic and its
+    per-direction member terms. Each member's z is directed by its
+    literature arrow before the sum -- an 'up' marker contributes +z, a
+    'down' marker -z, a marker without an arrow contributes |z| -- so
+    a marker moving against its curated direction weakens the panel
+    instead of strengthening it. Declared ratio tests for the disease
+    join the same sum (their column's z is directed the same way).
+    Members are combined per HMDB metabolite first (scale^2-weighted
+    mean of same-metabolite features, the pathway channel's rule), so
+    duplicate features cannot double a metabolite's vote.
+
+    Args:
+        zscores: per-sample metabolite z-scores (demoted features
+            already excluded by the caller).
+        resolved: resolved IEMbase disease biomarker table (one row per
+            (disease, biomarker, hmdb_id) with ``direction``).
+        feature_to_hmdb: feature -> HMDB mapping.
+        normal_mask: boolean Series marking normal reference samples
+            (unused here; the caller thresholds against normals).
+        ratio_tests: declared ratio tests (columns ``disease``,
+            ``ratio``, ``direction``); matching diseases add their
+            ratio z as a member term.
+        min_metabolites: minimum usable member terms for a panel score
+            to be emitted.
+        max_abs_z: optional cap on |z| before the sum (mirrors the
+            pathway channel's artifact guard).
+        feature_scale_weights: optional feature -> weight map for
+            combining same-metabolite features.
+        name_matched: optional output of the unlinked-marker audit
+            (columns ``disease``, ``marker``, ``direction``,
+            ``matched_features``); markers whose Excel entry carries
+            no HMDB code but whose name matches dataset features join
+            the panel as extra member terms.
+
+    Returns:
+        Long-format frame with columns ``sample_id``, ``smp_id``
+        (the disease's SMP code or a synthetic DISEASE-<slug> key),
+        ``pathway_name`` (the disease name), ``n_metabolites_used``,
+        ``z_stouffer`` (directed sum / sqrt(k)), ``z_stouffer_abs``.
+    """
+    score_cols = ["sample_id", "smp_id", "pathway_name",
+                  "n_metabolites_used", "z_stouffer", "z_stouffer_abs"]
+    if resolved is None or resolved.empty or zscores.empty:
+        return pd.DataFrame(columns=score_cols)
+    z = zscores.copy()
+    if max_abs_z is not None and max_abs_z > 0:
+        z = z.clip(lower=-max_abs_z, upper=max_abs_z)
+
+    # feature -> metabolite edges, as the pathway channel uses them.
+    f2h = feature_to_hmdb[["feature", "hmdb_id"]].dropna()
+    f2h = f2h[f2h["feature"].isin(z.columns)]
+
+    # disease -> {metabolite key -> (direction, [features])}
+    panels = {}
+    for _, row in resolved.drop_duplicates(
+            subset=["disease", "hmdb_id"]).iterrows():
+        disease = row["disease"]
+        feats = f2h.loc[f2h["hmdb_id"] == row["hmdb_id"], "feature"]
+        feats = [f for f in feats if f in z.columns]
+        if feats:
+            key = f"HMDB:{row['hmdb_id']}"
+            entry = panels.setdefault(
+                disease, {"smp_id": row.get("smp_id"),
+                          "members": {}})
+            entry["members"].setdefault(
+                key, {"direction": row["direction"], "features": []})
+            entry["members"][key]["features"].extend(feats)
+    if name_matched is not None and not name_matched.empty:
+        nm = name_matched[name_matched["matched_features"].fillna("") != ""]
+        for _, row in nm.iterrows():
+            disease = row["disease"]
+            feats = [f for f in str(row["matched_features"]).split(";")
+                     if f in z.columns]
+            if not feats:
+                continue
+            key = f"NAME:{row['marker']}"
+            entry = panels.setdefault(
+                disease, {"smp_id": None, "members": {}})
+            if key in entry["members"]:
+                entry["members"][key]["features"].extend(feats)
+            else:
+                entry["members"][key] = {
+                    "direction": row["direction"], "features": feats}
+    if ratio_tests is not None and not ratio_tests.empty:
+        for _, row in ratio_tests.drop_duplicates(
+                subset=["disease", "ratio"]).iterrows():
+            ratio_name = str(row["ratio"]).strip()
+            if ratio_name not in z.columns:
+                continue
+            disease = row["disease"]
+            key = f"RATIO:{ratio_name}"
+            entry = panels.setdefault(
+                disease, {"smp_id": None, "members": {}})
+            entry["members"][key] = {
+                "direction": str(row.get("direction") or ""), 
+                "features": [ratio_name]}
+
+    weights = feature_scale_weights or {}
+
+    def _member_z(feats, direction):
+        sub = z[feats]
+        if len(feats) == 1 or not weights:
+            mean_z = sub.mean(axis=1)
+        else:
+            w = pd.Series({f: float(weights.get(f, 1.0)) for f in feats})
+            present_w = sub.notna().mul(w, axis=1).sum(axis=1)
+            mean_z = (sub.fillna(0.0).mul(w, axis=1).sum(axis=1)
+                      / present_w.where(present_w > 0))
+        direction = str(direction or "").strip().lower()
+        if direction == "up":
+            return mean_z.clip(lower=0)
+        if direction == "down":
+            return (-mean_z).clip(lower=0)
+        return mean_z.abs()
+
+    rows = []
+    for disease, entry in sorted(panels.items()):
+        member_cols = []
+        for key, m in entry["members"].items():
+            if not m["features"]:
+                continue
+            mz = _member_z(sorted(set(m["features"])), m["direction"])
+            if mz is not None:
+                member_cols.append((key, mz))
+        member_cols = [(k, c) for k, c in member_cols
+                       if c.notna().any()]
+        if len(member_cols) < min_metabolites:
+            continue
+        matrix = pd.concat([c for _, c in member_cols], axis=1)
+        matrix.columns = range(len(member_cols))
+        k = matrix.notna().sum(axis=1)
+        with np.errstate(all="ignore"):
+            signed = matrix.sum(axis=1, skipna=True) / np.sqrt(
+                k.replace(0, np.nan))
+        usable = k >= min_metabolites
+        smp = entry.get("smp_id")
+        if smp is None or pd.isna(smp) or not str(smp).strip():
+            smp = f"DISEASE-{_slug(disease)}"
+        for sample_id in z.index:
+            if not usable.get(sample_id, False):
+                continue
+            s = float(signed.get(sample_id, np.nan))
+            if np.isnan(s):
+                continue
+            rows.append({
+                "sample_id": sample_id,
+                "smp_id": smp,
+                "pathway_name": disease,
+                "n_metabolites_used": int(k[sample_id]),
+                "z_stouffer": s,
+                "z_stouffer_abs": abs(s),
+            })
+    return pd.DataFrame(rows, columns=score_cols)
+
+
+def _slug(text: str) -> str:
+    out = []
+    for ch in str(text):
+        if ch.isalnum():
+            out.append(ch)
+        else:
+            out.append("-")
+    slug = "".join(out).strip("-").lower()
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "disease"

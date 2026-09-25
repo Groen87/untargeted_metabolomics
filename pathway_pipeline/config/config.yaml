@@ -389,6 +389,21 @@ biomarker_channel:
   # written to disease_table_audit.csv -- review it before freezing the
   # table. Set to null to disable this source.
   disease_table_file: "pathway_pipeline/iembase-diseases-with-pathbank-pathways-and-hmdb-codes.xlsx"
+  # Disease panel promotion (NEW FROZEN VERSION while enabled): each
+  # IEMbase disease panel is scored as a direction-aware Stouffer sum
+  # over its resolved biomarkers (+ name-matched no-HMDB markers and
+  # the disease's declared ratio tests), entering the pathway channel
+  # as a pseudo-pathway named after the disease. PathBank pathways
+  # whose smp_id equals a promoted panel's SMP code are dropped from
+  # the pathway channel (replaced by the panel). Promoted panels'
+  # metabolite tests leave the max-z biomarker channel -- their
+  # evidence flows through the panel score instead, so nothing is
+  # counted twice. min_panel_metabolites is the minimum usable member
+  # terms for a panel to score at all (a starved panel is skipped,
+  # keeping the disease's max-z tests alive).
+  disease_pathways:
+    enable: false
+    min_panel_metabolites: 2
   # Source 2: resolved attachments CSV (smp_id or pathway_name +
   # hmdb_id already known) -- used when the disease table is absent, or
   # alongside it as a complement.
