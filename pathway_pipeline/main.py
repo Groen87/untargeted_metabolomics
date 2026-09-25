@@ -69,6 +69,7 @@ from pathway_pipeline.pipeline.biomarkers import (
     load_disease_biomarker_table,
     resolve_disease_biomarkers,
     flag_disease_biomarkers,
+    audit_unlinked_disease_markers,
 )
 from pathway_pipeline.pipeline.develop import run_development_qc
 from pathway_pipeline.pipeline.evaluate import summarize_evaluation
@@ -424,6 +425,24 @@ def run_pipeline(input_file: str,
                     logger.info("Wrote disease_table_audit.csv to "
                                 f"{out} -- review unmatched/unscored "
                                 "rows before freezing the table.")
+                unlinked = audit_unlinked_disease_markers(
+                    disease_table_file,
+                    feature_columns=list(features.columns),
+                    name_index=name_index)
+                if bool(config.get("save_mapping_outputs", True)):
+                    unlinked.to_csv(
+                        out / "disease_marker_name_matches.csv",
+                        index=False)
+                    n_resolved = int(
+                        (unlinked["matched_features"].fillna("") != "").sum())
+                    n_idx = int(
+                        (unlinked["name_index_accessions"].fillna("") != "").sum())
+                    logger.info(
+                        f"Unlinked-marker audit: {len(unlinked)} disease "
+                        f"marker(s) carry no HMDB code; {n_resolved} match a "
+                        f"dataset feature by name, {n_idx} resolve through "
+                        "the HMDB name index "
+                        "(disease_marker_name_matches.csv).")
                 biomarker_features.extend(disease_features)
         # Source 2: resolved attachments CSV (smp_id/pathway_name +
         # hmdb_id already known).

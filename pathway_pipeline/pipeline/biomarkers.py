@@ -817,3 +817,110 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
                 f"{int(summary['biomarker_flagged'].sum())} of "
                 f"{len(summary)} samples flagged through the channel.")
     return flags, summary
+
+
+def audit_unlinked_disease_markers(table_path: str,
+                                   feature_columns: List[str],
+                                   name_index: Dict[str, object] = None
+                                   ) -> pd.DataFrame:
+    """Report disease markers skipped for having no HMDB code.
+
+    The IEMbase loader skips every marker whose aligned HMDB entry says
+    '(no HMDB entry found)'. Those markers cannot join the biomarker
+    channel through accession resolution, but their names may still
+    match dataset feature columns. This audit re-reads the table with
+    the same parsing rules, collects the skipped (disease, marker)
+    pairs, and attempts exact and loose name matches against the
+    feature columns -- without changing any scoring. Readout-only, for
+    deciding whether a name-resolution build is worthwhile.
+
+    Args:
+        table_path: path to the IEMbase-style table (Excel or CSV).
+        feature_columns: dataset feature column names.
+        name_index: optional HMDB name index; when given, a marker
+            whose name resolves to accessions through it is also
+            reported (those accessions could be added to the table).
+
+    Returns:
+        DataFrame with columns ``disease``, ``marker``, ``direction``,
+        ``matched_features`` (';'-joined dataset columns matched by
+        name, '' when none), ``name_index_accessions`` (';'-joined
+        accessions from the HMDB name index, '' when none).
+    """
+    from pathway_pipeline.pipeline.name_utils import (
+        normalize_name, normalize_loose)
+    from pathway_pipeline.pipeline.pathway_mapping import (
+        _split_feature_name_and_hmdb)
+
+    cols = ["disease", "marker", "direction",
+            "matched_features", "name_index_accessions"]
+    rows = _read_table_rows(table_path) if table_path else []
+    if len(rows) < 2:
+        return pd.DataFrame(columns=cols)
+    lookup = _column_lookup(rows[0])
+    if "disease" not in lookup or "markers" not in lookup:
+        return pd.DataFrame(columns=cols)
+
+    def _cell(row, role):
+        header = lookup.get(role)
+        if header is None:
+            return None
+        idx = rows[0].index(header)
+        value = row[idx] if idx < len(row) else None
+        return None if value is None or pd.isna(value) else value
+
+    feat_exact = {}
+    feat_loose = {}
+    for col in feature_columns:
+        stripped = normalize_name(col)
+        tag = _split_feature_name_and_hmdb(col)
+        if tag and stripped.endswith(tag):
+            stripped = stripped[: -len(tag)].rstrip(".")
+        if stripped:
+            feat_exact.setdefault(stripped, []).append(col)
+        norm = normalize_name(col)
+        if norm:
+            feat_exact.setdefault(norm, []).append(col)
+        loose = normalize_loose(col)
+        if tag and loose.endswith(tag):
+            loose = loose[: -len(tag)].rstrip(".")
+        if loose:
+            feat_loose.setdefault(loose, []).append(col)
+        loose_full = normalize_loose(col)
+        if loose_full:
+            feat_loose.setdefault(loose_full, []).append(col)
+
+    out_rows = []
+    for row in rows[1:]:
+        disease = str(_cell(row, "disease") or "").strip()
+        if not disease:
+            continue
+        raw_markers = str(_cell(row, "markers") or "").strip()
+        if raw_markers.lower() in ("none", ""):
+            continue
+        markers = _split_top_level(raw_markers)
+        entries = _split_top_level(_cell(row, "hmdb"))
+        for marker, entry in zip(markers, entries):
+            if re.findall(r"HMDB\d+", str(entry or "")):
+                continue
+            biomarker = _clean_marker_name(marker)
+            direction = _marker_direction(marker)
+            norm = normalize_name(biomarker)
+            loose = normalize_loose(biomarker)
+            matched = (feat_exact.get(norm, [])
+                       if norm else [])
+            if not matched and loose:
+                matched = feat_loose.get(loose, [])
+            accessions = ""
+            if name_index is not None and norm:
+                hits = name_index.get(norm, set())
+                if hits:
+                    accessions = ";".join(sorted(hits))
+            out_rows.append({
+                "disease": disease,
+                "marker": biomarker,
+                "direction": direction,
+                "matched_features": ";".join(matched),
+                "name_index_accessions": accessions,
+            })
+    return pd.DataFrame(out_rows, columns=cols)

@@ -226,6 +226,7 @@ from pathway_pipeline.pipeline.biomarkers import (
     load_disease_biomarker_table,
     resolve_disease_biomarkers,
     flag_disease_biomarkers,
+    audit_unlinked_disease_markers,
 )
 
 
@@ -265,6 +266,35 @@ def test_load_disease_table_parses_rows_directions_and_codes(tmp_path):
     assert mthfr["direction"].iloc[0] == "down"
     assert pd.isna(mthfr["smp_id"].iloc[0])
     assert mthfr["pathway_name"].iloc[0] == "Not found in PathBank"
+
+
+def test_audit_unlinked_disease_markers_matches_names(tmp_path):
+    """The unlinked-marker audit reports no-HMDB-code markers with
+    their dataset name matches and name-index accessions, without
+    touching scoring."""
+    table_path = _write_disease_table(tmp_path / "disease.csv")
+    audit = audit_unlinked_disease_markers(
+        table_path,
+        feature_columns=["Homocysteine.HMDB0000157", "Other feature"],
+        name_index={"HOMOCROSTEINE": {"HMDB0001111"}})
+    # Homocysteine is the single no-code marker in the fixture.
+    assert list(audit["marker"]) == ["Homocysteine"]
+    row = audit.iloc[0]
+    assert row["disease"] == "MTHFR deficiency"
+    assert row["direction"] == "up"
+    # Exact name matching finds the tagged feature column.
+    assert row["matched_features"] == "Homocysteine.HMDB0000157"
+    # No name-index hit for the marker itself.
+    assert row["name_index_accessions"] == ""
+    # A marker with no feature match but a name-index accession is
+    # reported for potential table enrichment.
+    audit = audit_unlinked_disease_markers(
+        table_path,
+        feature_columns=["Unrelated column"],
+        name_index={"HOMOCYSTEINE": {"HMDB0000157"}})
+    row = audit.iloc[0]
+    assert row["matched_features"] == ""
+    assert row["name_index_accessions"] == "HMDB0000157"
 
 
 def test_load_disease_table_missing_file(tmp_path):
