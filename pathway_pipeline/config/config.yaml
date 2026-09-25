@@ -388,7 +388,7 @@ biomarker_channel:
   # increases, 'down' only decreases. The full resolution audit is
   # written to disease_table_audit.csv -- review it before freezing the
   # table. Set to null to disable this source.
-  disease_table_file: "pathway_pipeline/iembase-diseases-with-pathbank-pathways-and-hmdb-codes.xlsx"
+  disease_table_file: "iembase-diseases-with-pathbank-pathways-and-hmdb-codes.xlsx"
   # Disease panel promotion (NEW FROZEN VERSION while enabled): each
   # IEMbase disease panel is scored as a direction-aware Stouffer sum
   # over its resolved biomarkers (+ name-matched no-HMDB markers and
