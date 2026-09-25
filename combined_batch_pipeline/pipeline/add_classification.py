@@ -116,7 +116,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--merged-file",
-        default="data/merged_data.csv",
+        default="data/merged_data_for_analysis.csv",
         help="Merged data CSV (column: Sample) to add classification to.",
     )
     parser.add_argument(
