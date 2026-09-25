@@ -446,10 +446,10 @@ biomarker_channel:
     - disease: "Glutaryl-CoA dehydrogenase deficiency"
       ratio: "C5DC/C16"
       direction: "up"
-    - disease: "CPT1A-related Carnitine palmitoyltransferase 1A deficiency"
+    - disease: "CPT1A deficiency"
       ratio: "C0/(C16+C18)"
       direction: "up"
-    - disease: "CPT2-related Carnitine palmitoyltransferase 2 deficiency"
+    - disease: "CPT2 deficiency"
       ratio: "(C16+C18:1)/C2"
       direction: "up"
   threshold_percentile: 99.0
