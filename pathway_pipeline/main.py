@@ -995,7 +995,8 @@ def run_pipeline(input_file: str,
         _log_section("STEP 8e: Report figures (label-blind by default)")
         try:
             from pathway_pipeline.pipeline.visualize import (
-                overview_figures, sample_report_figures)
+                overview_figures, sample_overview_figure,
+                sample_report_figures)
             use_labels = bool(config.get("visualizations.use_labels", False))
             fig_dir = out / "figures"
             overview_figures(
@@ -1014,6 +1015,16 @@ def run_pipeline(input_file: str,
                 top = decisions_labeled.sort_values(
                     "top_excess", ascending=False).head(n_reports)
                 for sid in top["sample_id"]:
+                    sample_overview_figure(
+                        sample_id=sid,
+                        zscores=zscores_scored,
+                        pathway_scores=pathway_scores,
+                        pathway_flags=pathway_flags,
+                        promoted_diseases=promoted_diseases,
+                        normal_mask=normal_mask,
+                        out_dir=fig_dir / "sample_reports",
+                        dpi=int(config.get("visualizations.dpi", 200)),
+                    )
                     sample_report_figures(
                         sample_id=sid,
                         zscores=zscores_scored,

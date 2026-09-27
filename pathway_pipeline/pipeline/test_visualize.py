@@ -11,7 +11,8 @@ import pandas as pd
 import pytest
 
 from pathway_pipeline.pipeline.visualize import (
-    overview_figures, sample_report_figures, multisplit_figures)
+    overview_figures, sample_overview_figure, sample_report_figures,
+    multisplit_figures)
 
 
 @pytest.fixture
@@ -123,6 +124,54 @@ def test_sample_report_unknown_sample(tmp_path, frames):
         normal_mask=frames["normal_mask"],
         out_dir=tmp_path)
     assert written == {}
+
+
+def test_sample_overview_figure_written(tmp_path, frames):
+    """The 3-panel per-sample overview: disease waterfall, PathBank
+    waterfall, top signed metabolite z-scores."""
+    flags = frames["pathway_flags"].copy()
+    # Promote two of the four pathways into IEMbase disease panels.
+    flags["pathway_name"] = flags["pathway_name"].replace(
+        {"PW_A": "Disease A panel", "PW_B": "Disease B panel"})
+    promoted = ["Disease A panel", "Disease B panel"]
+    ok = sample_overview_figure(
+        sample_id="S35",
+        zscores=frames["zscores"],
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=flags,
+        promoted_diseases=promoted,
+        normal_mask=frames["normal_mask"],
+        out_dir=tmp_path)
+    assert ok
+    out = tmp_path / "S35_overview.png"
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_sample_overview_figure_unknown_sample(tmp_path, frames):
+    ok = sample_overview_figure(
+        sample_id="DOES_NOT_EXIST",
+        zscores=frames["zscores"],
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=frames["pathway_flags"],
+        promoted_diseases=[],
+        normal_mask=frames["normal_mask"],
+        out_dir=tmp_path)
+    assert ok is False
+    assert list(tmp_path.glob("*.png")) == []
+
+
+def test_sample_overview_figure_no_panels(tmp_path, frames):
+    """With no promoted panels the disease axis degrades gracefully."""
+    ok = sample_overview_figure(
+        sample_id="S35",
+        zscores=frames["zscores"],
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=frames["pathway_flags"],
+        promoted_diseases=[],
+        normal_mask=frames["normal_mask"],
+        out_dir=tmp_path)
+    assert ok
+    assert (tmp_path / "S35_overview.png").stat().st_size > 0
 
 
 def test_multisplit_figures_written(tmp_path):

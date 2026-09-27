@@ -451,6 +451,148 @@ def sample_report_figures(sample_id: str,
     return written
 
 
+def sample_overview_figure(sample_id: str,
+                           zscores: pd.DataFrame,
+                           pathway_scores: pd.DataFrame,
+                           pathway_flags: pd.DataFrame,
+                           promoted_diseases,
+                           normal_mask: pd.Series,
+                           out_dir: Path,
+                           dpi: int = 200,
+                           top_disease_panels: int = 15,
+                           top_pathways: int = 15,
+                           top_metabolites: int = 15) -> bool:
+    """One per-sample overview figure with three stacked subpanels.
+
+    Panel A: waterfall of the IEMbase disease panels (from the disease
+    table, direction-aware) ranked by the sample's pathway excess.
+    Panel B: the same waterfall for the direction-blind PathBank
+    pathways. Panel C: the top most aberrant metabolites as SIGNED
+    z-scores -- the direction evidence at the metabolite level. The
+    flag threshold (excess = 1) and z = 0 lines mark the calibration.
+
+    Args:
+        sample_id: the sample to report on.
+        zscores: per-sample metabolite z-scores (samples x features).
+        pathway_scores: Stouffer scores per (sample, pathway).
+        pathway_flags: flag table per (sample, pathway) with
+            ``excess`` and ``flagged``.
+        promoted_diseases: names of the promoted IEMbase disease
+            panels (the pathway channel's panel rows); everything else
+            in the pathway frames is a (direction-blind) PathBank
+            pathway.
+        normal_mask: boolean Series (sample_id -> is-normal reference).
+        out_dir: directory for the PNG file.
+        dpi: raster resolution.
+        top_disease_panels: cap on disease panels shown.
+        top_pathways: cap on PathBank pathways shown.
+        top_metabolites: cap on metabolites shown.
+
+    Returns:
+        True when the figure was written.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if zscores is None or sample_id not in zscores.index:
+        logger.info("Sample overview for %s skipped: not in the z matrix.",
+                    sample_id)
+        return False
+
+    promoted = set(promoted_diseases or [])
+
+    samp_flags = pathway_flags[
+        pathway_flags["sample_id"] == sample_id] \
+        if pathway_flags is not None and len(pathway_flags) > 0 \
+        else pd.DataFrame()
+    samp_scores = pathway_scores[
+        pathway_scores["sample_id"] == sample_id] \
+        if pathway_scores is not None and len(pathway_scores) > 0 \
+        else pd.DataFrame()
+
+    panels = (samp_flags[samp_flags["pathway_name"].isin(promoted)]
+              if len(samp_flags) else pd.DataFrame())
+    pathbank = (samp_flags[~samp_flags["pathway_name"].isin(promoted)]
+                if len(samp_flags) else pd.DataFrame())
+
+    zrow = zscores.loc[sample_id].dropna()
+    signed_z = zrow.sort_values(key=np.abs, ascending=False) \
+        .head(top_metabolites) if len(zrow) else pd.Series(dtype=float)
+
+    heights = []
+    if len(panels):
+        heights.append(0.30 * min(len(panels), top_disease_panels) + 0.8)
+    else:
+        heights.append(0.6)
+    if len(pathbank):
+        heights.append(0.30 * min(len(pathbank), top_pathways) + 0.8)
+    else:
+        heights.append(0.6)
+    heights.append(0.30 * len(signed_z) + 0.8)
+
+    fig, axes = plt.subplots(
+        3, 1, figsize=(9, sum(heights) + 1.2),
+        gridspec_kw={"height_ratios": heights})
+    fig.suptitle(f"{sample_id}: per-sample overview", y=0.995)
+
+    # Panel A: disease-panel waterfall (direction-aware, from the table).
+    ax = axes[0]
+    if len(panels):
+        rows = (panels.dropna(subset=["excess"])
+                .sort_values("excess", ascending=False)
+                .head(top_disease_panels))
+        flags = _canon_bool(rows["flagged"]) \
+            if "flagged" in rows.columns else pd.Series(False, index=rows.index)
+        colors = [FLAG_PALETTE.get(bool(f), "#4575b4") for f in flags]
+        ax.barh(range(len(rows)), rows["excess"].to_numpy(), color=colors)
+        ax.set_yticks(range(len(rows)))
+        ax.set_yticklabels(rows["pathway_name"].astype(str), fontsize=6)
+        ax.invert_yaxis()
+        ax.axvline(1.0, color="0.3", ls="--", lw=1)
+    else:
+        ax.text(0.5, 0.5, "no disease panels scored for this sample",
+                ha="center", va="center", transform=ax.transAxes, fontsize=8)
+    ax.set_title("IEMbase disease panels (direction-aware) — excess", loc="left", fontsize=9)
+
+    # Panel B: PathBank pathway waterfall (direction-blind).
+    ax = axes[1]
+    if len(pathbank):
+        rows = (pathbank.dropna(subset=["excess"])
+                .sort_values("excess", ascending=False)
+                .head(top_pathways))
+        flags = _canon_bool(rows["flagged"]) \
+            if "flagged" in rows.columns else pd.Series(False, index=rows.index)
+        colors = [FLAG_PALETTE.get(bool(f), "#4575b4") for f in flags]
+        ax.barh(range(len(rows)), rows["excess"].to_numpy(), color=colors)
+        ax.set_yticks(range(len(rows)))
+        ax.set_yticklabels(rows["pathway_name"].astype(str), fontsize=6)
+        ax.invert_yaxis()
+        ax.axvline(1.0, color="0.3", ls="--", lw=1)
+    else:
+        ax.text(0.5, 0.5, "no PathBank pathways scored for this sample",
+                ha="center", va="center", transform=ax.transAxes, fontsize=8)
+    ax.set_title("PathBank pathways (direction-blind) — excess", loc="left", fontsize=9)
+
+    # Panel C: top metabolite SIGNED z-scores (direction evidence).
+    ax = axes[2]
+    if len(signed_z):
+        colors = ["#d73027" if v > 0 else "#4575b4" for v in signed_z]
+        ax.barh(range(len(signed_z)), signed_z.to_numpy(), color=colors)
+        ax.set_yticks(range(len(signed_z)))
+        ax.set_yticklabels(signed_z.index.astype(str), fontsize=6)
+        ax.invert_yaxis()
+        ax.axvline(0.0, color="0.3", lw=1)
+    else:
+        ax.text(0.5, 0.5, "no metabolite z-scores for this sample",
+                ha="center", va="center", transform=ax.transAxes, fontsize=8)
+    ax.set_title(f"Top {len(signed_z)} aberrant metabolites — signed z (red = up, blue = down)", loc="left", fontsize=9)
+
+    out = out_dir / f"{sample_id}_overview.png"
+    ok = _save(fig, out, dpi)
+    if ok:
+        logger.info("Sample overview figure written to %s", out)
+    return ok
+
+
 def multisplit_figures(runs: pd.DataFrame,
                        stability: pd.DataFrame,
                        out_dir: Path,
