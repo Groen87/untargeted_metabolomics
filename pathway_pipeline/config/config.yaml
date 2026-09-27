@@ -281,7 +281,7 @@ reference_hygiene:
 validation_split:
   enable: true
   seed: 20260923
-  fraction: 0.5
+  fraction: 0.3
 
 # Minimum number of usable matched metabolites for a pathway to stay in the
 # scoring set after the z-score stage (Stouffer on k < 3 is dominated by a
@@ -403,7 +403,7 @@ biomarker_channel:
   # keeping the disease's max-z tests alive).
   disease_pathways:
     enable: true
-    min_panel_metabolites: 2
+    min_panel_metabolites: 1
   # Source 2: resolved attachments CSV (smp_id or pathway_name +
   # hmdb_id already known) -- used when the disease table is absent, or
   # alongside it as a complement.
