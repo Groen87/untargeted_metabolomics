@@ -738,6 +738,7 @@ def run_pipeline(input_file: str,
     # calibration -- thresholds come from the reference normals only).
     # ------------------------------------------------------------------
     metabolite_summary = None
+    metabolite_flags = None
     if bool(config.get("run_metabolite_flags", True)):
         _log_section("STEP 8c: Metabolite-level flags (report-only)")
         metabolite_flags = flag_metabolite_scores(
@@ -982,6 +983,49 @@ def run_pipeline(input_file: str,
         if hygiene is not None and not hygiene.empty:
             hygiene.to_csv(out / "reference_hygiene.csv", index=False)
             logger.info(f"Wrote reference_hygiene.csv to {out}")
+
+    # ------------------------------------------------------------------
+    # STEP 8e: report-only Seaborn figures from the existing outputs.
+    # Nothing here feeds back into scoring or flagging; failures are
+    # logged and never break the run. Label-blind by default (flag
+    # status only); the label-colored versions are opt-in for the
+    # frozen version's one-shot write-up.
+    # ------------------------------------------------------------------
+    if bool(config.get("visualizations.enable", True)):
+        _log_section("STEP 8e: Report figures (label-blind by default)")
+        try:
+            from pathway_pipeline.pipeline.visualize import (
+                overview_figures, sample_report_figures)
+            use_labels = bool(config.get("visualizations.use_labels", False))
+            fig_dir = out / "figures"
+            overview_figures(
+                decisions=decisions_labeled,
+                pathway_flags=pathway_flags,
+                pathway_scores=pathway_scores,
+                normal_mask=normal_mask,
+                out_dir=fig_dir,
+                dpi=int(config.get("visualizations.dpi", 200)),
+                use_labels=use_labels,
+                max_pathways=int(config.get(
+                    "visualizations.max_pathways", 30)),
+            )
+            n_reports = int(config.get("visualizations.sample_reports", 3))
+            if n_reports > 0 and not decisions_labeled.empty:
+                top = decisions_labeled.sort_values(
+                    "top_excess", ascending=False).head(n_reports)
+                for sid in top["sample_id"]:
+                    sample_report_figures(
+                        sample_id=sid,
+                        zscores=zscores_scored,
+                        pathway_scores=pathway_scores,
+                        pathway_flags=pathway_flags,
+                        metabolite_flags=metabolite_flags,
+                        normal_mask=normal_mask,
+                        out_dir=fig_dir / "sample_reports",
+                        dpi=int(config.get("visualizations.dpi", 200)),
+                    )
+        except Exception as exc:
+            logger.warning(f"Report figures skipped: {exc}")
 
     return {
         "feature_to_hmdb": feature_to_hmdb,

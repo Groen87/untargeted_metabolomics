@@ -502,6 +502,11 @@ def main():
     if not miss_freq.empty:
         miss_freq.to_csv(runs_dir / "imd_miss_frequency.csv", index=False)
     _write_report(out_root, seeds, runs, agg, missed, stability, miss_freq)
+    try:
+        from pathway_pipeline.pipeline.visualize import multisplit_figures
+        multisplit_figures(runs, stability, out_root / "figures")
+    except Exception as exc:
+        logger.warning("Multi-split figures skipped: %s", exc)
     logger.info("Wrote multi_split_runs.csv, multi_split_aggregate.csv, "
                 "missed_imd_evidence.csv, MULTI_SPLIT_REPORT.md to %s",
                 out_root)

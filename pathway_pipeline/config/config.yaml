@@ -531,3 +531,25 @@ save_mapping_outputs: true
 save_zscore_outputs: true
 save_stouffer_outputs: true
 save_flagging_outputs: true
+
+# ============================================================================
+# Report figures (STEP 8e): Seaborn visualizations of the existing outputs.
+# Report-only -- nothing feeds back into scoring or flagging, and a plotting
+# failure is logged without breaking the run. Label-blind by default: samples
+# are colored by flag status, never by IMD group, so producing figures
+# during development cannot leak disease signal into any choice. Set
+# use_labels: true ONLY for the frozen version's one-shot paper figures
+# (that read is covered by the version's one-shot, same as STEP 10).
+# visualizations:
+#   enable: true
+#   use_labels: false
+#   dpi: 200
+#   max_pathways: 30
+#   sample_reports: 3   # per-sample evidence figures for the top-N flagged
+# ============================================================================
+visualizations:
+  enable: true
+  use_labels: false
+  dpi: 200
+  max_pathways: 30
+  sample_reports: 3
