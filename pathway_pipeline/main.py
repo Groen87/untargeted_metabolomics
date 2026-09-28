@@ -996,7 +996,7 @@ def run_pipeline(input_file: str,
         try:
             from pathway_pipeline.pipeline.visualize import (
                 overview_figures, sample_overview_figure,
-                sample_report_figures)
+                sample_report_figures, top_pathway_waterfall_figure)
             use_labels = bool(config.get("visualizations.use_labels", False))
             fig_dir = out / "figures"
             overview_figures(
@@ -1015,6 +1015,17 @@ def run_pipeline(input_file: str,
                 top = decisions_labeled.sort_values(
                     "top_excess", ascending=False).head(n_reports)
                 for sid in top["sample_id"]:
+                    top_pathway_waterfall_figure(
+                        sample_id=sid,
+                        zscores=zscores_scored,
+                        feature_to_pathway=feature_to_pathway,
+                        disease_resolved=disease_resolved,
+                        pathway_scores=pathway_scores,
+                        pathway_flags=pathway_flags,
+                        feature_scale_weights=feature_scale_weights,
+                        out_dir=fig_dir / "sample_reports",
+                        dpi=int(config.get("visualizations.dpi", 200)),
+                    )
                     sample_overview_figure(
                         sample_id=sid,
                         zscores=zscores_scored,

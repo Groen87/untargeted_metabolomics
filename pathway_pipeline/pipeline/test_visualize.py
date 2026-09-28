@@ -12,7 +12,7 @@ import pytest
 
 from pathway_pipeline.pipeline.visualize import (
     overview_figures, sample_overview_figure, sample_report_figures,
-    multisplit_figures)
+    top_pathway_waterfall_figure, multisplit_figures)
 
 
 @pytest.fixture
@@ -172,6 +172,80 @@ def test_sample_overview_figure_no_panels(tmp_path, frames):
         out_dir=tmp_path)
     assert ok
     assert (tmp_path / "S35_overview.png").stat().st_size > 0
+
+
+def test_top_pathway_waterfall_flagged_sample(tmp_path, frames):
+    """Flagged sample: member z waterfall for the top flagging pathway."""
+    flags = frames["pathway_flags"].copy()
+    # Force one pathway to flag for S35 with a big excess.
+    sel = (flags["sample_id"] == "S35") & (flags["pathway_name"] == "PW_C")
+    flags.loc[sel, ["flagged", "excess"]] = [True, 2.5]
+    f2p = pd.DataFrame([
+        {"feature": "M1", "hmdb_id": "HMDB0000001", "smp_id": "PW_C",
+         "pathway_name": "PW_C", "metabolite_id": "PW_C1",
+         "metabolite_name": "Metabolite One"},
+        {"feature": "M2", "hmdb_id": "HMDB0000002", "smp_id": "PW_C",
+         "pathway_name": "PW_C", "metabolite_id": "PW_C2",
+         "metabolite_name": "Metabolite Two"},
+        {"feature": "M3", "hmdb_id": "HMDB0000003", "smp_id": "PW_C",
+         "pathway_name": "PW_C", "metabolite_id": "PW_C3",
+         "metabolite_name": "Metabolite Three"},
+    ])
+    ok = top_pathway_waterfall_figure(
+        sample_id="S35",
+        zscores=frames["zscores"],
+        feature_to_pathway=f2p,
+        disease_resolved=None,
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=flags,
+        out_dir=tmp_path)
+    assert ok
+    out = tmp_path / "S35_top_pathway_waterfall.png"
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_top_pathway_waterfall_disease_panel_directions(tmp_path, frames):
+    """Disease-panel top pathway: literature direction arrows on the bars."""
+    flags = frames["pathway_flags"].copy()
+    flags["pathway_name"] = flags["pathway_name"].replace(
+        {"PW_A": "MCADD"})
+    sel = (flags["sample_id"] == "S35") & (flags["pathway_name"] == "MCADD")
+    flags.loc[sel, ["flagged", "excess"]] = [True, 2.1]
+    resolved = pd.DataFrame([
+        {"disease": "MCADD", "biomarker": "Octanoylcarnitine",
+         "hmdb_id": "HMDB0000001", "direction": "up",
+         "features": "M1"},
+        {"disease": "MCADD", "biomarker": "Acetylcarnitine",
+         "hmdb_id": "HMDB0000002", "direction": "down",
+         "features": "M2"},
+        {"disease": "MCADD", "biomarker": "Hexanoylcarnitine",
+         "hmdb_id": "HMDB0000003", "direction": "up",
+         "features": "M3"},
+    ])
+    ok = top_pathway_waterfall_figure(
+        sample_id="S35",
+        zscores=frames["zscores"],
+        feature_to_pathway=pd.DataFrame(),
+        disease_resolved=resolved,
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=flags,
+        out_dir=tmp_path)
+    assert ok
+    assert (tmp_path / "S35_top_pathway_waterfall.png").stat().st_size > 0
+
+
+def test_top_pathway_waterfall_unflagged_sample(tmp_path, frames):
+    """Unflagged sample: no figure, no crash."""
+    ok = top_pathway_waterfall_figure(
+        sample_id="S5",
+        zscores=frames["zscores"],
+        feature_to_pathway=pd.DataFrame(),
+        disease_resolved=None,
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=frames["pathway_flags"],
+        out_dir=tmp_path)
+    assert ok is False
+    assert list(tmp_path.glob("*.png")) == []
 
 
 def test_multisplit_figures_written(tmp_path):

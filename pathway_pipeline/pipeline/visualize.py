@@ -27,7 +27,7 @@ input frame or an empty frame produces no figure, not a crash.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib
 
@@ -590,6 +590,144 @@ def sample_overview_figure(sample_id: str,
     ok = _save(fig, out, dpi)
     if ok:
         logger.info("Sample overview figure written to %s", out)
+    return ok
+
+
+def top_pathway_waterfall_figure(sample_id: str,
+                                 zscores: pd.DataFrame,
+                                 feature_to_pathway: pd.DataFrame,
+                                 disease_resolved: pd.DataFrame,
+                                 pathway_scores: pd.DataFrame,
+                                 pathway_flags: pd.DataFrame,
+                                 feature_scale_weights=None,
+                                 out_dir: Path = None,
+                                 dpi: int = 200,
+                                 max_members: int = 30) -> bool:
+    """Waterfall of the individual member z-scores of the sample's TOP
+    flagging pathway: how the pathway's Stouffer sum decomposes.
+
+    Members are the same terms the Stouffer sum actually combined:
+    features aggregated per metabolite (HMDB) with the pipeline's
+    scale^2 weighting rule, or -- for a promoted IEMbase disease panel
+    -- the panel's directed member terms with the literature direction
+    arrow annotated on each bar (up/down markers gate the tail in the
+    panel score; the bar shows the underlying signed z).
+
+    Args:
+        sample_id: the sample to report on (must be flagged).
+        zscores: per-sample metabolite z-scores (samples x features).
+        feature_to_pathway: (feature, pathway) links with ``hmdb_id``
+            (PathBank pathways only).
+        disease_resolved: resolved IEMbase disease biomarker table
+            (disease, biomarker, hmdb_id, direction) or None.
+        pathway_scores: Stouffer scores per (sample, pathway).
+        pathway_flags: flag table per (sample, pathway) with ``excess``
+            and ``flagged``.
+        feature_scale_weights: optional feature -> weight map (the
+            pipeline's scale^2 weighting, same aggregation rule).
+        out_dir: directory for the PNG file.
+        dpi: raster resolution.
+        max_members: cap on members shown.
+
+    Returns:
+        True when the figure was written.
+    """
+    if out_dir is None:
+        raise ValueError("out_dir is required")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if zscores is None or sample_id not in zscores.index:
+        logger.info("Top-pathway waterfall for %s skipped: not in the z "
+                    "matrix.", sample_id)
+        return False
+    if pathway_flags is None or len(pathway_flags) == 0:
+        logger.info("Top-pathway waterfall for %s skipped: no flags.",
+                    sample_id)
+        return False
+
+    samp = pathway_flags[(pathway_flags["sample_id"] == sample_id)
+                         & _canon_bool(pathway_flags["flagged"])]
+    samp = samp.dropna(subset=["excess"])
+    if samp.empty:
+        logger.info("Top-pathway waterfall for %s skipped: sample not "
+                    "flagged.", sample_id)
+        return False
+    top = samp.sort_values("excess", ascending=False).iloc[0]
+    pathway_name = str(top["pathway_name"])
+
+    # Resolve the pathway's member metabolites with their features.
+    members: List[Tuple[str, List[str], str]] = []
+    if disease_resolved is not None and len(disease_resolved) > 0:
+        panel = disease_resolved[
+            disease_resolved["disease"].astype(str) == pathway_name]
+        for _, row in panel.drop_duplicates(
+                subset=["biomarker", "hmdb_id"]).iterrows():
+            feats = sorted(set(str(row.get("features") or "").split(";"))
+                           - {""}) if "features" in panel.columns else []
+            feats = [f for f in feats if f in zscores.columns]
+            if feats:
+                label = str(row.get("biomarker") or row.get("hmdb_id")
+                            or "")
+                members.append((label, feats,
+                                str(row.get("direction") or "")))
+    if not members and feature_to_pathway is not None \
+            and len(feature_to_pathway) > 0:
+        links = feature_to_pathway[
+            feature_to_pathway["pathway_name"].astype(str) == pathway_name]
+        for hmdb_id, grp in links.groupby("hmdb_id"):
+            feats = [f for f in grp["feature"].unique()
+                     if f in zscores.columns]
+            if feats:
+                name = str(grp["metabolite_name"].iloc[0]) \
+                    if "metabolite_name" in links.columns else str(hmdb_id)
+                members.append((name, feats, ""))
+    if not members:
+        logger.info("Top-pathway waterfall for %s: no members resolved "
+                    "for '%s'; skipping.", sample_id, pathway_name)
+        return False
+
+    weights = feature_scale_weights or {}
+    rows = []
+    for label, feats, direction in members:
+        sub = zscores.loc[sample_id, feats].dropna()
+        if len(sub) == 0:
+            continue
+        if len(sub) == 1 or not weights:
+            z_val = float(sub.mean())
+        else:
+            w = pd.Series({f: float(weights.get(f, 1.0)) for f in sub.index})
+            z_val = float(sub.mul(w).sum() / w.sum())
+        rows.append({"member": label, "z": z_val, "direction": direction})
+    if not rows:
+        logger.info("Top-pathway waterfall for %s: no member z-scores "
+                    "for '%s'; skipping.", sample_id, pathway_name)
+        return False
+    member_df = pd.DataFrame(rows).sort_values("z", key=np.abs,
+                                               ascending=False) \
+        .head(max_members).sort_values("z")
+
+    colors = ["#d73027" if v > 0 else "#4575b4" for v in member_df["z"]]
+    fig, ax = plt.subplots(figsize=(9, 0.30 * len(member_df) + 1.8))
+    ax.barh(range(len(member_df)), member_df["z"].to_numpy(), color=colors)
+    ax.set_yticks(range(len(member_df)))
+    labels = [str(m) for m in member_df["member"]]
+    arrows = {"up": "\u2191", "down": "\u2193"}
+    for i, (lab, d) in enumerate(zip(labels, member_df["direction"])):
+        mark = arrows.get(str(d).strip().lower(), "")
+        if mark:
+            labels[i] = f"{mark} {lab}"
+    ax.set_yticklabels(labels, fontsize=6)
+    ax.axvline(0.0, color="0.3", lw=1)
+    ax.set_xlabel("Signed metabolite z-score (per-member, before the sum)")
+    ax.set_ylabel("")
+    title = (f"{sample_id}: top flagging pathway '{pathway_name}' "
+             f"(excess = {float(top['excess']):.2f})")
+    ax.set_title(title, loc="left", fontsize=9)
+
+    out = out_dir / f"{sample_id}_top_pathway_waterfall.png"
+    ok = _save(fig, out, dpi)
+    if ok:
+        logger.info("Top-pathway waterfall written to %s", out)
     return ok
 
 
