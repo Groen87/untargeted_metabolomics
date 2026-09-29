@@ -68,7 +68,12 @@ def load_run_outputs(run_dir: Path, config_path: Optional[Path] = None
     if zscores is None:
         logger.error(f"No metabolite_zscores.csv in {run_dir}")
         return None
-    zscores = zscores.set_index("sample_id")
+    if "sample_id" in zscores.columns:
+        zscores = zscores.set_index("sample_id")
+    else:
+        zscores = zscores.set_index(zscores.columns[0])
+    zscores.index = zscores.index.astype(str)
+    zscores.index.name = "sample_id"
 
     demoted = [f for f in (config.get("demoted_features") or [])
                if f in zscores.columns]
@@ -87,6 +92,10 @@ def load_run_outputs(run_dir: Path, config_path: Optional[Path] = None
     decisions = _read_csv(run_dir / "sample_decisions.csv")
     hygiene = _read_csv(run_dir / "reference_hygiene.csv")
     split = _read_csv(run_dir / "cohort_split.csv")
+    for frame in (pathway_scores, pathway_flags, metabolite_flags,
+                  decisions, hygiene, split):
+        if frame is not None and "sample_id" in frame.columns:
+            frame["sample_id"] = frame["sample_id"].astype(str)
 
     if pathway_scores is None or pathway_flags is None:
         logger.error(f"Missing pathway scores/flags CSVs in {run_dir}")

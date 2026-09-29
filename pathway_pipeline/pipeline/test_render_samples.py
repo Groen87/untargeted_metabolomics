@@ -150,6 +150,31 @@ def test_load_run_outputs_rebuilds_promoted_panels(tmp_path):
     assert frames["feature_scale_weights"] is not None
 
 
+def test_load_run_outputs_numeric_ids_unnamed_index(tmp_path):
+    """Real runs write metabolite_zscores.csv with the patient-ID column
+    as the (possibly unnamed or differently named) index and numeric IDs;
+    the loader must still expose a string sample_id index."""
+    run_dir = tmp_path / "run"
+    _write_run_outputs(run_dir, promoted=True)
+    raw = pd.read_csv(run_dir / "metabolite_zscores.csv", index_col=0)
+    raw.index.name = None
+    raw.index = raw.index.astype(str).map(lambda s: s.replace("S", ""))
+    raw.to_csv(run_dir / "metabolite_zscores.csv")
+    for name in ("cohort_split.csv", "sample_decisions.csv"):
+        f = run_dir / name
+        df = pd.read_csv(f)
+        df["sample_id"] = df["sample_id"].astype(str).str.replace("S", "")
+        df.to_csv(f, index=False)
+    frames = load_run_outputs(run_dir)
+    assert frames is not None
+    assert "26150973733" not in frames["zscores_scored"].index
+    assert "0" in frames["zscores_scored"].index
+    assert str(raw.index[0]) in frames["zscores_scored"].index
+    code = render_samples(run_dir, ["29"], out_dir=tmp_path / "figs")
+    assert code == 0
+    assert any("29_" in p.name for p in (tmp_path / "figs").glob("*.png"))
+
+
 def test_render_samples_writes_figures(tmp_path):
     run_dir = tmp_path / "run"
     _write_run_outputs(run_dir, promoted=True)
