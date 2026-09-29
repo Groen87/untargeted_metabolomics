@@ -76,6 +76,33 @@ def _disease_resolved_from_run(run_dir: Path) -> Optional[pd.DataFrame]:
     return resolved
 
 
+def _ratio_members_from_config(config: dict,
+                               zscores: pd.DataFrame
+                               ) -> pd.DataFrame:
+    """Panel member terms declared as ratio_biomarkers in the run config.
+
+    ``biomarker_channel.ratio_biomarkers`` entries joined disease panels
+    as extra Stouffer member terms (RATIO:<name>); the waterfall needs
+    the same terms so a panel's ratio members appear alongside its
+    metabolite members.
+    """
+    cols = ["disease", "biomarker", "hmdb_id", "direction", "features"]
+    channel = config.get("biomarker_channel") or {}
+    if not isinstance(channel, dict):
+        return pd.DataFrame(columns=cols)
+    specs = channel.get("ratio_biomarkers") or []
+    rows = []
+    for spec in specs or []:
+        ratio = str(spec.get("ratio", "")).strip()
+        disease = str(spec.get("disease", "")).strip()
+        if not ratio or not disease or ratio not in zscores.columns:
+            continue
+        rows.append({"disease": disease, "biomarker": ratio,
+                     "hmdb_id": "", "direction": spec.get("direction"),
+                     "features": ratio})
+    return pd.DataFrame(rows, columns=cols)
+
+
 def load_run_outputs(run_dir: Path, config_path: Optional[Path] = None
                      ) -> Optional[dict]:
     """Rebuild the STEP 8e figure inputs from a saved run directory.
@@ -138,8 +165,9 @@ def load_run_outputs(run_dir: Path, config_path: Optional[Path] = None
     if panel_scores is not None and not panel_scores.empty:
         disease_resolved = _disease_resolved_from_run(run_dir)
         if disease_resolved is None:
-            table_file = config.get(
-                "biomarker_channel.disease_table_file", None)
+            channel_cfg = config.get("biomarker_channel") or {}
+            table_file = (channel_cfg.get("disease_table_file")
+                          if isinstance(channel_cfg, dict) else None)
             if table_file:
                 table_path = Path(table_file)
                 if not table_path.is_absolute():
@@ -155,6 +183,14 @@ def load_run_outputs(run_dir: Path, config_path: Optional[Path] = None
                         and coverage is not None):
                     disease_resolved, _, _ = resolve_disease_biomarkers(
                         disease_table, feature_to_hmdb, coverage)
+        if disease_resolved is None:
+            disease_resolved = pd.DataFrame(
+                columns=["disease", "biomarker", "hmdb_id", "direction",
+                         "features"])
+        ratio_members = _ratio_members_from_config(config, zscores_scored)
+        if not ratio_members.empty:
+            disease_resolved = pd.concat(
+                [disease_resolved, ratio_members], ignore_index=True)
         promoted_diseases = sorted(panel_scores["pathway_name"].unique())
         panel_smps_real = {s for s in panel_scores["smp_id"].unique()
                            if not str(s).startswith("DISEASE-")}

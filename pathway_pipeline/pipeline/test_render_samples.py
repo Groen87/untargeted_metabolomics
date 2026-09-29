@@ -222,6 +222,40 @@ def test_waterfall_members_from_saved_audit(tmp_path):
                for p in (tmp_path / "figs").glob("S29_*.png"))
 
 
+def test_waterfall_includes_config_ratio_members(tmp_path):
+    """biomarker_channel.ratio_biomarkers members joined the panel's
+    Stouffer sum at run time; the waterfall must show them too."""
+    import yaml
+    run_dir = tmp_path / "run"
+    _write_run_outputs(run_dir, promoted=True)
+    zscores = pd.read_csv(run_dir / "metabolite_zscores.csv", index_col=0)
+    zscores["Thr/Ser"] = zscores["F1"] - zscores["F2"]
+    zscores.to_csv(run_dir / "metabolite_zscores.csv")
+    config = {
+        "demoted_features": [],
+        "scale_weighted_metabolites": True,
+        "biomarker_channel": {
+            "disease_table_file": str(
+                REPO_ROOT / "pathway_pipeline"
+                / "iembase-diseases-with-pathbank-pathways-and-hmdb-codes.xlsx"),
+            "ratio_biomarkers": [
+                {"disease": "Pyridoxine-dependent epilepsy",
+                 "ratio": "Thr/Ser", "direction": "up"},
+            ],
+        },
+    }
+    with open(run_dir / "config_used.yaml", "w") as f:
+        yaml.safe_dump(config, f)
+    frames = load_run_outputs(run_dir)
+    assert frames is not None
+    resolved = frames["disease_resolved"]
+    ratio_rows = resolved[resolved["biomarker"] == "Thr/Ser"]
+    assert len(ratio_rows) == 1
+    assert ratio_rows.iloc[0]["features"] == "Thr/Ser"
+    code = render_samples(run_dir, ["S29"], out_dir=tmp_path / "figs")
+    assert code == 0
+
+
 def test_render_samples_unknown_ids(tmp_path, capsys):
     run_dir = tmp_path / "run"
     _write_run_outputs(run_dir, promoted=True)
