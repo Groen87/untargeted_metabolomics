@@ -110,7 +110,10 @@ ratio_features:
       - "Palmitoylcarnitine.HMDB0000222"
       - "Oleoylcarnitine.HMDB0005065"
     denominator: "L-Acetylcarnitine.HMDB0000201"
-
+  - name: "Thr/Ser"
+    numerator: "L-Threonine.HMDB0000167"
+    denominator:
+      - "L-Serine.HMDB0000187"
 # Cohort definition for reporting: with untreated_imd_only, an IMD sample
 # (Classification == 1 AND Oordeel targeted == 1) counts as 'imd' only when
 # Non-treated == 1 (untreated, a true IMD presentation). Treated IMDs
@@ -551,5 +554,5 @@ visualizations:
   enable: true
   use_labels: false
   dpi: 200
-  max_pathways: 30
-  sample_reports: 3
+  max_pathways: 15
+  sample_reports: 20

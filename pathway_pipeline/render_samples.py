@@ -321,7 +321,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_dir, config_path=args.config)
     if frames is None:
         return 1
-
     sample_ids: List[str] = []
     if args.ids:
         sample_ids = [s.strip() for s in str(args.ids).split(",") if s.strip()]
