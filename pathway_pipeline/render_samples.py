@@ -45,6 +45,37 @@ def _read_csv(path: Path) -> Optional[pd.DataFrame]:
     return df if not df.empty else None
 
 
+def _disease_resolved_from_run(run_dir: Path) -> Optional[pd.DataFrame]:
+    """Rebuild the resolved disease panels from the run's own audit CSVs.
+
+    ``disease_table_audit.csv`` holds every table row with its resolved
+    feature list (semicolon-joined); ``disease_marker_name_matches.csv``
+    holds the name-matched markers that joined panels without an HMDB
+    code. Together they cover every member source the panel scores used,
+    so the waterfall needs neither the Excel file nor a re-resolution.
+    """
+    audit = _read_csv(run_dir / "disease_table_audit.csv")
+    if audit is None:
+        return None
+    cols = ["disease", "biomarker", "hmdb_id", "direction", "features"]
+    resolved = audit.reindex(columns=cols)
+    resolved = resolved[resolved["features"].fillna("") != ""]
+    name_matches = _read_csv(run_dir / "disease_marker_name_matches.csv")
+    if name_matches is not None and not name_matches.empty:
+        extra = pd.DataFrame({
+            "disease": name_matches["disease"],
+            "biomarker": name_matches["marker"],
+            "hmdb_id": "",
+            "direction": name_matches["direction"],
+            "features": name_matches["matched_features"],
+        })
+        extra = extra[extra["features"].fillna("") != ""]
+        resolved = pd.concat([resolved, extra], ignore_index=True)
+    if resolved.empty:
+        return pd.DataFrame(columns=cols)
+    return resolved
+
+
 def load_run_outputs(run_dir: Path, config_path: Optional[Path] = None
                      ) -> Optional[dict]:
     """Rebuild the STEP 8e figure inputs from a saved run directory.
@@ -105,23 +136,25 @@ def load_run_outputs(run_dir: Path, config_path: Optional[Path] = None
     promoted_diseases: List[str] = []
     panel_scores = _read_csv(run_dir / "disease_panel_scores.csv")
     if panel_scores is not None and not panel_scores.empty:
-        table_file = config.get(
-            "biomarker_channel.disease_table_file", None)
-        disease_resolved = None
-        if table_file:
-            table_path = Path(table_file)
-            if not table_path.is_absolute():
-                for base in (run_dir, run_dir.parent, Path.cwd(),
-                             Path(__file__).resolve().parents[1]):
-                    candidate = base / table_path
-                    if candidate.exists():
-                        table_path = candidate
-                        break
-            disease_table = load_disease_biomarker_table(str(table_path))
-            if (not disease_table.empty and feature_to_hmdb is not None
-                    and coverage is not None):
-                disease_resolved, _, _ = resolve_disease_biomarkers(
-                    disease_table, feature_to_hmdb, coverage)
+        disease_resolved = _disease_resolved_from_run(run_dir)
+        if disease_resolved is None:
+            table_file = config.get(
+                "biomarker_channel.disease_table_file", None)
+            if table_file:
+                table_path = Path(table_file)
+                if not table_path.is_absolute():
+                    for base in (run_dir, run_dir.parent, Path.cwd(),
+                                 Path(__file__).resolve().parents[1]):
+                        candidate = base / table_path
+                        if candidate.exists():
+                            table_path = candidate
+                            break
+                disease_table = load_disease_biomarker_table(
+                    str(table_path))
+                if (not disease_table.empty and feature_to_hmdb is not None
+                        and coverage is not None):
+                    disease_resolved, _, _ = resolve_disease_biomarkers(
+                        disease_table, feature_to_hmdb, coverage)
         promoted_diseases = sorted(panel_scores["pathway_name"].unique())
         panel_smps_real = {s for s in panel_scores["smp_id"].unique()
                            if not str(s).startswith("DISEASE-")}

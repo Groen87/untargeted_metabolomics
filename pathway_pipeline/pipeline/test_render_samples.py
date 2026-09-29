@@ -188,6 +188,40 @@ def test_render_samples_writes_figures(tmp_path):
     assert any("panelA" in n for n in pngs)
 
 
+def test_waterfall_members_from_saved_audit(tmp_path):
+    """A run's own disease_table_audit.csv must resolve promoted-panel
+    members for the waterfall even when the Excel disease table file is
+    absent -- scoring used the run's saved mapping, not a re-resolution."""
+    import yaml
+    run_dir = tmp_path / "run"
+    _write_run_outputs(run_dir, promoted=True)
+    config = {
+        "demoted_features": [],
+        "scale_weighted_metabolites": True,
+        "biomarker_channel": {
+            "disease_table_file": str(tmp_path / "missing.xlsx")},
+    }
+    with open(run_dir / "config_used.yaml", "w") as f:
+        yaml.safe_dump(config, f)
+    audit = pd.DataFrame({
+        "disease": ["Pyridoxine-dependent epilepsy"],
+        "biomarker": ["MetA"],
+        "hmdb_id": ["HMDB00001"],
+        "direction": ["up"],
+        "features": ["F1"],
+    })
+    audit.to_csv(run_dir / "disease_table_audit.csv", index=False)
+    frames = load_run_outputs(run_dir)
+    assert frames is not None
+    resolved = frames["disease_resolved"]
+    assert resolved is not None and not resolved.empty
+    assert "Pyridoxine-dependent epilepsy" in set(resolved["disease"])
+    code = render_samples(run_dir, ["S29"], out_dir=tmp_path / "figs")
+    assert code == 0
+    assert any("top_pathway_waterfall" in p.name
+               for p in (tmp_path / "figs").glob("S29_*.png"))
+
+
 def test_render_samples_unknown_ids(tmp_path, capsys):
     run_dir = tmp_path / "run"
     _write_run_outputs(run_dir, promoted=True)
