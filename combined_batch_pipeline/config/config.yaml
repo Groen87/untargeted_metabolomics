@@ -61,7 +61,7 @@ apply_log10_merged: true
 
 # Filter 1: Low intensity
 # Removes features with low intensity across all samples
-filter_low_intensity: true
+filter_low_intensity: false
 # Option A: Mean-based threshold (default)
 intensity_threshold: 100000.0  # Features with mean intensity < this are removed
 # Option B: Quantile-based (uncomment to use instead of absolute threshold)
@@ -79,7 +79,7 @@ blank_high_signal_threshold: 10.0  # Keep features if any bio sample >= this * b
 
 # Filter 3: Low variance (near-constant features)
 # Removes features with almost no variation (uninformative or noise)
-filter_low_variance: true
+filter_low_variance: false
 # variance_threshold: 0.01  # Absolute variance threshold (features with var < this are removed)
 # Alternative to threshold: use quantile to remove bottom N% by variance
 variance_quantile: 0.05  # Remove bottom 5% by variance
@@ -89,7 +89,7 @@ variance_nonzero_threshold: 10000.0  # Values below this are considered gap-fill
 
 # Filter 4: Single batch features
 # Removes features only present in a single batch (gap-filled in others)
-filter_single_batch: true
+filter_single_batch: false
 min_batches: 2  # Features must be present in at least this many batches
 single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global median (default: 10%)
                                         # Increase to 0.25 or 0.50 if gap-filled values are higher
