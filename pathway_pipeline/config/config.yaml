@@ -455,6 +455,9 @@ biomarker_channel:
     - disease: "CPT2 deficiency"
       ratio: "(C16+C18:1)/C2"
       direction: "up"
+    - disease: "Citrin deficiency"
+      ratio: "Thr/Ser"
+      direction: "up"
   threshold_percentile: 99.0
 
 # STEP 9: label-blind development QC (calibration check, noise floor,
