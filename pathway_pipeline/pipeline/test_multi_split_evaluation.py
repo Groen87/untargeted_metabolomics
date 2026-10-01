@@ -119,3 +119,9 @@ def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
     assert "Multi-Split Evaluation Report" in report
     assert "sensitivity" in report
     assert "IMD miss frequency" in report
+    figures = out_root / "figures"
+    for name in ("confusion_matrix_seed_21.png",
+                 "confusion_matrix_seed_22.png",
+                 "confusion_matrix_aggregate.png"):
+        assert (figures / name).exists(), name
+        assert (figures / name).stat().st_size > 0

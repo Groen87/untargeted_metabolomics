@@ -975,6 +975,31 @@ def run_pipeline(input_file: str,
                 pd.concat(frames).to_csv(
                     out / "evaluation_summary.csv", index=False)
                 logger.info(f"Wrote evaluation_summary.csv to {out}")
+            try:
+                from pathway_pipeline.pipeline.visualize import (
+                    confusion_matrix_figure)
+                half_masks = {}
+                if validation_mask is not None:
+                    half_masks["validation"] = validation_mask
+                    if bool(config.get("evaluate_dev_half", False)):
+                        half_masks["development"] = ~validation_mask
+                else:
+                    half_masks["all"] = None
+                for name, mask in half_masks.items():
+                    if name not in metrics:
+                        continue
+                    half_decisions = decisions_labeled
+                    if mask is not None:
+                        keep = half_decisions["sample_id"].map(
+                            mask.reindex(half_decisions["sample_id"],
+                                         fill_value=False))
+                        half_decisions = half_decisions[keep.to_numpy()]
+                    confusion_matrix_figure(
+                        half_decisions,
+                        out / f"confusion_matrix_{name}.png",
+                        title=f"{name.capitalize()} half: IMD vs non-IMD")
+            except Exception as exc:
+                logger.warning(f"Confusion matrix figure failed: {exc}")
 
     if bool(config.get("save_flagging_outputs", True)):
         pathway_flags.to_csv(out / "pathway_flags.csv", index=False)

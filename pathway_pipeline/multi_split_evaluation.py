@@ -34,6 +34,14 @@ Outputs (default outputs/multi_split_evaluation/)
 - runs/multi_split_aggregate.csv     mean/median/sd/min/max per metric
 - runs/missed_imd_evidence.csv       every missed IMD with its evidence,
                                      one row per (seed, sample)
+- figures/confusion_matrix_seed_<seed>.png
+                                     validation-half IMD vs non-IMD
+                                     confusion matrix per split
+- figures/confusion_matrix_aggregate.png
+                                     mean confusion matrix over the
+                                     pre-declared splits (per-seed mean,
+                                     NOT pooled samples; splits share
+                                     samples)
 - runs/sample_flag_stability.csv     per sample across ALL splits: in how
                                      many of the pre-declared splits the
                                      sample flagged (flag_rate), per-channel
@@ -173,6 +181,7 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
     rows = []
     missed_frames = []
     per_sample_frames = []
+    per_seed_decisions = {}
     for seed in seeds:
         seed_dir = per_seed / f"seed_{seed}"
         seed_dir.mkdir(parents=True, exist_ok=True)
@@ -188,6 +197,10 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
         decisions = result["sample_decisions"]
         validation = result["validation_mask"]
         groups = result["sample_group"]
+        val_mask = decisions["sample_id"].map(
+            validation.reindex(decisions["sample_id"],
+                               fill_value=False)).fillna(False).astype(bool)
+        per_seed_decisions[seed] = decisions[val_mask.to_numpy()].copy()
         evaluation = (result.get("evaluation") or {}).get("validation")
         if evaluation is None:
             raise RuntimeError(
@@ -227,6 +240,12 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
                   columns=["seed", "sample_id", *MISSED_EVIDENCE_COLS]))
     stability = _sample_flag_stability(per_sample_frames)
     miss_freq = _imd_miss_frequency(missed, per_sample_frames, len(seeds))
+    try:
+        from pathway_pipeline.pipeline.visualize import (
+            multisplit_confusion_matrices)
+        multisplit_confusion_matrices(per_seed_decisions, out_root / "figures")
+    except Exception as exc:
+        logger.warning("Multi-split confusion matrices skipped: %s", exc)
     return runs, missed, stability, miss_freq
 
 

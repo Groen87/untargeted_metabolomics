@@ -12,7 +12,9 @@ import pytest
 
 from pathway_pipeline.pipeline.visualize import (
     overview_figures, sample_overview_figure, sample_report_figures,
-    top_pathway_waterfall_figure, multisplit_figures)
+    top_pathway_waterfall_figure, multisplit_figures,
+    confusion_matrix_counts, confusion_matrix_figure,
+    multisplit_confusion_matrices)
 
 
 @pytest.fixture
@@ -273,3 +275,54 @@ def test_multisplit_figures_empty(tmp_path):
     assert multisplit_figures(runs=pd.DataFrame(),
                               stability=pd.DataFrame(),
                               out_dir=tmp_path) == {}
+
+
+def _decisions(seed: int = 3):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({
+        "sample_id": [f"S{i}" for i in range(12)],
+        "group": ["imd"] * 4 + ["normal"] * 6 + ["other"] * 2,
+        "flagged": ([True, True, True, False]
+                    + list(rng.random(6) < 0.2)
+                    + [True, False]),
+    })
+
+
+def test_confusion_matrix_counts_excludes_other():
+    counts = confusion_matrix_counts(_decisions())
+    assert list(counts["label"]) == ["IMD", "non-IMD"]
+    assert counts["flagged"].iloc[0] == 3
+    assert counts["not_flagged"].iloc[0] == 1
+    by_label = counts.set_index("label")
+    assert by_label.sum(axis=1)["IMD"] == 4
+    assert by_label.sum(axis=1)["non-IMD"] == 6
+
+
+def test_confusion_matrix_figure_written(tmp_path):
+    out = tmp_path / "confusion_matrix_validation.png"
+    assert confusion_matrix_figure(_decisions(), out) is True
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_confusion_matrix_figure_no_labeled_samples(tmp_path):
+    decisions = _decisions()
+    decisions["group"] = "other"
+    out = tmp_path / "cm.png"
+    assert confusion_matrix_figure(decisions, out) is False
+    assert list(tmp_path.glob("*.png")) == []
+
+
+def test_multisplit_confusion_matrices_written(tmp_path):
+    per_seed = {21: _decisions(1), 22: _decisions(2)}
+    written = multisplit_confusion_matrices(per_seed, tmp_path)
+    assert written and all(written.values())
+    assert set(written) == {
+        "confusion_matrix_seed_21.png", "confusion_matrix_seed_22.png",
+        "confusion_matrix_aggregate.png"}
+    for name in written:
+        assert (tmp_path / name).stat().st_size > 0
+
+
+def test_multisplit_confusion_matrices_empty(tmp_path):
+    assert multisplit_confusion_matrices({}, tmp_path) == {}
+    assert list(tmp_path.glob("*.png")) == []

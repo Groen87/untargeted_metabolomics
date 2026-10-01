@@ -821,3 +821,130 @@ def multisplit_figures(runs: pd.DataFrame,
     logger.info("Multi-split figures: %d written to %s",
                 sum(written.values()), out_dir)
     return written
+
+
+def confusion_matrix_counts(decisions: pd.DataFrame) -> pd.DataFrame:
+    """2x2 confusion counts (IMD vs non-IMD) from sample decisions.
+
+    Rows are the label (IMD / non-IMD), columns the pipeline decision
+    (flagged / not flagged). Samples in group 'other' are unlabeled for
+    the IMD question and are excluded from the counts.
+
+    Returns:
+        DataFrame indexed by label with columns ``flagged`` and
+        ``not_flagged``; empty when no labeled samples are present.
+    """
+    if decisions is None or len(decisions) == 0 \
+            or not {"sample_id", "flagged", "group"}.issubset(
+                decisions.columns):
+        return pd.DataFrame(columns=["label", "flagged", "not_flagged"])
+    d = decisions.copy()
+    d["flagged"] = _canon_bool(d["flagged"]).fillna(False)
+    labeled = d[d["group"].isin(["imd", "normal"])].copy()
+    if labeled.empty:
+        return pd.DataFrame(columns=["label", "flagged", "not_flagged"])
+    labeled["label"] = np.where(labeled["group"] == "imd",
+                                "IMD", "non-IMD")
+    counts = labeled.groupby("label")["flagged"].agg(
+        flagged="sum", not_flagged=lambda s: (~s).sum())
+    counts = counts.reindex(["IMD", "non-IMD"]).fillna(0).astype(int)
+    return counts.reset_index()
+
+
+def confusion_matrix_figure(decisions: pd.DataFrame,
+                            out: Path,
+                            title: str = "",
+                            dpi: int = 200) -> bool:
+    """Confusion-matrix heatmap of IMD vs non-IMD against the flag decision.
+
+    A pure visualization of already-computed sample decisions; never
+    feeds back into scoring, thresholds, or calibration.
+
+    Args:
+        decisions: per-sample decisions with ``sample_id``, ``flagged``
+            and ``group`` columns.
+        out: output PNG path.
+        title: figure title (e.g. the seed or half being shown).
+        dpi: raster resolution.
+
+    Returns:
+        True when the PNG was written; False when no labeled samples
+        are available (nothing written).
+    """
+    counts = confusion_matrix_counts(decisions)
+    if counts.empty:
+        logger.info("Confusion matrix skipped: no labeled samples.")
+        return False
+    mat = counts.set_index("label")[["flagged", "not_flagged"]]
+    row_totals = mat.sum(axis=1)
+    pct = mat.div(row_totals, axis=0).mul(100).round(1)
+    annot = mat.astype(str) + "\n(" + pct.astype(str) + "%)"
+    fig, ax = plt.subplots(figsize=(4.5, 3.5))
+    sns.heatmap(mat, annot=annot, fmt="", cmap="Blues", cbar=False,
+                linewidths=0.5, linecolor="white", ax=ax)
+    ax.set_xlabel("Pipeline decision")
+    ax.set_ylabel("")
+    ax.set_title(title if title else "IMD vs non-IMD confusion matrix")
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return _save(fig, out, dpi)
+
+
+def multisplit_confusion_matrices(per_seed_decisions: dict,
+                                  out_dir: Path,
+                                  dpi: int = 200) -> Dict[str, bool]:
+    """Confusion matrices for the multi-split protocol.
+
+    One figure per seed (validation half of that split) plus an
+    aggregate figure holding the mean counts over seeds. Splits share
+    samples, so the aggregate is a mean over per-seed matrices, not a
+    pooled count -- it must never be read as n independent samples.
+
+    Args:
+        per_seed_decisions: mapping seed -> validation-half ``sample_decisions``
+            DataFrame (with ``sample_id``, ``flagged``, ``group``).
+        out_dir: directory for the PNG files (created on demand).
+        dpi: raster resolution.
+
+    Returns:
+        Dict mapping figure file name -> written flag.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: Dict[str, bool] = {}
+    if not per_seed_decisions:
+        logger.info("Multi-split confusion matrices skipped: "
+                    "no per-seed decisions.")
+        return written
+    matrices = {}
+    for seed in sorted(per_seed_decisions):
+        decisions = per_seed_decisions[seed]
+        counts = confusion_matrix_counts(decisions)
+        if counts.empty:
+            logger.info("Confusion matrix for seed %s skipped: "
+                        "no labeled samples.", seed)
+            continue
+        name = f"confusion_matrix_seed_{seed}.png"
+        written[name] = confusion_matrix_figure(
+            decisions, out_dir / name,
+            title=f"Validation half, seed {seed} "
+                  f"(IMD vs non-IMD)", dpi=dpi)
+        matrices[seed] = counts.set_index("label")
+    if matrices:
+        mean_mat = (pd.concat(matrices.values())
+                    .groupby(level=0).mean()
+                    .reindex(["IMD", "non-IMD"]).fillna(0))
+        annot = mean_mat.round(1).astype(str)
+        fig, ax = plt.subplots(figsize=(4.5, 3.5))
+        sns.heatmap(mean_mat, annot=annot, fmt="", cmap="Blues",
+                    cbar_kws={"label": "Mean samples per split"},
+                    linewidths=0.5, linecolor="white", ax=ax)
+        ax.set_xlabel("Pipeline decision")
+        ax.set_ylabel("")
+        ax.set_title("Mean confusion matrix over pre-declared splits "
+                     "(per-seed mean, not pooled samples)")
+        name = "confusion_matrix_aggregate.png"
+        written[name] = _save(fig, out_dir / name, dpi)
+    logger.info("Multi-split confusion matrices: %d written to %s",
+                sum(written.values()), out_dir)
+    return written
