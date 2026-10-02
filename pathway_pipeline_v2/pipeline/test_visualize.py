@@ -236,6 +236,70 @@ def test_top_pathway_waterfall_disease_panel_directions(tmp_path, frames):
     assert (tmp_path / "S35_top_pathway_waterfall.png").stat().st_size > 0
 
 
+def test_top_pathway_waterfall_two_channels(tmp_path, frames):
+    """Channel split: iembase and pathbank waterfalls pick their own top
+    pathway and are written to distinct suffixed files."""
+    flags = frames["pathway_flags"].copy()
+    # Flag two pathways for S35: an IEMbase disease panel and a PathBank one.
+    flags.loc[(flags["sample_id"] == "S35")
+              & (flags["pathway_name"] == "PW_A"),
+              ["flagged", "excess"]] = [True, 2.1]
+    flags["pathway_name"] = flags["pathway_name"].replace({"PW_B": "MCADD"})
+    flags.loc[(flags["sample_id"] == "S35")
+              & (flags["pathway_name"] == "MCADD"),
+              ["flagged", "excess"]] = [True, 1.4]
+    resolved = pd.DataFrame([
+        {"disease": "MCADD", "biomarker": "Octanoylcarnitine",
+         "hmdb_id": "HMDB0000001", "direction": "up", "features": "M1"},
+    ])
+    f2p = pd.DataFrame([
+        {"feature": "M2", "hmdb_id": "HMDB0000002", "smp_id": "PW_A",
+         "pathway_name": "PW_A", "metabolite_id": "PW_A2",
+         "metabolite_name": "Metabolite Two"},
+    ])
+    ok_ie = top_pathway_waterfall_figure(
+        sample_id="S35",
+        zscores=frames["zscores"],
+        feature_to_pathway=f2p,
+        disease_resolved=resolved,
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=flags,
+        out_dir=tmp_path,
+        channel="iembase")
+    ok_pb = top_pathway_waterfall_figure(
+        sample_id="S35",
+        zscores=frames["zscores"],
+        feature_to_pathway=f2p,
+        disease_resolved=resolved,
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=flags,
+        out_dir=tmp_path,
+        channel="pathbank")
+    assert ok_ie and ok_pb
+    ie_png = tmp_path / "S35_top_pathway_waterfall_iembase.png"
+    pb_png = tmp_path / "S35_top_pathway_waterfall_pathbank.png"
+    assert ie_png.exists() and ie_png.stat().st_size > 0
+    assert pb_png.exists() and pb_png.stat().st_size > 0
+
+
+def test_top_pathway_waterfall_channel_skips_when_empty(tmp_path, frames):
+    """A channel with no flagged pathway skips gracefully (no figure)."""
+    flags = frames["pathway_flags"].copy()
+    sel = (flags["sample_id"] == "S35") & (flags["pathway_name"] == "PW_A")
+    flags.loc[sel, ["flagged", "excess"]] = [True, 2.5]
+    ok = top_pathway_waterfall_figure(
+        sample_id="S35",
+        zscores=frames["zscores"],
+        feature_to_pathway=pd.DataFrame(),
+        disease_resolved=None,
+        pathway_scores=frames["pathway_scores"],
+        pathway_flags=flags,
+        out_dir=tmp_path,
+        channel="iembase")
+    assert ok is False
+    assert list(tmp_path.glob("*.png")) == []
+
+
 def test_top_pathway_waterfall_unflagged_sample(tmp_path, frames):
     """Unflagged sample: no figure, no crash."""
     ok = top_pathway_waterfall_figure(

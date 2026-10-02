@@ -598,7 +598,8 @@ def top_pathway_waterfall_figure(sample_id: str,
                                  feature_scale_weights=None,
                                  out_dir: Path = None,
                                  dpi: int = 200,
-                                 max_members: int = 30) -> bool:
+                                 max_members: int = 30,
+                                 channel: str = "auto") -> bool:
     """Waterfall of the individual member z-scores of the sample's TOP
     flagging pathway: how the pathway's Stouffer sum decomposes.
 
@@ -608,6 +609,13 @@ def top_pathway_waterfall_figure(sample_id: str,
     -- the panel's directed member terms with the literature direction
     arrow annotated on each bar (up/down markers gate the tail in the
     panel score; the bar shows the underlying signed z).
+
+    ``channel`` selects which pathways the "top" pathway is picked from:
+    ``"auto"`` (default) keeps the historical single-figure behavior
+    (the top flagging pathway overall); ``"iembase"`` picks the top
+    flagging promoted IEMbase disease panel; ``"pathbank"`` picks the
+    top flagging PathBank pathway. The channel appears in the PNG
+    filename suffix so both channels can be written side by side.
 
     Args:
         sample_id: the sample to report on (must be flagged).
@@ -644,6 +652,23 @@ def top_pathway_waterfall_figure(sample_id: str,
     samp = pathway_flags[(pathway_flags["sample_id"] == sample_id)
                          & _canon_bool(pathway_flags["flagged"])]
     samp = samp.dropna(subset=["excess"])
+    disease_names = set()
+    if disease_resolved is not None and len(disease_resolved) > 0:
+        disease_names = set(disease_resolved["disease"].astype(str))
+    if channel == "iembase":
+        samp = samp[samp["pathway_name"].astype(str).isin(disease_names)]
+        if samp.empty:
+            logger.info("Top-pathway waterfall for %s skipped: no flagged "
+                        "IEMbase disease panel.", sample_id)
+            return False
+    elif channel == "pathbank":
+        samp = samp[~samp["pathway_name"].astype(str).isin(disease_names)]
+        if samp.empty:
+            logger.info("Top-pathway waterfall for %s skipped: no flagged "
+                        "PathBank pathway.", sample_id)
+            return False
+    elif channel != "auto":
+        raise ValueError(f"Unknown channel: {channel!r}")
     if samp.empty:
         logger.info("Top-pathway waterfall for %s skipped: sample not "
                     "flagged.", sample_id)
@@ -720,7 +745,8 @@ def top_pathway_waterfall_figure(sample_id: str,
              f"(excess = {float(top['excess']):.2f})")
     ax.set_title(title, loc="left", fontsize=9)
 
-    out = out_dir / f"{sample_id}_top_pathway_waterfall.png"
+    suffix = "" if channel == "auto" else f"_{channel}"
+    out = out_dir / f"{sample_id}_top_pathway_waterfall{suffix}.png"
     ok = _save(fig, out, dpi)
     if ok:
         logger.info("Top-pathway waterfall written to %s", out)
