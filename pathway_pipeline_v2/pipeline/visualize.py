@@ -49,28 +49,7 @@ NEUTRAL = "#8c8c8c"      # gray: 'other' groups
 _orange_blue_cmap = LinearSegmentedColormap.from_list(
     "orange_blue", [ACCENT, "#ffffff", BASE])
 
-sns.set_theme(style="whitegrid", context="paper", rc={
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "axes.titlesize": 11,
-    "axes.titleweight": "bold",
-    "axes.labelsize": 10,
-    "axes.labelcolor": "#333333",
-    "axes.edgecolor": "#666666",
-    "axes.linewidth": 0.8,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-    "xtick.color": "#444444",
-    "ytick.color": "#444444",
-    "grid.color": "#d9d9d9",
-    "grid.linewidth": 0.6,
-    "legend.frameon": True,
-    "legend.framealpha": 0.9,
-    "legend.edgecolor": "#cccccc",
-    "legend.fontsize": 8,
-    "figure.titlesize": 12,
-    "figure.titleweight": "bold",
-})
+sns.set_theme(style="whitegrid", context="paper", palette="deep")
 
 FLAG_PALETTE = {True: ACCENT, False: BASE}
 GROUP_PALETTE = {"normal": BASE, "imd": ACCENT, "other": NEUTRAL}
