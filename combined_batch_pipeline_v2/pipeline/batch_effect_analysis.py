@@ -20,6 +20,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# Okabe-Ito colorblind-safe palette (Wong 2010, Nature Methods) --
+# same hex values as pathway_pipeline_v2/pipeline/visualize.py.
+OKABE_ITO = ["#E69F00", "#56B4E9", "#009E73", "#F0E442",
+             "#0072B2", "#D55E00", "#CC79A7", "#999999"]
+
 logger = logging.getLogger(__name__)
 
 
@@ -345,7 +350,9 @@ def plot_batch_pca(
         plt.figure(figsize=(14, 12))
         
         unique_batches = np.unique(batch_labels)
-        palette = sns.color_palette("husl", len(unique_batches))
+        palette = (OKABE_ITO[:len(unique_batches)]
+                   if len(unique_batches) <= 8
+                   else sns.color_palette("husl", len(unique_batches)))
         
         for i, batch_label in enumerate(unique_batches):
             batch_mask = batch_labels == batch_label

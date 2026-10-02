@@ -23,6 +23,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# Okabe-Ito colorblind-safe palette (Wong 2010, Nature Methods) --
+# same hex values as pathway_pipeline_v2/pipeline/visualize.py.
+OKABE_ITO = ["#E69F00", "#56B4E9", "#009E73", "#F0E442",
+             "#0072B2", "#D55E00", "#CC79A7", "#999999"]
+
 logger = logging.getLogger(__name__)
 
 
@@ -299,7 +304,9 @@ def generate_comparison_plots(
     num_batches = len(unique_batches)
     
     # Create palette with distinct colors per batch
-    palette = sns.color_palette("husl", n_colors=num_batches)
+    palette = (OKABE_ITO[:num_batches]
+                   if num_batches <= 8
+                   else sns.color_palette("husl", num_batches))
     
     # Identify QC3 samples
     qc3_samples = [col for col in all_samples if qc3_pattern in col]

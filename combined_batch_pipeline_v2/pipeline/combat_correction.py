@@ -23,6 +23,11 @@ try:
 except ImportError:
     COMBAT_AVAILABLE = False
 
+# Okabe-Ito colorblind-safe palette (Wong 2010, Nature Methods) --
+# same hex values as pathway_pipeline_v2/pipeline/visualize.py.
+OKABE_ITO = ["#E69F00", "#56B4E9", "#009E73", "#F0E442",
+             "#0072B2", "#D55E00", "#CC79A7", "#999999"]
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,12 +194,9 @@ def generate_combat_plots(
     
     # Create color palette - use high-contrast qualitative colors
     # For up to 12 batches, use distinct colors from seaborn's qualitative palettes
-    if num_batches <= 10:
-        palette = sns.color_palette('tab10', n_colors=num_batches)
-    elif num_batches <= 20:
-        palette = sns.color_palette('tab20', n_colors=num_batches)
+    if num_batches <= 8:
+        palette = OKABE_ITO[:num_batches]
     else:
-        # For more than 20 batches, use husl which has good perceptual uniformity
         palette = sns.color_palette('husl', n_colors=num_batches)
     batch_colors = {b: palette[i] for i, b in enumerate(unique_batches)}
     
