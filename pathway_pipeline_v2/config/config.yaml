@@ -1,0 +1,561 @@
+# ============================================================================
+# Pathway Pipeline Configuration
+# Feature-engineering stage: feature -> HMDB -> PathBank pathway mapping
+# ============================================================================
+
+# ============================================================================
+# Input/Output
+# ============================================================================
+input_file: "data/merged_data_with_classification.csv"
+output_dir: "outputs/pathway_pipeline_v2"
+
+# ============================================================================
+# Data Configuration
+# ============================================================================
+patient_id_column: null
+non_feature_columns:
+  - "Oordeel targeted"
+  - "Classification"
+  - "Non-treated"
+age_column: null
+
+# Diagnostic ratio features (STEP 1b): derived from the log10-transformed
+# areas as numerator - denominator, which IS the log-ratio
+# (log A - log B = log A/B). On log10 values each unit is a decade, so the
+# z-score of a ratio against the normal reference expresses how far the
+# RATIO deviates -- carnitine-status effects that move both species
+# together cancel out, isolating the enzyme block (the diagnostic logic
+# behind acylcarnitine ratios like C8/C2 in newborn screening).
+# Each entry needs: name (must not collide with an existing column),
+# numerator, denominator (EXACT feature column names from the input).
+# Ratios are NOT metabolites: they are excluded from HMDB matching and
+# pathway mapping, and join the scored set the way attached biomarkers
+# do -- metabolite z-scores, metabolite flags (STEP 8c report-only), and
+# the per-sample metabolite summary. They never enter pathway Stouffer
+# scores and never change the sample decision unless a later frozen
+# version wires them into a channel.
+# The list is frozen config, declared from textbook/consensus chemistry
+# (e.g. published newborn-screening ratio panels) -- NEVER from flag
+# performance or disease labels. Populating it creates a NEW frozen
+# configuration version requiring its own one-shot evaluation.
+# Example:
+# ratio_features:
+#   - name: "C8/C2"
+#     numerator: "Octanoylcarnitine.HMDB0000791"
+#     denominator: "L-Acetylcarnitine.HMDB0000201"
+# A numerator or denominator may also be a LIST of columns, which is a
+# linear-space sum (log10(10^x + 10^y)); used for CPT1/CPT2 ratios like
+# C0/(C16+C18) and (C16+C18:1)/C2.
+#
+# Declared panel (consensus newborn-screening acylcarnitine ratios;
+# names below use the HMDB-tagged feature naming, i.e. '<name>.<HMDB>').
+# Every parent must exist as an EXACT column name in the input file.
+# The mapping to disease classes is textbook chemistry, declared from
+# published newborn-screening ratio panels -- never from flag
+# performance in this cohort.
+#  - C8/C2, C8/C10: MCADD (medium-chain acyl-CoA dehydrogenase)
+#  - C14:1/C2, C14:1/C12:1: VLCADD (very-long-chain acyl-CoA
+#    dehydrogenase); C14:1 is cis-5-tetradecenoylcarnitine only
+#    (NOT saturated C14:0, NOT the C14:2 diene) per the declared panel
+#  - C3/C2: propionic aciduria / methylmalonic aciduria
+#  - C5/C2: isovaleric aciduria (C5 is isovalerylcarnitine)
+#  - C5DC/C16: glutaric aciduria type I (C5DC is glutarylcarnitine)
+#  - C0/(C16+C18): CPT1 deficiency (carnitine palmitoyltransferase 1)
+#  - (C16+C18:1)/C2: CPT2 deficiency (carnitine palmitoyltransferase 2)
+# Parent species (HMDB):
+#  - C0  L-Carnitine: HMDB0000062
+#  - C2  L-Acetylcarnitine: HMDB0000201
+#  - C3  Propionylcarnitine: HMDB0000824
+#  - C5  Isovalerylcarnitine: HMDB0000688
+#  - C5DC Glutarylcarnitine: HMDB0013130
+#  - C8  Octanoylcarnitine: HMDB0000791
+#  - C10 Decanoylcarnitine: HMDB0000651
+#  - C12:1 trans-2-Dodecenoylcarnitine: HMDB0013326 (the lab's
+#       measured C12:1 isomer; PLAIN column name, untagged in the
+#       input file)
+#  - C14:1 Tetradecenoylcarnitine: HMDB0258884 (the lab's measured
+#       C14:1 species)
+#  - C16 Palmitoylcarnitine: HMDB0000222
+#  - C18 Stearoylcarnitine: HMDB0000848
+#  - C18:1 Oleoylcarnitine: HMDB0005065
+ratio_features:
+  - name: "C8/C2"
+    numerator: "Octanoylcarnitine.HMDB0000791"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C8/C10"
+    numerator: "Octanoylcarnitine.HMDB0000791"
+    denominator: "Decanoylcarnitine.HMDB0000651"
+  - name: "C14:1/C2"
+    numerator: "Tetradecenoylcarnitine.HMDB0258884"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C14:1/C12:1"
+    numerator: "Tetradecenoylcarnitine.HMDB0258884"
+    denominator: "trans-2-Dodecenoylcarnitine"
+  - name: "C3/C2"
+    numerator: "Propionylcarnitine.HMDB0000824"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C5/C2"
+    numerator: "Isovalerylcarnitine.HMDB0000688"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "C5DC/C16"
+    numerator: "Glutarylcarnitine.HMDB0013130"
+    denominator: "Palmitoylcarnitine.HMDB0000222"
+  - name: "C0/(C16+C18)"
+    numerator: "L-Carnitine.HMDB0000062"
+    denominator:
+      - "Palmitoylcarnitine.HMDB0000222"
+      - "Stearoylcarnitine.HMDB0000848"
+  - name: "(C16+C18:1)/C2"
+    numerator:
+      - "Palmitoylcarnitine.HMDB0000222"
+      - "Oleoylcarnitine.HMDB0005065"
+    denominator: "L-Acetylcarnitine.HMDB0000201"
+  - name: "Thr/Ser"
+    numerator: "L-Threonine.HMDB0000167"
+    denominator:
+      - "L-Serine.HMDB0000187"
+# Cohort definition for reporting: with untreated_imd_only, an IMD sample
+# (Classification == 1 AND Oordeel targeted == 1) counts as 'imd' only when
+# Non-treated == 1 (untreated, a true IMD presentation). Treated IMDs
+# (Non-treated == 0 or empty) are reported in the 'other' group: treatment
+# normalizes the metabolome, so they are not the phenotype the screen must
+# catch. Reporting/stratification only -- never used to set thresholds.
+untreated_imd_only: true
+
+# ============================================================================
+# HMDB Database
+# ============================================================================
+hmdb_xml_file: "data/hmdb_metabolites.xml"
+use_hmdb_cache: true
+min_name_length: 3
+
+# Manual fixes for name->HMDB collisions the automatic matching chain
+# resolves wrongly. Keys are exact feature column names; values are HMDB
+# accessions. 'Niacin' is a primary name of both nicotinic acid
+# (HMDB0001488) and nicotinamide (HMDB0001406) in the HMDB index; pin the
+# plain-named feature to nicotinic acid.
+#
+# Ambiguity pins (impact-reviewed): features whose plain name matched
+# multiple HMDB accessions (see ambiguous_features.csv), resolved here to
+# the canonical accession. The short HMDB0000xxxx entry is the curated
+# original; the later 02/03-series entries for the same name are HMDB
+# disease-association or derivative duplicates. Sorted by scored-pathway
+# impact, descending.
+feature_hmdb_overrides:
+  "Niacin": "HMDB0001488"
+  "(+)-Estrone": "HMDB0000145"
+  "Adenosine monophosphate": "HMDB0000045"
+  "3-phosphoglyceric acid": "HMDB0000807"
+  "Choline O-Sulfate": "HMDB0000097"
+  "lipoic acid": "HMDB0001451"
+  "D-PANTOTHENIC ACID": "HMDB0000210"
+  "Glycerol 3-phosphate": "HMDB0000126"
+  "Palmitic Acid": "HMDB0000220"
+  "D-Gluconic acid": "HMDB0000625"
+  "CAIR": "HMDB0001517"
+  "Coproporphyrin III": "HMDB0000570"
+  "Phenol": "HMDB0000228"
+  "Protoporphyrin IX": "HMDB0000241"
+  "SQUALENE OXIDE": "HMDB0001188"
+  "Testosterone glucuronide": "HMDB0003193"
+  "Phosphomevalonic acid": "HMDB0001343"
+  "Vitamin A": "HMDB0000305"
+  "bilirubin": "HMDB0000054"
+  "urobilinogen": "HMDB0001898"
+  "Androsterone glucuronide": "HMDB0002829"
+  "Glutaurine": "HMDB0004195"
+  "Indole-3-acetic acid": "HMDB0000197"
+  "Panthenol": "HMDB0004231"
+  "Sulfoglycolithocholic acid": "HMDB0000698"
+  "Taurochenodeoxycholic acid": "HMDB0000949"
+  "sphinganine 1-phosphate": "HMDB0001383"
+
+# Identity curation (label-blind, chemistry-based): feature columns whose
+# name carries a trailing .HMDB######## tag are identified by pure-standard
+# injection upstream, so within a resolved metabolite the tagged feature is
+# definitely the molecule described. Plain-named twins resolving to the
+# same HMDB ID (co-eluting interlopers caught by name matching, typically
+# with razor-thin reference IQRs, e.g. plain 'Argininosuccinic acid' at IQR
+# 0.075 vs the tagged twin at 1.13) are dropped from scoring before any
+# downstream stage sees them; the metabolite's z then comes from the
+# confirmed feature alone. Tagged-vs-tagged pairs sharing an ID are both
+# kept (both confirmed; scale^2 weighting handles their relative noise).
+# Manual overrides carry the same precedence as a tag. Dropped twins are
+# logged and written to superseded_features.csv. false restores the old
+# behavior of averaging all twins.
+prefer_tagged_features: true
+
+# ============================================================================
+# PathBank Pathways
+# ============================================================================
+# PathBank primary-pathways metabolites CSV: one row per (pathway, metabolite)
+# pair with the metabolite's HMDB ID. Primary pathways only -- the file has no
+# pathway name or pathway-type column; pathways are identified by pathway_id.
+pathbank_file: "data/pathbank_all_metabolites.csv"
+
+# Organism to keep from the PathBank CSV's 'species' column
+# (matched exactly, after whitespace stripping).
+pathbank_species: "Homo sapiens"
+
+# PathBank pathways description CSV (pathway_id -> name). Pathways missing
+# from it fall back to their SMP ID as name.
+pathbank_pathway_names_file: "data/pathbank_pathways.csv"
+
+# Keep only pathways where at least this fraction of the pathway's metabolites
+# are mapped to features in the dataset (0.20 = 20%).
+min_pathway_coverage: 0.20
+
+# Chemistry-based pathway curation (label-blind): a pathway whose NAME
+# contains any of these keywords (case-insensitive) is dropped before
+# scoring. Justification is the extraction chemistry ONLY -- e.g. a
+# phase-extraction metabolomics protocol does not recover complex lipids,
+# so lipid-pathway features measure extraction variability rather than
+# physiology, and leaving them in inflates the normals' null distributions
+# (which raises the bar for true IMDs under the max_excess rule). This is a
+# class-level block criterion, never pathway-by-pathway flag performance.
+# The list is empty for now (curated features are handled at the feature
+# level via demoted_features instead); re-add keywords as needed, e.g.
+#   - "lipid"
+exclude_pathway_keywords: []
+
+# Pathway redundancy pruning (label-blind): PathBank disease pathways are
+# mechanism cartoons sharing nearly all scored metabolites with their parent
+# metabolic pathway. Five pathways driven by the same three metabolites
+# produce five identical flags and inflate pathway-test multiplicity.
+# Pathways whose SCORED metabolite sets have Jaccard >= redundancy_jaccard are
+# collapsed into connected groups, each keeping one representative chosen by
+# a pre-declared composition-based preference (never flag performance, never
+# disease labels): 1) general metabolic pathway over a disease cartoon
+# (name without 'deficiency'/'disease'), 2) larger scored metabolite set,
+# 3) alphabetical. Dropped pathways are recorded in pruned_pathways.csv.
+prune_redundant_pathways: true
+redundancy_jaccard: 0.8
+
+# ============================================================================
+# Z-scores (stage 2)
+# ============================================================================
+# Values must already be log10-transformed upstream. Z-scores are computed for
+# pathway-mapped features only, using the normal samples as reference:
+#   z = (x - median_i) / IQR_i   (medians/IQRs over normals only)
+run_zscores: true
+iqr_scale: true
+
+# Noise-floor z-magnifiers: features whose reference IQR is below this many
+# log10 units are dropped before z-scoring. The instrument barely resolves
+# such features in normals, so trivial absolute shifts explode into huge
+# z-scores (e.g. 2'-dCMP, Hydroxymethylbilane, thiamine monophosphate).
+# null disables the floor.
+min_reference_scale: 0.08
+
+# Normal reference definition: Classification == normal_classification AND
+# Oordeel targeted == normal_oordeel.
+normal_classification: 0
+normal_oordeel: 0
+
+# Automated reference hygiene (label-blind): a candidate normal whose
+# leave-one-out max metabolite |z| exceeds this depth is excluded from the
+# calibration reference (it cannot mask its own disturbance; the peers'
+# median/IQR are computed without it). Replaces hand-picked exclusion lists.
+#
+# max_depth justification (development-half evidence, label-blind):
+# ordinary screened normals routinely reach a max metabolite |z| of ~7
+# (median) to ~16 (p95 of the metabolite-depth null over 205 normals in the
+# 2026-09-23 full-cohort run); a depth of 10 sits INSIDE that ordinary range
+# and, with iterative rounds, cascaded to 41/107 exclusions (the run then
+# flagged 57% of all samples). 20 sits beyond the ordinary-normal range,
+# where the previously hand-confirmed deep disturbances (|z| >= 15-30)
+# actually live.
+#
+# max_excluded_fraction is a pre-declared sanity cap: when hygiene would
+# exclude more than this fraction of candidates, it stops at the cap and
+# logs a WARNING -- a cascade is the signature of a miscalibrated max_depth,
+# not of a contaminated reference. Inspect reference_hygiene.csv and
+# reconsider max_depth; do NOT proceed to evaluation off a capped reference.
+reference_hygiene:
+  enable: true
+  max_depth: 20.0
+  max_excluded_fraction: 0.10
+
+# Frozen cohort split (part of the configuration): every sample is assigned
+# once, deterministically, to the development or the validation half.
+# Calibration uses development normals only. The validation half is scored
+# but never calibrates anything; its metrics are read once per frozen
+# config version (run_evaluation).
+validation_split:
+  enable: true
+  seed: 20260923
+  fraction: 0.3
+
+# Minimum number of usable matched metabolites for a pathway to stay in the
+# scoring set after the z-score stage (Stouffer on k < 3 is dominated by a
+# single outlier).
+min_pathway_features: 3
+
+# ============================================================================
+# Stouffer scores (stage 3)
+# ============================================================================
+# Per pathway and sample, over the metabolites' z-scores (features deduplicated
+# per HMDB ID):
+#   z_stouffer     = sum(z_i)  / sqrt(k)   (direction-aware)
+#   z_stouffer_abs = sum(|z_i|) / sqrt(k)  (disturbance regardless of direction)
+# Samples with fewer than min_stouffer_metabolites usable metabolites in a
+# pathway get no score for it. Per-pathway empirical percentiles of the
+# absolute score over the normals are written for the calibration step.
+# max_abs_z caps |z| before the Stouffer sum so a single artifact feature
+# cannot dominate a whole pathway (null disables the cap).
+run_stouffer: true
+min_stouffer_metabolites: 3
+max_abs_z: 15.0
+
+# ============================================================================
+# Flagging (stage 4)
+# ============================================================================
+# A (sample, pathway) pair is flagged when its absolute Stouffer score exceeds
+# the flag_threshold_percentile percentile of that pathway's own normals
+# (empirical per-pathway calibration: a noisy pathway automatically gets a
+# wider range). A sample is flagged when at least min_flagged_pathways of its
+# pathways are flagged. The Classification/Oordeel groups are joined for a
+# reporting-only detection-vs-contamination summary; thresholds are never
+# tuned against them.
+# sample_rule sets the null a sample must beat to be flagged:
+#   empirical  - flagged-pathway COUNT distribution of the normals. Measures
+#     breadth: a sample must flag more pathways than most normals do.
+#   max_excess  - distribution of each normal's MAXIMUM pathway excess.
+#     Measures depth: a sample is flagged when its single most extreme
+#     pathway exceeds what (1 - max_sample_p) of normals reach. Classic IMD
+#     blocks a few pathways profoundly, while the screened "normals" shift
+#     many pathways mildly -- a depth rule separates exactly those.
+#   binomial    - Binomial(n_scored_pathways, 1 - percentile); only valid
+#     when pathway flags are near-independent.
+#   none        - count rule only (min_flagged_pathways).
+# A sample is flagged when it passes the count rule AND sample_p_value <=
+# max_sample_p under the chosen null.
+run_flagging: true
+flag_threshold_percentile: 99.0
+min_flagged_pathways: 1
+sample_rule: max_excess
+max_sample_p: 0.05
+
+# STEP 8c: metabolite-level flags (report-only; they never change the
+# sample decision). A metabolite is flagged when its |z| exceeds the
+# metabolite_flag_percentile percentile of that metabolite's |z| among the
+# reference normals -- per-metabolite calibration absorbs noisy features.
+# Per sample the metabolite depth p-value is the fraction of normals whose
+# maximum metabolite |z| reaches the sample's maximum; it catches IMDs with
+# a single grossly elevated metabolite whose pathway Stouffer score is
+# diluted by the pathway's other metabolites.
+run_metabolite_flags: true
+metabolite_flag_percentile: 99.0
+
+# STEP 8d: biomarker attachment channel (literature-curated prior
+# knowledge, parallel to the PathBank pathway channel -- PathBank
+# pathways are NEVER modified). PathBank disease pathways are
+# intracellular mechanism cartoons and can omit the clinically
+# diagnostic biomarkers of their disease (e.g. MCADD without
+# octanoylcarnitine); this channel attaches published disease
+# biomarkers to their disease pathways from a curated CSV.
+#
+# Curation protocol (evidence budget #3, gene/disease-level knowledge --
+# label-blind by construction, the same table would be declared for any
+# cohort):
+# 1. Assemble attachments from SYSTEMATIC literature sources (biomarker
+#    tables in reviews / newborn-screening guidelines), never from which
+#    samples this pipeline flagged or missed.
+# 2. Cite each row's source in the `source` column.
+# 3. Freeze the table before the STEP 10 evaluation read; never edit it
+#    after reading validation performance.
+#
+# CSV columns: smp_id OR pathway_name (the target disease pathway;
+# smp_id wins when both are given), hmdb_id (biomarker accession,
+# uppercase), source (citation). A missing file disables the channel
+# (warning logged) until the table is provided.
+#
+# A sample flags the channel when an attached biomarker exceeds its own
+# normal-percentile threshold AND the sample's maximum attached-biomarker
+# |z| beats the biomarker-restricted depth null of the reference normals
+# (same frozen max_sample_p as the pathway channel). The channel ORs into
+# the sample decision; per-channel calls are recorded in
+# sample_decisions.csv (flagged_pathway_channel, biomarker_flagged) and
+# biomarker_flags.csv for audit.
+biomarker_channel:
+  enable: true
+  # Source 1: IEMbase-style disease biomarker table (Excel or CSV). One
+  # row per disease with columns: Disease, OMIM, Biochemical_Markers
+  # (marker names with up/down direction arrows), PathBank disease
+  # pathway, SMPDB code (SMP), HMDB codes of named metabolites
+  # (positionally aligned with the markers; entries may carry multiple
+  # codes; 'no HMDB entry found' entries are skipped). DISEASES are the
+  # grouping unit; the SMP code links a disease to a kept pathway for
+  # reporting only -- a disease without a kept pathway still scores.
+  # Directions are honored per (disease, biomarker): 'up' keeps only
+  # increases, 'down' only decreases. The full resolution audit is
+  # written to disease_table_audit.csv -- review it before freezing the
+  # table. Set to null to disable this source.
+  disease_table_file: "iembase-diseases-with-pathbank-pathways-and-hmdb-codes.xlsx"
+  # Disease panel promotion (NEW FROZEN VERSION while enabled): each
+  # IEMbase disease panel is scored as a direction-aware Stouffer sum
+  # over its resolved biomarkers (+ name-matched no-HMDB markers and
+  # the disease's declared ratio tests), entering the pathway channel
+  # as a pseudo-pathway named after the disease. PathBank pathways
+  # whose smp_id equals a promoted panel's SMP code are dropped from
+  # the pathway channel (replaced by the panel). Promoted panels'
+  # metabolite tests leave the max-z biomarker channel -- their
+  # evidence flows through the panel score instead, so nothing is
+  # counted twice. min_panel_metabolites is the minimum usable member
+  # terms for a panel to score at all (a starved panel is skipped,
+  # keeping the disease's max-z tests alive).
+  disease_pathways:
+    enable: true
+    min_panel_metabolites: 1
+  # Source 2: resolved attachments CSV (smp_id or pathway_name +
+  # hmdb_id already known) -- used when the disease table is absent, or
+  # alongside it as a complement.
+  attachments_file: "data/pathway_biomarker_attachments.csv"
+  # Source 3: declared diagnostic-ratio tests. Each entry makes a
+  # derived ratio (from ratio_features) an extra direction-aware
+  # (disease, ratio) test in this channel -- scored directly from the
+  # ratio's own z-score (ratios have no HMDB identity, so they bypass
+  # the metabolite aggregation), thresholded at the ratio's own
+  # normal-percentile, and joined into the SAME global depth null as
+  # the IEMbase tests, so the multiple-testing budget is NOT inflated.
+  # The disease names below should match the IEMbase table's disease
+  # naming so top_disease attribution stays consistent; the direction
+  # is the textbook direction of the ratio in that disease. Frozen
+  # config declared from textbook chemistry, never from flag
+  # performance. A ratio missing from ratio_features is skipped with a
+  # warning (visible in the run log).
+  ratio_biomarkers:
+    - disease: "Medium-chain acyl-CoA dehydrogenase deficiency"
+      ratio: "C8/C2"
+      direction: "up"
+    - disease: "Medium-chain acyl-CoA dehydrogenase deficiency"
+      ratio: "C8/C10"
+      direction: "up"
+    - disease: "Very-long-chain acyl-CoA dehydrogenase deficiency"
+      ratio: "C14:1/C2"
+      direction: "up"
+    - disease: "Very-long-chain acyl-CoA dehydrogenase deficiency"
+      ratio: "C14:1/C12:1"
+      direction: "up"
+    - disease: "Propionic acidemia"
+      ratio: "C3/C2"
+      direction: "up"
+    - disease: "Methylmalonic aciduria"
+      ratio: "C3/C2"
+      direction: "up"
+    - disease: "Isovaleryl-CoA dehydrogenase deficiency"
+      ratio: "C5/C2"
+      direction: "up"
+    - disease: "Glutaryl-CoA dehydrogenase deficiency"
+      ratio: "C5DC/C16"
+      direction: "up"
+    - disease: "CPT1A deficiency"
+      ratio: "C0/(C16+C18)"
+      direction: "up"
+    - disease: "CPT2 deficiency"
+      ratio: "(C16+C18:1)/C2"
+      direction: "up"
+    - disease: "Citrin deficiency"
+      ratio: "Thr/Ser"
+      direction: "up"
+  threshold_percentile: 99.0
+
+# STEP 9: label-blind development QC (calibration check, noise floor,
+# diverging duplicates, threshold stability, pathway redundancy). Iterate
+# freely on this output; IMD labels are never read.
+run_development_qc: true
+development_qc_bootstrap: 200
+
+# STEP 10: one-shot label-aware evaluation of the frozen config. Enable
+# only when the configuration is frozen. Reading the validation metrics
+# and then changing the config invalidates the validation half.
+run_evaluation: true
+evaluate_dev_half: true
+
+# Demoted artifact features, justified by CHEMISTRY/ANALYTICAL PRIORS ONLY
+# (an allowed evidence budget -- no group/disease counts informed this
+# list). Demoted features keep their z-scores in metabolite_zscores.csv but
+# never contribute to pathway Stouffer sums, metabolite flags, or threshold
+# calibration. Entries must be EXACT feature column names of features that
+# are actually z-scored; the pipeline logs a warning for unmatched entries.
+#
+# Justifications:
+# - Reduced Glutathione: oxidation-labile (classic pre-analytical artifact)
+# - Urocanic acid.HMDB0000301: light- and heat-labile
+# - hexahydro-2-oxo-thieno(3,4-d)imidazole-4-pentanoic acid: biotin
+#   degradation product
+# - Premarin: conjugated EQUINE estrogen drug preparation, not a human
+#   metabolite
+# - Safingol: non-endogenous stereoisomer of sphinganine (investigational
+#   drug; likely a stereo-misassignment of sphinganine, which is scored
+#   separately)
+# - Tretinoin and 4-Oxotretinoin: endogenous all-trans retinoic acid is a
+#   signaling molecule, but endogenous levels are low-nM; in an untargeted
+#   screen these features reflect retinoid MEDICATION use, and no IMD
+#   presents through retinoic acid
+# - TMP: a 4-way ambiguous name (thymidine monophosphate HMDB0001227,
+#   thiamine monophosphate HMDB0002666, tetramethylpyrazine
+#   HMDB0036584, trimethyl phosphate HMDB0259237 -- all name_exact
+#   matches); the column is chemically unidentifiable from its name,
+#   its z drove spurious single-metabolite depth hits (z 13-15 in one
+#   IMD sample), and no IMD pathway biology rides on it. The thiamine
+#   pathway is covered by scored thiamine pyrophosphate
+# - Hexitol: a generic class name for any hexitol configuration
+#   (sorbitol, mannitol, galactitol, ...), not a specific metabolite;
+#   name-matched to multiple unrelated accessions. The specific
+#   disease biomarker galactitol is scored via its own tagged feature
+#   (Galactitol.HMDB0000107), so demoting the generic name loses
+#   nothing
+#
+# NOT scored anyway, so no demotion entry needed (re-add if pathway mapping
+# ever brings them in): thiamine monophosphate (reference IQR below the
+# scale floor), creatinine (strong age dependence, but not pathway-mapped),
+# Caffeine, Theophylline, methylxanthine, 1,3,7-Trimethyluric acid,
+# Diphyllin, Myrmicacin (exogenous/medication, but not pathway-mapped).
+demoted_features:
+  - "Reduced Glutathione"
+  - "Urocanic acid.HMDB0000301"
+  - "hexahydro-2-oxo-1h-thieno(3,4-d)imidazole-4-pentanoic acid"
+  - "Premarin"
+  - "Safingol"
+  - "Tretinoin"
+  - "4-Oxotretinoin"
+  - "TMP"
+  - "Hexitol"
+
+# Combine features mapping to the same metabolite (HMDB ID) with scale^2
+# weights instead of a plain mean: under a constant absolute analytical
+# error the noise variance of a feature's z is (error/scale)^2, so the
+# wider-scale duplicate is the trustworthy one and a razor-thin duplicate
+# cannot dominate the metabolite's z.
+scale_weighted_metabolites: true
+
+# ============================================================================
+# Output
+# ============================================================================
+save_mapping_outputs: true
+save_zscore_outputs: true
+save_stouffer_outputs: true
+save_flagging_outputs: true
+
+# ============================================================================
+# Report figures (STEP 8e): Seaborn visualizations of the existing outputs.
+# Report-only -- nothing feeds back into scoring or flagging, and a plotting
+# failure is logged without breaking the run. Label-blind by default: samples
+# are colored by flag status, never by IMD group, so producing figures
+# during development cannot leak disease signal into any choice. Set
+# use_labels: true ONLY for the frozen version's one-shot paper figures
+# (that read is covered by the version's one-shot, same as STEP 10).
+# visualizations:
+#   enable: true
+#   use_labels: false
+#   dpi: 200
+#   max_pathways: 30
+#   sample_reports: 3   # per-sample evidence figures for the top-N flagged
+# ============================================================================
+visualizations:
+  enable: true
+  use_labels: false
+  dpi: 200
+  max_pathways: 15
+  sample_reports: 20
