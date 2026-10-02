@@ -33,23 +33,21 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import seaborn as sns  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-ACCENT = "#f28e2b"      # orange: flagged / disturbed / positive direction
-ACCENT_DARK = "#d95f02"  # darker orange for lines and emphasis
-BASE = "#4a7bb7"         # blue: normal / reference / negative direction
-BASE_LIGHT = "#a8c8e8"   # light blue: reference distributions and boxes
-NEUTRAL = "#8c8c8c"      # gray: 'other' groups
+# Okabe-Ito colorblind-safe palette (Wong 2010, Nature Methods):
+# universally legible orange/blue pair, gray for neutral groups.
+ACCENT = "#E69F00"       # orange: flagged / disturbed / positive direction
+ACCENT_DARK = "#D55E00"  # vermillion: emphasis lines and markers
+BASE = "#0072B2"         # blue: normal / reference / negative direction
+BASE_LIGHT = "#56B4E9"   # sky blue: reference distributions and boxes
+NEUTRAL = "#999999"      # gray: 'other' groups
 
-_orange_blue_cmap = LinearSegmentedColormap.from_list(
-    "orange_blue", [ACCENT, "#ffffff", BASE])
-
-sns.set_theme(style="whitegrid", context="paper", palette="deep")
+sns.set_theme(style="whitegrid", context="paper", palette="colorblind")
 
 FLAG_PALETTE = {True: ACCENT, False: BASE}
 GROUP_PALETTE = {"normal": BASE, "imd": ACCENT, "other": NEUTRAL}
@@ -182,7 +180,7 @@ def overview_figures(decisions: pd.DataFrame,
                 fig, ax = plt.subplots(
                     figsize=(1.5 + 0.055 * mat.shape[1],
                              4 + 0.2 * mat.shape[0]))
-                sns.heatmap(mat, cmap=_orange_blue_cmap, vmin=0, center=1.0,
+                sns.heatmap(mat, cmap="viridis", vmin=0, center=1.0,
                             linewidths=0.1, linecolor="0.9",
                             cbar_kws={"label": "Pathway excess"}, ax=ax)
                 ax.set_xlabel("")
