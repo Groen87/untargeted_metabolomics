@@ -157,41 +157,16 @@ def load_feature_matrix(input_file: str,
     return features, metadata, ages
 
 
-def run_pipeline(input_file: str,
-                  output_dir: str = "outputs/pathway_pipeline",
-                  config_path: str = None) -> dict:
-    """Run the feature-engineering stage of the pathway pipeline."""
-    config = Config(config_path) if config_path else Config()
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    _setup_logging(out)
-
-    _log_section("PATHWAY PIPELINE -- FEATURE ENGINEERING")
-    logger.info(f"Input: {input_file}\nOutput: {out}")
-
-    # ------------------------------------------------------------------
-    # Stage 1: preprocessing -- feature -> HMDB -> pathway
-    # ------------------------------------------------------------------
-    _log_section("STEP 1: Load feature matrix")
-    features, metadata, ages = load_feature_matrix(
-        input_file,
-        non_feature_columns=config.get_list(
-            "non_feature_columns", ["Oordeel targeted", "Classification"]
-        ),
-        patient_id_column=config.get("patient_id_column", None),
-        age_column=config.get("age_column", None),
-    )
-
-    # ------------------------------------------------------------------
-    # STEP 1b: derive configured ratio features (log-difference of the
-    # log10 areas = log-ratio). Diagnostic ratios (e.g. acylcarnitine
-    # C8/C2) isolate an enzyme block from carnitine-status effects that
-    # move the individual species together. The spec list is frozen
-    # config, declared from textbook chemistry -- never from flag
-    # performance. Derived ratios are NOT metabolites: they stay out of
-    # HMDB matching and pathway mapping, and join the scored set the way
-    # attached biomarkers do (metabolite z-scores and flags).
-    # ------------------------------------------------------------------
+def _stage_ratio_features(config: Config, features: pd.DataFrame,
+                          out: Path):
+    """STEP 1b: derive configured ratio features (log-difference of the
+    log10 areas = log-ratio). Diagnostic ratios (e.g. acylcarnitine
+    C8/C2) isolate an enzyme block from carnitine-status effects that
+    move the individual species together. The spec list is frozen
+    config, declared from textbook chemistry -- never from flag
+    performance. Derived ratios are NOT metabolites: they stay out of
+    HMDB matching and pathway mapping, and join the scored set the way
+    attached biomarkers do (metabolite z-scores and flags)."""
     _log_section("STEP 1b: Derive ratio features")
     ratio_specs = config.get("ratio_features", None) or []
     ratio_features = []
@@ -208,38 +183,30 @@ def run_pipeline(input_file: str,
         logger.info(
             f"Derived {len(ratio_features)} ratio feature(s): "
             + (", ".join(ratio_features) if ratio_features else "none"))
-        out.mkdir(parents=True, exist_ok=True)
         ratio_audit.to_csv(out / "ratio_feature_audit.csv", index=False)
         logger.info(f"Wrote ratio_feature_audit.csv to {out}")
     else:
         logger.info("No ratio features configured.")
+    return features, ratio_features
 
-    _log_section("STEP 2: Build HMDB name index")
-    hmdb_xml = config.get("hmdb_xml_file", "data/hmdb_metabolites.xml")
-    min_name_length = int(config.get("min_name_length", 3))
-    use_hmdb_cache = bool(config.get("use_hmdb_cache", True))
-    name_index = build_name_index(hmdb_xml, min_name_length=min_name_length,
-                                  use_cache=use_hmdb_cache)
-    if not name_index:
-        logger.warning("HMDB name index is empty (XML missing or unreadable). "
-                       "Only HMDB-tagged features will be matched.")
 
+def _stage_match_features(config: Config, features: pd.DataFrame,
+                          ratio_features, name_index, out: Path):
+    """STEP 3: match feature columns to HMDB accessions and apply
+    identity curation (``prefer_tagged_features``): .HMDB-tagged
+    features are standard-confirmed upstream, so within a resolved
+    metabolite they supersede plain-named twins (co-eluting
+    interlopers caught by name matching). Runs before linking so no
+    downstream stage ever sees the superseded twins."""
     _log_section("STEP 3: Match features to HMDB accessions")
     metabolite_columns = [c for c in features.columns
                           if c not in set(ratio_features)]
     feature_to_hmdb = match_features_to_hmdb(
         feature_columns=metabolite_columns,
         name_index=name_index,
-        min_name_length=min_name_length,
+        min_name_length=int(config.get("min_name_length", 3)),
         overrides=config.get("feature_hmdb_overrides", None),
     )
-    # Identity curation (label-blind, chemistry-based): .HMDB-tagged
-    # features are standard-confirmed upstream, so within a resolved
-    # metabolite they supersede plain-named twins (co-eluting
-    # interlopers caught by name matching). Runs before linking so no
-    # downstream stage ever sees the superseded twins.
-    superseded_features = pd.DataFrame(
-        columns=["feature", "hmdb_id", "superseded_by"])
     if bool(config.get("prefer_tagged_features", True)):
         feature_to_hmdb, superseded_features = prefer_tagged_features(
             feature_to_hmdb, feature_columns=metabolite_columns)
@@ -262,24 +229,27 @@ def run_pipeline(input_file: str,
             out / "ambiguous_features.csv", index=False)
         if len(ambiguous):
             logger.info(f"Wrote ambiguous_features.csv to {out}")
+    return feature_to_hmdb, ambiguous
 
+
+def _stage_pathway_links(config: Config, feature_to_hmdb: pd.DataFrame,
+                         n_features: int, out: Path):
+    """STEP 4: load PathBank pathways, link features to pathways, keep
+    pathways with sufficient feature coverage, and drop pathway classes
+    the sample preparation cannot recover
+    (``exclude_pathway_keywords``)."""
     _log_section("STEP 4: Load PathBank pathways and link features to pathways")
-    pathbank_file = config.get("pathbank_file", "data/pathbank_all_metabolites.csv")
-    pathbank_species = config.get("pathbank_species", "Homo sapiens")
-    pathway_names_file = config.get("pathbank_pathway_names_file",
-                                    "data/pathbank_pathways.csv")
-    pathways = load_pathbank_pathways(pathbank_file,
-                                      species=pathbank_species,
-                                      pathway_names_file=pathway_names_file)
+    pathways = load_pathbank_pathways(
+        config.get("pathbank_file", "data/pathbank_all_metabolites.csv"),
+        species=config.get("pathbank_species", "Homo sapiens"),
+        pathway_names_file=config.get("pathbank_pathway_names_file",
+                                      "data/pathbank_pathways.csv"))
     feature_to_pathway = link_features_to_pathways(feature_to_hmdb, pathways)
     min_coverage = float(config.get("min_pathway_coverage", 0.20))
     coverage = pathway_coverage(feature_to_pathway, pathways,
                                 min_coverage=min_coverage)
-    # Chemistry-based pathway curation (label-blind): drop whole pathway
-    # classes the sample preparation cannot recover (e.g. complex lipids
-    # under phase extraction). The keyword list lives in the frozen config.
-    exclude_keywords = config.get_list("exclude_pathway_keywords")
-    coverage = filter_pathways_by_keywords(coverage, exclude_keywords)
+    coverage = filter_pathways_by_keywords(
+        coverage, config.get_list("exclude_pathway_keywords"))
 
     if bool(config.get("save_mapping_outputs", True)):
         feature_to_hmdb.to_csv(out / "feature_to_hmdb.csv", index=False)
@@ -289,7 +259,7 @@ def run_pipeline(input_file: str,
                      f"pathway_coverage.csv to {out}")
 
     n_matched = int(feature_to_hmdb.loc[feature_to_hmdb["hmdb_id"].notna(), "feature"].nunique())
-    logger.info(f"Matched {n_matched} of {len(features.columns)} features to HMDB; "
+    logger.info(f"Matched {n_matched} of {n_features} features to HMDB; "
                 f"{coverage.shape[0]} pathways with >= {min_coverage:.0%} of their "
                 f"metabolites mapped to dataset features.")
 
@@ -301,19 +271,16 @@ def run_pipeline(input_file: str,
             logger.info(f"  {r['pathway_name']}: "
                         f"{int(r['n_matched_metabolites'])}/{int(r['n_metabolites'])} "
                         f"metabolites ({r['coverage']:.1%})")
+    return feature_to_pathway, coverage
 
-    # ------------------------------------------------------------------
-    # Stage 2: z-scores against the normal reference
-    # ------------------------------------------------------------------
-    if not bool(config.get("run_zscores", True)):
-        logger.info("run_zscores is false; stopping after the mapping outputs.")
-        return {
-            "feature_to_hmdb": feature_to_hmdb,
-            "feature_to_pathway": feature_to_pathway,
-            "pathway_coverage": coverage,
-        }
 
-    _log_section("STEP 5: Compute metabolite z-scores (normals as reference)")
+def _stage_cohort_and_reference(config: Config, metadata: pd.DataFrame,
+                                features: pd.DataFrame,
+                                coverage: pd.DataFrame):
+    """STEP 5a: assign sample groups, draw the frozen development/
+    validation split, and clean the calibration reference with
+    leave-one-out hygiene. Calibration uses DEVELOPMENT normals only;
+    validation samples are scored but never calibrate anything."""
     labeled_normal_mask = classify_samples(
         metadata,
         normal_classification=int(config.get("normal_classification", 0)),
@@ -345,13 +312,10 @@ def run_pipeline(input_file: str,
             "reported in the 'other' group"
         )
 
-    # ------------------------------------------------------------------
-    # Cohort split (development vs validation) -- the split is part of
-    # the frozen configuration and must never be re-drawn per experiment.
-    # ------------------------------------------------------------------
-    split_enabled = bool(config.get("validation_split.enable", True))
+    # The split is part of the frozen configuration and must never be
+    # re-drawn per experiment.
     validation_mask = None
-    if split_enabled:
+    if bool(config.get("validation_split.enable", True)):
         validation_mask = stratified_split(
             sample_group,
             seed=int(config.get("validation_split.seed", 20260923)),
@@ -359,8 +323,6 @@ def run_pipeline(input_file: str,
                 config.get("validation_split.fraction", 0.5)),
         )
 
-    # Calibration uses DEVELOPMENT normals only; validation samples are
-    # scored but never calibrate anything.
     dev_mask = pd.Series(True, index=metadata.index)
     if validation_mask is not None:
         dev_mask = ~validation_mask
@@ -385,25 +347,18 @@ def run_pipeline(input_file: str,
                 if max_excluded_fraction is not None else None),
         )
         normal_mask = hygiene_mask
-    if not normal_mask.any():
-        logger.error("No normal reference samples; cannot compute z-scores.")
-        return {
-            "feature_to_hmdb": feature_to_hmdb,
-            "feature_to_pathway": feature_to_pathway,
-            "pathway_coverage": coverage,
-        }
+    return sample_group, validation_mask, normal_mask, hygiene
 
-    # Only features mapped to a kept pathway can contribute to pathway scores;
-    # keep the whole matrix out of scope here. Attached biomarkers (literature
-    # curation) join the z-score set even when no kept PathBank pathway maps
-    # them -- the biomarker channel scores them independently of pathway
-    # wiring.
-    pathway_features = sorted(
-        set(coverage["matched_features"].str.split(";").explode().dropna())
-    ) if not coverage.empty else []
+
+def _stage_biomarker_sources(config: Config, features: pd.DataFrame,
+                             feature_to_hmdb: pd.DataFrame,
+                             coverage: pd.DataFrame, name_index, out: Path):
+    """STEP 5b: resolve the two biomarker-channel sources -- the
+    IEMbase-style disease biomarker table (diseases as the grouping unit)
+    and the resolved attachments CSV -- and collect the features they
+    bring into the z-scored set independent of PathBank pathway wiring."""
     biomarker_attachments = None
     biomarker_features = []
-    disease_table = None
     disease_resolved = None
     unlinked = None
     if bool(config.get("biomarker_channel.enable", True)):
@@ -456,24 +411,29 @@ def run_pipeline(input_file: str,
             _, att_features = resolve_biomarker_attachments(
                 biomarker_attachments, feature_to_hmdb, coverage)
             biomarker_features.extend(att_features)
-    biomarker_features = sorted(set(biomarker_features))
-    if biomarker_features:
-        extra = sorted(set(biomarker_features) - set(pathway_features))
-        if extra:
-            logger.info(f"Biomarker channel: {len(set(biomarker_features))} "
-                        f"feature(s) carry attached biomarkers "
-                        f"({len(extra)} not pathway-mapped).")
-        pathway_features = sorted(set(pathway_features)
-                                  | set(biomarker_features))
-    if ratio_features:
-        pathway_features = sorted(set(pathway_features)
-                                  | set(ratio_features))
-    logger.info(f"Z-scoring {len(pathway_features)} pathway-mapped features "
-                f"(of {features.shape[1]} total).")
-    features_scored = features[pathway_features]
+    return biomarker_attachments, disease_resolved, unlinked, sorted(
+        set(biomarker_features))
 
+
+def _scale_weights(config: Config, reference_stats: pd.DataFrame):
+    """Scale^2 weights per feature: under a constant absolute analytical
+    error the noise variance of a feature's z is (error/scale)^2, so the
+    wider-scale duplicate feature of a metabolite is the trustworthy one."""
+    if bool(config.get("scale_weighted_metabolites", True)) \
+            and not reference_stats.empty:
+        return {
+            row["feature"]: float(row["scale"]) ** 2
+            for _, row in reference_stats.iterrows()}
+    return None
+
+
+def _stage_zscores(config: Config, features: pd.DataFrame,
+                   pathway_features, normal_mask, out: Path):
+    """STEP 5c: robust z-scores of the scored feature set against the
+    reference normals, then demote configured artifact features (kept in
+    the z-score output for transparency, excluded from scoring)."""
     zscores, reference_stats, dropped_features = compute_metabolite_zscores(
-        features_scored,
+        features[pathway_features],
         normal_mask=normal_mask,
         iqr_scale=bool(config.get("iqr_scale", True)),
         min_reference_scale=(
@@ -481,9 +441,6 @@ def run_pipeline(input_file: str,
             if config.get("min_reference_scale", None) is not None else None),
     )
 
-    # Demoted artifact features stay in the z-score output for transparency
-    # but never contribute to pathway Stouffer sums, metabolite flags, or
-    # the reference calibration of downstream thresholds.
     demoted_features = [f for f in config.get_list("demoted_features")
                         if f in zscores.columns]
     unmatched = [f for f in config.get_list("demoted_features")
@@ -505,11 +462,16 @@ def run_pipeline(input_file: str,
         reference_stats.to_csv(out / "reference_stats.csv", index=False)
         dropped_features.to_csv(out / "dropped_features.csv", index=False)
         logger.info(f"Wrote metabolite_zscores.csv, reference_stats.csv, "
-                    f"dropped_features.csv to {out}")
+                     f"dropped_features.csv to {out}")
+    return zscores, zscores_scored, reference_stats, dropped_features
 
-    # ------------------------------------------------------------------
-    # Stage 2b: restrict pathways to calibrated features
-    # ------------------------------------------------------------------
+
+def _stage_scored_coverage(config: Config, coverage: pd.DataFrame,
+                           feature_to_pathway: pd.DataFrame,
+                           zscores_scored: pd.DataFrame, ambiguous,
+                           disease_resolved, out: Path):
+    """STEP 6: restrict pathways to calibrated features, prune redundant
+    near-duplicate pathways, and write the ambiguity impact triage."""
     _log_section("STEP 6: Restrict pathways to calibrated features")
     min_pathway_features = int(config.get("min_pathway_features", 3))
     scored_coverage = filter_pathways_for_scoring(
@@ -548,62 +510,27 @@ def run_pipeline(input_file: str,
             impact.to_csv(out / "ambiguous_features.csv", index=False)
             logger.info(f"Wrote ambiguous_features.csv to {out} "
                         "(impact-sorted)")
+    return scored_coverage
 
-    # ------------------------------------------------------------------
-    # Stage 3: pathway Stouffer scores
-    # ------------------------------------------------------------------
-    if not bool(config.get("run_stouffer", True)):
-        logger.info("run_stouffer is false; stopping after the z-score outputs.")
-        return {
-            "feature_to_hmdb": feature_to_hmdb,
-            "feature_to_pathway": feature_to_pathway,
-            "pathway_coverage": coverage,
-            "normal_mask": normal_mask,
-            "zscores": zscores,
-            "reference_stats": reference_stats,
-            "dropped_features": dropped_features,
-            "pathway_coverage_scored": scored_coverage,
-        }
 
-    _log_section("STEP 7: Pathway Stouffer scores")
-    min_metabolites = int(config.get("min_stouffer_metabolites", 3))
-    max_abs_z = config.get("max_abs_z", None)
-    max_abs_z = float(max_abs_z) if max_abs_z is not None else None
-    # Scale^2 weights: under a constant absolute analytical error the noise
-    # variance of a feature's z is (error/scale)^2, so the wider-scale
-    # duplicate feature of a metabolite is the trustworthy one.
-    feature_scale_weights = None
-    if bool(config.get("scale_weighted_metabolites", True)) \
-            and not reference_stats.empty:
-        feature_scale_weights = {
-            row["feature"]: float(row["scale"]) ** 2
-            for _, row in reference_stats.iterrows()}
-    pathway_scores, pathway_reference = compute_stouffer_scores(
-        zscores_scored,
-        feature_to_pathway=feature_to_pathway,
-        scored_coverage=scored_coverage,
-        normal_mask=normal_mask,
-        min_metabolites=min_metabolites,
-        max_abs_z=max_abs_z,
-        feature_scale_weights=feature_scale_weights,
-    )
-
-    if bool(config.get("save_stouffer_outputs", True)):
-        pathway_scores.to_csv(out / "pathway_stouffer_scores.csv", index=False)
-        pathway_reference.to_csv(out / "pathway_stouffer_reference.csv", index=False)
-        logger.info(f"Wrote pathway_stouffer_scores.csv, "
-                    f"pathway_stouffer_reference.csv to {out}")
-
-    if not pathway_scores.empty:
-        normals_in_scores = normal_mask.reindex(
-            pathway_scores["sample_id"].unique(), fill_value=False)
-        n_normal = int(normals_in_scores.sum())
-        logger.info(f"Stouffer scores cover "
-                    f"{pathway_scores['sample_id'].nunique()} samples x "
-                    f"{pathway_scores['smp_id'].nunique()} pathways "
-                    f"({n_normal} normals in the reference).")
-
-    # ------------------------------------------------------------------
+def _stage_disease_panel_promotion(config: Config,
+                                   zscores_scored: pd.DataFrame,
+                                   disease_resolved,
+                                   unlinked,
+                                   feature_to_hmdb: pd.DataFrame,
+                                   pathway_scores: pd.DataFrame,
+                                   normal_mask,
+                                   max_abs_z,
+                                   feature_scale_weights,
+                                   out: Path):
+    """STEP 7b: disease panel promotion (IEMbase panels as pseudo-
+    pathways). Each disease's resolved biomarkers, name-matched
+    no-HMDB markers, and declared ratio tests aggregate into ONE
+    direction-aware Stouffer sum that enters the pathway channel as a
+    pseudo-pathway; a PathBank pathway whose smp_id equals a
+    promoted panel's SMP code is dropped (the panel replaces it).
+    Promoted panels' metabolite tests leave the max-z biomarker
+    channel at STEP 8d (double-count guard)."""
     # STEP 7b: disease panel promotion (IEMbase panels as pseudo-
     # pathways). Each disease's resolved biomarkers, name-matched
     # no-HMDB markers, and declared ratio tests aggregate into ONE
@@ -612,7 +539,6 @@ def run_pipeline(input_file: str,
     # promoted panel's SMP code is dropped (the panel replaces it).
     # Promoted panels' metabolite tests leave the max-z biomarker
     # channel at STEP 8d (double-count guard).
-    # ------------------------------------------------------------------
     promoted_diseases = []
     if bool(config.get("biomarker_channel.disease_pathways.enable", False)):
         _log_section("STEP 7b: Disease panel promotion (IEMbase panels)")
@@ -676,90 +602,28 @@ def run_pipeline(input_file: str,
                     panel_scores.to_csv(out / "disease_panel_scores.csv",
                                        index=False)
                     logger.info("Wrote disease_panel_scores.csv to " + str(out))
+    return pathway_scores, promoted_diseases
 
-    # ------------------------------------------------------------------
-    # Stage 4: flag samples against each pathway's own normal range
-    # ------------------------------------------------------------------
-    if not bool(config.get("run_flagging", True)):
-        logger.info("run_flagging is false; stopping after the Stouffer outputs.")
-        return {
-            "feature_to_hmdb": feature_to_hmdb,
-            "feature_to_pathway": feature_to_pathway,
-            "pathway_coverage": coverage,
-            "normal_mask": normal_mask,
-            "zscores": zscores,
-            "reference_stats": reference_stats,
-            "dropped_features": dropped_features,
-            "pathway_coverage_scored": scored_coverage,
-            "pathway_scores": pathway_scores,
-            "pathway_reference": pathway_reference,
-        }
 
-    _log_section("STEP 8: Flag samples per pathway (normal-percentile thresholds)")
-    threshold_percentile = float(config.get("flag_threshold_percentile", 99.0))
-    pathway_flags = flag_pathway_scores(
-        pathway_scores,
-        normal_mask=normal_mask,
-        threshold_percentile=threshold_percentile,
-    )
-
-    min_flagged_pathways = int(config.get("min_flagged_pathways", 1))
-    max_sample_p = float(config.get("max_sample_p", 0.05))
-    sample_rule = str(config.get("sample_rule", "max_excess"))
-    sample_decisions = summarize_sample_flags(
-        pathway_flags,
-        min_flagged_pathways=min_flagged_pathways,
-        per_pathway_flag_rate=1.0 - threshold_percentile / 100.0,
-        max_sample_p=max_sample_p,
-        normal_mask=normal_mask,
-        sample_rule=sample_rule,
-    )
-
-    decisions_labeled = sample_decisions.merge(
-        sample_group.rename("group"), left_on="sample_id", right_index=True,
-        how="left")
-    decisions_labeled["group"] = decisions_labeled["group"].fillna("other")
-    if validation_mask is not None:
-        decisions_labeled["validation"] = (
-            decisions_labeled["sample_id"].map(validation_mask))
-        decisions_labeled["validation"] = (
-            decisions_labeled["validation"].fillna(False).astype(bool))
-        if bool(config.get("save_flagging_outputs", True)):
-            split_table = pd.DataFrame({
-                "sample_id": metadata.index,
-                "group": sample_group,
-                "validation": validation_mask,
-            })
-            split_table.to_csv(out / "cohort_split.csv", index=False)
-            logger.info(f"Wrote cohort_split.csv to {out}")
-
-    # ------------------------------------------------------------------
-    # STEP 8c: metabolite-level depth evidence (report-only, label-blind
-    # calibration -- thresholds come from the reference normals only).
-    # ------------------------------------------------------------------
-    metabolite_summary = None
-    metabolite_flags = None
-    if bool(config.get("run_metabolite_flags", True)):
-        _log_section("STEP 8c: Metabolite-level flags (report-only)")
-        metabolite_flags = flag_metabolite_scores(
-            zscores_scored,
-            normal_mask=normal_mask,
-            threshold_percentile=float(
-                config.get("metabolite_flag_percentile", 99.0)),
-        )
-        metabolite_summary = summarize_metabolite_flags(
-            metabolite_flags, normal_mask=normal_mask)
-        merged = decisions_labeled.merge(
-            metabolite_summary, on="sample_id", how="left")
-        for col in ("max_metabolite_z", "n_flagged_metabolites",
-                    "metabolite_depth_p", "top_metabolite"):
-            if col in merged.columns:
-                decisions_labeled[col] = merged[col]
-        if bool(config.get("save_flagging_outputs", True)):
-            metabolite_flags.to_csv(out / "metabolite_flags.csv", index=False)
-            logger.info(f"Wrote metabolite_flags.csv to {out}")
-
-    # ------------------------------------------------------------------
+def _stage_biomarker_channel(config: Config,
+                             zscores_scored: pd.DataFrame,
+                             decisions_labeled: pd.DataFrame,
+                             disease_resolved,
+                             biomarker_attachments,
+                             promoted_diseases,
+                             feature_to_hmdb: pd.DataFrame,
+                             coverage: pd.DataFrame,
+                             reference_stats: pd.DataFrame,
+                             normal_mask,
+                             out: Path):
+    """STEP 8d: biomarker attachment channel (literature-curated prior
+    knowledge, parallel to the PathBank pathway channel). The channel
+    ORs into the sample decision: flagged when an attached biomarker
+    exceeds its normal-percentile threshold AND the sample's maximum
+    attached-biomarker |z| beats the biomarker-restricted depth null of
+    the reference normals. When the disease table is present, DISEASES
+    are the grouping unit and directions are honored per
+    (disease, biomarker). Label-blind by construction."""
     # STEP 8d: biomarker attachment channel (literature-curated prior
     # knowledge, parallel to the PathBank pathway channel). Attachments
     # are frozen in the configuration before any evaluation read; the
@@ -769,7 +633,6 @@ def run_pipeline(input_file: str,
     # null of the reference normals. When the disease table is present,
     # DISEASES are the grouping unit and directions are honored per
     # (disease, biomarker). Label-blind by construction.
-    # ------------------------------------------------------------------
     biomarker_flags = None
     ratio_biomarker_specs = config.get(
         "biomarker_channel.ratio_biomarkers", None) or []
@@ -784,12 +647,7 @@ def run_pipeline(input_file: str,
                 f"{len(missing)} declared ratio biomarker(s) have no "
                 f"z-scored column (not derived at STEP 1b?): "
                 f"{sorted(set(missing))}")
-    feature_scale_weights = None
-    if (bool(config.get("scale_weighted_metabolites", True))
-            and not reference_stats.empty):
-        feature_scale_weights = {
-            row["feature"]: float(row["scale"]) ** 2
-            for _, row in reference_stats.iterrows()}
+    feature_scale_weights = _scale_weights(config, reference_stats)
     if (disease_resolved is not None
             and not disease_resolved.empty
             and not zscores_scored.empty):
@@ -914,35 +772,21 @@ def run_pipeline(input_file: str,
             for key, row in hot.head(10).iterrows():
                 logger.info(f"  {key}: {int(row['n_pairs'])} pairs "
                             f"across {int(row['n_samples'])} samples")
+    return biomarker_flags, decisions_labeled
 
-    # ------------------------------------------------------------------
-    # STEP 9: label-blind development QC. Every check runs on the
-    # calibration reference (development normals) or on measurement
-    # properties; IMD labels are never read here.
-    # ------------------------------------------------------------------
-    dev_qc = None
-    if bool(config.get("run_development_qc", True)):
-        _log_section("STEP 9: Development QC (label-blind)")
-        dev_qc = run_development_qc(
-            zscores=zscores_scored,
-            reference_stats=reference_stats,
-            reference_mask=normal_mask,
-            features=features,
-            feature_to_hmdb=feature_to_hmdb,
-            pathway_scores=pathway_scores,
-            scored_coverage=scored_coverage,
-            percentile=threshold_percentile,
-            n_bootstrap=int(config.get("development_qc_bootstrap", 200)),
-            output_csv=str(out / "development_qc_noise_floor.csv"),
-        )
 
-    # ------------------------------------------------------------------
+def _stage_evaluation(config: Config, decisions_labeled: pd.DataFrame,
+                     pathway_flags: pd.DataFrame, validation_mask, out: Path):
+    """STEP 10: evaluation. Explicit and one-shot: metrics are computed
+    on the halves defined by the frozen split, and -- unless
+    evaluate_dev_half is set -- the pipeline logs ONLY the half
+    requested. Reading these numbers and then changing the config
+    invalidates the validation half."""
     # STEP 10: evaluation. Explicit and one-shot: metrics are computed on
     # the halves defined by the frozen split, and -- unless
     # evaluate_dev_half is set -- the pipeline logs ONLY the half
     # requested. Reading these numbers and then changing the config
     # invalidates the validation half.
-    # ------------------------------------------------------------------
     evaluation = None
     if bool(config.get("run_evaluation", False)):
         _log_section("STEP 10: Evaluation (label-aware, frozen config)")
@@ -1000,22 +844,27 @@ def run_pipeline(input_file: str,
                         title=f"{name.capitalize()} half: IMD vs non-IMD")
             except Exception as exc:
                 logger.warning(f"Confusion matrix figure failed: {exc}")
+    return evaluation
 
-    if bool(config.get("save_flagging_outputs", True)):
-        pathway_flags.to_csv(out / "pathway_flags.csv", index=False)
-        decisions_labeled.to_csv(out / "sample_decisions.csv", index=False)
-        logger.info(f"Wrote pathway_flags.csv, sample_decisions.csv to {out}")
-        if hygiene is not None and not hygiene.empty:
-            hygiene.to_csv(out / "reference_hygiene.csv", index=False)
-            logger.info(f"Wrote reference_hygiene.csv to {out}")
 
-    # ------------------------------------------------------------------
+def _stage_report_figures(config: Config, decisions_labeled: pd.DataFrame,
+                          pathway_flags: pd.DataFrame,
+                          pathway_scores: pd.DataFrame,
+                          zscores_scored: pd.DataFrame,
+                          feature_to_pathway: pd.DataFrame,
+                          disease_resolved, metabolite_flags,
+                          promoted_diseases, normal_mask,
+                          feature_scale_weights, out: Path):
+    """STEP 8e: report-only Seaborn figures from the existing outputs.
+    Nothing here feeds back into scoring or flagging; failures are
+    logged and never break the run. Label-blind by default (flag
+    status only); the label-colored versions are opt-in for the
+    frozen version's one-shot write-up."""
     # STEP 8e: report-only Seaborn figures from the existing outputs.
     # Nothing here feeds back into scoring or flagging; failures are
     # logged and never break the run. Label-blind by default (flag
     # status only); the label-colored versions are opt-in for the
     # frozen version's one-shot write-up.
-    # ------------------------------------------------------------------
     if bool(config.get("visualizations.enable", True)):
         _log_section("STEP 8e: Report figures (label-blind by default)")
         try:
@@ -1073,6 +922,284 @@ def run_pipeline(input_file: str,
                     )
         except Exception as exc:
             logger.warning(f"Report figures skipped: {exc}")
+
+
+def run_pipeline(input_file: str,
+                  output_dir: str = "outputs/pathway_pipeline",
+                  config_path: str = None) -> dict:
+    """Run the feature-engineering stage of the pathway pipeline."""
+    config = Config(config_path) if config_path else Config()
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    _setup_logging(out)
+
+    _log_section("PATHWAY PIPELINE -- FEATURE ENGINEERING")
+    logger.info(f"Input: {input_file}\nOutput: {out}")
+
+    # ------------------------------------------------------------------
+    # Stage 1: preprocessing -- feature -> HMDB -> pathway
+    # ------------------------------------------------------------------
+    _log_section("STEP 1: Load feature matrix")
+    features, metadata, ages = load_feature_matrix(
+        input_file,
+        non_feature_columns=config.get_list(
+            "non_feature_columns", ["Oordeel targeted", "Classification"]
+        ),
+        patient_id_column=config.get("patient_id_column", None),
+        age_column=config.get("age_column", None),
+    )
+
+    features, ratio_features = _stage_ratio_features(config, features, out)
+
+    _log_section("STEP 2: Build HMDB name index")
+    hmdb_xml = config.get("hmdb_xml_file", "data/hmdb_metabolites.xml")
+    min_name_length = int(config.get("min_name_length", 3))
+    use_hmdb_cache = bool(config.get("use_hmdb_cache", True))
+    name_index = build_name_index(hmdb_xml, min_name_length=min_name_length,
+                                  use_cache=use_hmdb_cache)
+    if not name_index:
+        logger.warning("HMDB name index is empty (XML missing or unreadable). "
+                       "Only HMDB-tagged features will be matched.")
+
+    feature_to_hmdb, ambiguous = _stage_match_features(
+        config, features, ratio_features, name_index, out)
+
+    feature_to_pathway, coverage = _stage_pathway_links(
+        config, feature_to_hmdb, len(features.columns), out)
+
+    # ------------------------------------------------------------------
+    # Stage 2: z-scores against the normal reference
+    # ------------------------------------------------------------------
+    if not bool(config.get("run_zscores", True)):
+        logger.info("run_zscores is false; stopping after the mapping outputs.")
+        return {
+            "feature_to_hmdb": feature_to_hmdb,
+            "feature_to_pathway": feature_to_pathway,
+            "pathway_coverage": coverage,
+        }
+
+    _log_section("STEP 5: Compute metabolite z-scores (normals as reference)")
+    sample_group, validation_mask, normal_mask, hygiene = (
+        _stage_cohort_and_reference(config, metadata, features, coverage))
+    if not normal_mask.any():
+        logger.error("No normal reference samples; cannot compute z-scores.")
+        return {
+            "feature_to_hmdb": feature_to_hmdb,
+            "feature_to_pathway": feature_to_pathway,
+            "pathway_coverage": coverage,
+        }
+
+    # Only features mapped to a kept pathway can contribute to pathway scores;
+    # keep the whole matrix out of scope here. Attached biomarkers (literature
+    # curation) join the z-score set even when no kept PathBank pathway maps
+    # them -- the biomarker channel scores them independently of pathway
+    # wiring.
+    pathway_features = sorted(
+        set(coverage["matched_features"].str.split(";").explode().dropna())
+    ) if not coverage.empty else []
+    biomarker_attachments, disease_resolved, unlinked, biomarker_features = (
+        _stage_biomarker_sources(config, features, feature_to_hmdb, coverage,
+                                 name_index, out))
+    if biomarker_features:
+        extra = sorted(set(biomarker_features) - set(pathway_features))
+        if extra:
+            logger.info(f"Biomarker channel: {len(set(biomarker_features))} "
+                        f"feature(s) carry attached biomarkers "
+                        f"({len(extra)} not pathway-mapped).")
+        pathway_features = sorted(set(pathway_features)
+                                  | set(biomarker_features))
+    if ratio_features:
+        pathway_features = sorted(set(pathway_features)
+                                  | set(ratio_features))
+    logger.info(f"Z-scoring {len(pathway_features)} pathway-mapped features "
+                f"(of {features.shape[1]} total).")
+    zscores, zscores_scored, reference_stats, dropped_features = (
+        _stage_zscores(config, features, pathway_features, normal_mask, out))
+
+    scored_coverage = _stage_scored_coverage(
+        config, coverage, feature_to_pathway, zscores_scored, ambiguous,
+        disease_resolved, out)
+
+    # ------------------------------------------------------------------
+    # Stage 3: pathway Stouffer scores
+    # ------------------------------------------------------------------
+    if not bool(config.get("run_stouffer", True)):
+        logger.info("run_stouffer is false; stopping after the z-score outputs.")
+        return {
+            "feature_to_hmdb": feature_to_hmdb,
+            "feature_to_pathway": feature_to_pathway,
+            "pathway_coverage": coverage,
+            "normal_mask": normal_mask,
+            "zscores": zscores,
+            "reference_stats": reference_stats,
+            "dropped_features": dropped_features,
+            "pathway_coverage_scored": scored_coverage,
+        }
+
+    _log_section("STEP 7: Pathway Stouffer scores")
+    min_metabolites = int(config.get("min_stouffer_metabolites", 3))
+    max_abs_z = config.get("max_abs_z", None)
+    max_abs_z = float(max_abs_z) if max_abs_z is not None else None
+    feature_scale_weights = _scale_weights(config, reference_stats)
+    pathway_scores, pathway_reference = compute_stouffer_scores(
+        zscores_scored,
+        feature_to_pathway=feature_to_pathway,
+        scored_coverage=scored_coverage,
+        normal_mask=normal_mask,
+        min_metabolites=min_metabolites,
+        max_abs_z=max_abs_z,
+        feature_scale_weights=feature_scale_weights,
+    )
+
+    if bool(config.get("save_stouffer_outputs", True)):
+        pathway_scores.to_csv(out / "pathway_stouffer_scores.csv", index=False)
+        pathway_reference.to_csv(out / "pathway_stouffer_reference.csv", index=False)
+        logger.info(f"Wrote pathway_stouffer_scores.csv, "
+                    f"pathway_stouffer_reference.csv to {out}")
+
+    if not pathway_scores.empty:
+        normals_in_scores = normal_mask.reindex(
+            pathway_scores["sample_id"].unique(), fill_value=False)
+        n_normal = int(normals_in_scores.sum())
+        logger.info(f"Stouffer scores cover "
+                    f"{pathway_scores['sample_id'].nunique()} samples x "
+                    f"{pathway_scores['smp_id'].nunique()} pathways "
+                    f"({n_normal} normals in the reference).")
+
+    promoted_diseases = []
+    if bool(config.get("biomarker_channel.disease_pathways.enable", False)):
+        pathway_scores, promoted_diseases = _stage_disease_panel_promotion(
+            config, zscores_scored, disease_resolved, unlinked,
+            feature_to_hmdb, pathway_scores, normal_mask, max_abs_z,
+            feature_scale_weights, out)
+
+
+    # ------------------------------------------------------------------
+    # Stage 4: flag samples against each pathway's own normal range
+    # ------------------------------------------------------------------
+    if not bool(config.get("run_flagging", True)):
+        logger.info("run_flagging is false; stopping after the Stouffer outputs.")
+        return {
+            "feature_to_hmdb": feature_to_hmdb,
+            "feature_to_pathway": feature_to_pathway,
+            "pathway_coverage": coverage,
+            "normal_mask": normal_mask,
+            "zscores": zscores,
+            "reference_stats": reference_stats,
+            "dropped_features": dropped_features,
+            "pathway_coverage_scored": scored_coverage,
+            "pathway_scores": pathway_scores,
+            "pathway_reference": pathway_reference,
+        }
+
+    _log_section("STEP 8: Flag samples per pathway (normal-percentile thresholds)")
+    threshold_percentile = float(config.get("flag_threshold_percentile", 99.0))
+    pathway_flags = flag_pathway_scores(
+        pathway_scores,
+        normal_mask=normal_mask,
+        threshold_percentile=threshold_percentile,
+    )
+
+    min_flagged_pathways = int(config.get("min_flagged_pathways", 1))
+    max_sample_p = float(config.get("max_sample_p", 0.05))
+    sample_rule = str(config.get("sample_rule", "max_excess"))
+    sample_decisions = summarize_sample_flags(
+        pathway_flags,
+        min_flagged_pathways=min_flagged_pathways,
+        per_pathway_flag_rate=1.0 - threshold_percentile / 100.0,
+        max_sample_p=max_sample_p,
+        normal_mask=normal_mask,
+        sample_rule=sample_rule,
+    )
+
+    decisions_labeled = sample_decisions.merge(
+        sample_group.rename("group"), left_on="sample_id", right_index=True,
+        how="left")
+    decisions_labeled["group"] = decisions_labeled["group"].fillna("other")
+    if validation_mask is not None:
+        decisions_labeled["validation"] = (
+            decisions_labeled["sample_id"].map(validation_mask))
+        decisions_labeled["validation"] = (
+            decisions_labeled["validation"].fillna(False).astype(bool))
+        if bool(config.get("save_flagging_outputs", True)):
+            split_table = pd.DataFrame({
+                "sample_id": metadata.index,
+                "group": sample_group,
+                "validation": validation_mask,
+            })
+            split_table.to_csv(out / "cohort_split.csv", index=False)
+            logger.info(f"Wrote cohort_split.csv to {out}")
+
+    # ------------------------------------------------------------------
+    # STEP 8c: metabolite-level depth evidence (report-only, label-blind
+    # calibration -- thresholds come from the reference normals only).
+    # ------------------------------------------------------------------
+    metabolite_summary = None
+    metabolite_flags = None
+    if bool(config.get("run_metabolite_flags", True)):
+        _log_section("STEP 8c: Metabolite-level flags (report-only)")
+        metabolite_flags = flag_metabolite_scores(
+            zscores_scored,
+            normal_mask=normal_mask,
+            threshold_percentile=float(
+                config.get("metabolite_flag_percentile", 99.0)),
+        )
+        metabolite_summary = summarize_metabolite_flags(
+            metabolite_flags, normal_mask=normal_mask)
+        merged = decisions_labeled.merge(
+            metabolite_summary, on="sample_id", how="left")
+        for col in ("max_metabolite_z", "n_flagged_metabolites",
+                    "metabolite_depth_p", "top_metabolite"):
+            if col in merged.columns:
+                decisions_labeled[col] = merged[col]
+        if bool(config.get("save_flagging_outputs", True)):
+            metabolite_flags.to_csv(out / "metabolite_flags.csv", index=False)
+            logger.info(f"Wrote metabolite_flags.csv to {out}")
+
+    biomarker_flags, decisions_labeled = _stage_biomarker_channel(
+        config, zscores_scored, decisions_labeled, disease_resolved,
+        biomarker_attachments, promoted_diseases, feature_to_hmdb,
+        coverage, reference_stats, normal_mask, out)
+
+
+    # ------------------------------------------------------------------
+    # STEP 9: label-blind development QC. Every check runs on the
+    # calibration reference (development normals) or on measurement
+    # properties; IMD labels are never read here.
+    # ------------------------------------------------------------------
+    dev_qc = None
+    if bool(config.get("run_development_qc", True)):
+        _log_section("STEP 9: Development QC (label-blind)")
+        dev_qc = run_development_qc(
+            zscores=zscores_scored,
+            reference_stats=reference_stats,
+            reference_mask=normal_mask,
+            features=features,
+            feature_to_hmdb=feature_to_hmdb,
+            pathway_scores=pathway_scores,
+            scored_coverage=scored_coverage,
+            percentile=threshold_percentile,
+            n_bootstrap=int(config.get("development_qc_bootstrap", 200)),
+            output_csv=str(out / "development_qc_noise_floor.csv"),
+        )
+
+    evaluation = _stage_evaluation(config, decisions_labeled,
+                                   pathway_flags, validation_mask, out)
+
+
+    if bool(config.get("save_flagging_outputs", True)):
+        pathway_flags.to_csv(out / "pathway_flags.csv", index=False)
+        decisions_labeled.to_csv(out / "sample_decisions.csv", index=False)
+        logger.info(f"Wrote pathway_flags.csv, sample_decisions.csv to {out}")
+        if hygiene is not None and not hygiene.empty:
+            hygiene.to_csv(out / "reference_hygiene.csv", index=False)
+            logger.info(f"Wrote reference_hygiene.csv to {out}")
+
+    _stage_report_figures(
+        config, decisions_labeled, pathway_flags, pathway_scores,
+        zscores_scored, feature_to_pathway, disease_resolved,
+        metabolite_flags, promoted_diseases, normal_mask,
+        feature_scale_weights, out)
 
     return {
         "feature_to_hmdb": feature_to_hmdb,

@@ -180,9 +180,3 @@ def build_name_index(hmdb_xml_file: str, min_name_length: int = 3,
 
     return index
 
-
-def parse_hmdb_xml(hmdb_xml_file: str, min_name_length: int = 3,
-                    use_cache: bool = True) -> Dict[str, Set[str]]:
-    """Backwards-compatible alias for :func:`build_name_index`."""
-    return build_name_index(hmdb_xml_file, min_name_length=min_name_length,
-                            use_cache=use_cache)

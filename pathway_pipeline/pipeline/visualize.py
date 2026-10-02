@@ -504,10 +504,6 @@ def sample_overview_figure(sample_id: str,
         pathway_flags["sample_id"] == sample_id] \
         if pathway_flags is not None and len(pathway_flags) > 0 \
         else pd.DataFrame()
-    samp_scores = pathway_scores[
-        pathway_scores["sample_id"] == sample_id] \
-        if pathway_scores is not None and len(pathway_scores) > 0 \
-        else pd.DataFrame()
 
     panels = (samp_flags[samp_flags["pathway_name"].isin(promoted)]
               if len(samp_flags) else pd.DataFrame())
