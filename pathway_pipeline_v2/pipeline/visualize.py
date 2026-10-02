@@ -33,15 +33,47 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import seaborn as sns  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-sns.set_theme(style="whitegrid", context="paper")
-FLAG_PALETTE = {True: "#d73027", False: "#4575b4"}
-GROUP_PALETTE = {"normal": "#4575b4", "imd": "#d73027", "other": "#878787"}
+ACCENT = "#f28e2b"      # orange: flagged / disturbed / positive direction
+ACCENT_DARK = "#d95f02"  # darker orange for lines and emphasis
+BASE = "#4a7bb7"         # blue: normal / reference / negative direction
+BASE_LIGHT = "#a8c8e8"   # light blue: reference distributions and boxes
+NEUTRAL = "#8c8c8c"      # gray: 'other' groups
+
+_orange_blue_cmap = LinearSegmentedColormap.from_list(
+    "orange_blue", [ACCENT, "#ffffff", BASE])
+
+sns.set_theme(style="whitegrid", context="paper", rc={
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+    "axes.titlesize": 11,
+    "axes.titleweight": "bold",
+    "axes.labelsize": 10,
+    "axes.labelcolor": "#333333",
+    "axes.edgecolor": "#666666",
+    "axes.linewidth": 0.8,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "xtick.color": "#444444",
+    "ytick.color": "#444444",
+    "grid.color": "#d9d9d9",
+    "grid.linewidth": 0.6,
+    "legend.frameon": True,
+    "legend.framealpha": 0.9,
+    "legend.edgecolor": "#cccccc",
+    "legend.fontsize": 8,
+    "figure.titlesize": 12,
+    "figure.titleweight": "bold",
+})
+
+FLAG_PALETTE = {True: ACCENT, False: BASE}
+GROUP_PALETTE = {"normal": BASE, "imd": ACCENT, "other": NEUTRAL}
 GROUP_ORDER = ["normal", "imd", "other"]
 
 
@@ -171,7 +203,7 @@ def overview_figures(decisions: pd.DataFrame,
                 fig, ax = plt.subplots(
                     figsize=(1.5 + 0.055 * mat.shape[1],
                              4 + 0.2 * mat.shape[0]))
-                sns.heatmap(mat, cmap="rocket_r", vmin=0, center=1.0,
+                sns.heatmap(mat, cmap=_orange_blue_cmap, vmin=0, center=1.0,
                             linewidths=0.1, linecolor="0.9",
                             cbar_kws={"label": "Pathway excess"}, ax=ax)
                 ax.set_xlabel("")
@@ -194,7 +226,7 @@ def overview_figures(decisions: pd.DataFrame,
             if len(counts):
                 fig, ax = plt.subplots(
                     figsize=(7, 0.25 * len(counts) + 1.5))
-                sns.barplot(x=counts.values, y=counts.index, color="#d73027",
+                sns.barplot(x=counts.values, y=counts.index, color=ACCENT,
                             ax=ax)
                 ax.set_xlabel("Flagged (sample, pathway) pairs")
                 ax.set_ylabel("")
@@ -237,7 +269,7 @@ def overview_figures(decisions: pd.DataFrame,
             if len(pw):
                 fig, ax = plt.subplots(figsize=(8, 4.5))
                 sns.boxplot(data=pw, x="z_stouffer_abs", y="pathway_name",
-                            order=top_pw, color="#a6bddb", fliersize=1, ax=ax)
+                            order=top_pw, color=BASE_LIGHT, fliersize=1, ax=ax)
                 ax.set_xlabel("Absolute Stouffer score")
                 ax.set_ylabel("")
                 ax.set_title("Per-pathway disturbance across the cohort")
@@ -352,8 +384,8 @@ def sample_report_figures(sample_id: str,
                 fig, ax = plt.subplots(figsize=(7, 4))
                 sns.kdeplot(data=plot, x="z_stouffer_abs", hue="source",
                             common_norm=False, fill=True, alpha=0.4,
-                            palette={"normal reference": "#a6bddb",
-                                     "this sample": "#d73027"}, ax=ax)
+                            palette={"normal reference": BASE_LIGHT,
+                                     "this sample": ACCENT}, ax=ax)
                 ax.set_xlabel("Absolute Stouffer score")
                 ax.set_ylabel("Density")
                 ax.set_title(f"{sample_id}: pathway disturbance "
@@ -396,8 +428,8 @@ def sample_report_figures(sample_id: str,
                     figsize=(7, 0.25 * len(rows) + 1.5))
                 sns.barplot(data=plot, x="value", y="metabolite",
                             hue="series", palette={
-                                "this sample": "#d73027",
-                                "normal median": "#a6bddb"}, ax=ax)
+                                "this sample": ACCENT,
+                                "normal median": BASE_LIGHT}, ax=ax)
                 ax.set_xlabel("Absolute z-score")
                 ax.set_ylabel("")
                 ax.set_title(f"{sample_id}: top disturbed metabolites "
@@ -538,7 +570,7 @@ def sample_overview_figure(sample_id: str,
                 .head(top_disease_panels))
         flags = _canon_bool(rows["flagged"]) \
             if "flagged" in rows.columns else pd.Series(False, index=rows.index)
-        colors = [FLAG_PALETTE.get(bool(f), "#4575b4") for f in flags]
+        colors = [FLAG_PALETTE.get(bool(f), BASE) for f in flags]
         ax.barh(range(len(rows)), rows["excess"].to_numpy(), color=colors)
         ax.set_yticks(range(len(rows)))
         ax.set_yticklabels(rows["pathway_name"].astype(str), fontsize=6)
@@ -557,7 +589,7 @@ def sample_overview_figure(sample_id: str,
                 .head(top_pathways))
         flags = _canon_bool(rows["flagged"]) \
             if "flagged" in rows.columns else pd.Series(False, index=rows.index)
-        colors = [FLAG_PALETTE.get(bool(f), "#4575b4") for f in flags]
+        colors = [FLAG_PALETTE.get(bool(f), BASE) for f in flags]
         ax.barh(range(len(rows)), rows["excess"].to_numpy(), color=colors)
         ax.set_yticks(range(len(rows)))
         ax.set_yticklabels(rows["pathway_name"].astype(str), fontsize=6)
@@ -571,7 +603,7 @@ def sample_overview_figure(sample_id: str,
     # Panel C: top metabolite SIGNED z-scores (direction evidence).
     ax = axes[2]
     if len(signed_z):
-        colors = ["#d73027" if v > 0 else "#4575b4" for v in signed_z]
+        colors = [ACCENT if v > 0 else BASE for v in signed_z]
         ax.barh(range(len(signed_z)), signed_z.to_numpy(), color=colors)
         ax.set_yticks(range(len(signed_z)))
         ax.set_yticklabels(signed_z.index.astype(str), fontsize=6)
@@ -727,7 +759,7 @@ def top_pathway_waterfall_figure(sample_id: str,
                                                ascending=False) \
         .head(max_members).sort_values("z")
 
-    colors = ["#d73027" if v > 0 else "#4575b4" for v in member_df["z"]]
+    colors = [ACCENT if v > 0 else BASE for v in member_df["z"]]
     fig, ax = plt.subplots(figsize=(9, 0.30 * len(member_df) + 1.8))
     ax.barh(range(len(member_df)), member_df["z"].to_numpy(), color=colors)
     ax.set_yticks(range(len(member_df)))
@@ -788,7 +820,7 @@ def multisplit_figures(runs: pd.DataFrame,
             for i, m in enumerate(sorted(plot["metric"].unique())):
                 if m in means and pd.notna(means[m]):
                     ax.hlines(means[m], i - 0.25, i + 0.25,
-                              color="#d73027", lw=2)
+                              color=ACCENT, lw=2)
             ax.set_ylim(0.5, 1.02)
             ax.set_xlabel("")
             ax.set_ylabel("Validation-half metric")
@@ -809,7 +841,7 @@ def multisplit_figures(runs: pd.DataFrame,
                  "val_flag_rate": "validation normals"})
             fig, ax = plt.subplots(figsize=(7, 4))
             sns.stripplot(data=plot, x="half", y="flag_rate",
-                          hue="half", palette=["#4575b4", "#d73027"],
+                          hue="half", palette=[BASE, ACCENT],
                           size=5, alpha=0.75, jitter=0.12,
                           legend=False, ax=ax)
             ax.set_xlabel("")
@@ -902,7 +934,7 @@ def confusion_matrix_figure(decisions: pd.DataFrame,
     pct = mat.div(row_totals, axis=0).mul(100).round(1)
     annot = mat.astype(str) + "\n(" + pct.astype(str) + "%)"
     fig, ax = plt.subplots(figsize=(4.5, 3.5))
-    sns.heatmap(mat, annot=annot, fmt="", cmap="Blues", cbar=False,
+    sns.heatmap(mat, annot=annot, fmt="", cmap="Oranges", cbar=False,
                 linewidths=0.5, linecolor="white", ax=ax)
     ax.set_xlabel("Pipeline decision")
     ax.set_ylabel("")
@@ -958,7 +990,7 @@ def multisplit_confusion_matrices(per_seed_decisions: dict,
                     .reindex(["IMD", "non-IMD"]).fillna(0))
         annot = mean_mat.round(1).astype(str)
         fig, ax = plt.subplots(figsize=(4.5, 3.5))
-        sns.heatmap(mean_mat, annot=annot, fmt="", cmap="Blues",
+        sns.heatmap(mean_mat, annot=annot, fmt="", cmap="Oranges",
                     cbar_kws={"label": "Mean samples per split"},
                     linewidths=0.5, linecolor="white", ax=ax)
         ax.set_xlabel("Pipeline decision")
