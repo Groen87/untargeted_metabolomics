@@ -934,7 +934,8 @@ def build_disease_panel_scores(zscores: pd.DataFrame,
                                min_metabolites: int = 2,
                                max_abs_z: float = None,
                                feature_scale_weights: Dict[str, float] = None,
-                               name_matched: pd.DataFrame = None
+                               name_matched: pd.DataFrame = None,
+                               wrong_direction: str = "clip"
                                ) -> pd.DataFrame:
     """Score each IEMbase disease panel as a direction-aware Stouffer sum.
 
@@ -972,6 +973,15 @@ def build_disease_panel_scores(zscores: pd.DataFrame,
             ``matched_features``); markers whose Excel entry carries
             no HMDB code but whose name matches dataset features join
             the panel as extra member terms.
+        wrong_direction: how a member moving against its literature
+            arrow is treated before the sum. ``"clip"`` (default,
+            historical): contributes 0 to the sum but still counts in
+            k -- inert, never punitive. ``"exclude"``: dropped from
+            both numerator and denominator -- uninformative members
+            neither strengthen nor dilute. ``"penalize"``: contributes
+            its signed z -- wrong-direction evidence actively cancels
+            right-direction evidence (severe: one large artifact can
+            erase a true positive block).
 
     Returns:
         Long-format frame with columns ``sample_id``, ``smp_id``
@@ -1038,6 +1048,10 @@ def build_disease_panel_scores(zscores: pd.DataFrame,
 
     weights = feature_scale_weights or {}
 
+    mode = str(wrong_direction or "").strip().lower()
+    if mode not in ("clip", "exclude", "penalize"):
+        raise ValueError(f"Unknown wrong_direction mode: {wrong_direction!r}")
+
     def _member_z(feats, direction):
         sub = z[feats]
         if len(feats) == 1 or not weights:
@@ -1049,8 +1063,16 @@ def build_disease_panel_scores(zscores: pd.DataFrame,
                       / present_w.where(present_w > 0))
         direction = str(direction or "").strip().lower()
         if direction == "up":
+            if mode == "penalize":
+                return mean_z
+            if mode == "exclude":
+                return mean_z.where(mean_z > 0)
             return mean_z.clip(lower=0)
         if direction == "down":
+            if mode == "penalize":
+                return -mean_z
+            if mode == "exclude":
+                return (-mean_z).where(mean_z < 0)
             return (-mean_z).clip(lower=0)
         return mean_z.abs()
 

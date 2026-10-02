@@ -675,3 +675,73 @@ def test_build_disease_panel_scores_empty_inputs():
     assert list(scores.columns) == [
         "sample_id", "smp_id", "pathway_name", "n_metabolites_used",
         "z_stouffer", "z_stouffer_abs"]
+
+
+def test_build_disease_panel_scores_wrong_direction_modes():
+    """wrong_direction modes: clip is inert-diluting, exclude drops the
+    member from the sum and k (a starved panel row disappears),
+    penalize lets wrong-direction evidence cancel right-direction
+    evidence."""
+    # Three members: A (up), B (down), C (up, always fires).
+    zscores = pd.DataFrame(
+        {"FeatA.HMDB0000001": [5.0, -5.0],
+         "FeatB.HMDB0000002": [1.0, -1.0],
+         "FeatC.HMDB0000003": [2.0, 2.0]},
+        index=["s0", "s1"])
+    normal_mask = pd.Series([True, True], index=zscores.index)
+    resolved = _panel_resolved([
+        {"disease": "Test disease", "biomarker": "A",
+         "hmdb_id": "HMDB0000001", "direction": "up", "omim": "",
+         "smp_id": "SMP0000001", "pathway_name": "Test disease",
+         "source": "IEMbase", "features": "FeatA.HMDB0000001",
+         "n_features": 1},
+        {"disease": "Test disease", "biomarker": "B",
+         "hmdb_id": "HMDB0000002", "direction": "down", "omim": "",
+         "smp_id": "SMP0000001", "pathway_name": "Test disease",
+         "source": "IEMbase", "features": "FeatB.HMDB0000002",
+         "n_features": 1},
+        {"disease": "Test disease", "biomarker": "C",
+         "hmdb_id": "HMDB0000003", "direction": "up", "omim": "",
+         "smp_id": "SMP0000001", "pathway_name": "Test disease",
+         "source": "IEMbase", "features": "FeatC.HMDB0000003",
+         "n_features": 1},
+    ])
+    f2h = _panel_f2h([("FeatA.HMDB0000001", "HMDB0000001"),
+                      ("FeatB.HMDB0000002", "HMDB0000002"),
+                      ("FeatC.HMDB0000003", "HMDB0000003")])
+
+    # s0: A up +5 fires; B at +1 moves against its down arrow; C fires +2.
+    # s1: A fell (against its up arrow); B at -1 moved as predicted (-> 1);
+    #     C fires +2.
+    scores = {m: build_disease_panel_scores(
+        zscores, resolved, f2h, normal_mask=normal_mask,
+        min_metabolites=2, wrong_direction=m)
+        for m in ("clip", "exclude", "penalize")}
+    by = {m: s.set_index("sample_id") for m, s in scores.items()}
+
+    # clip (historical): wrong-way member contributes 0 but counts in k.
+    assert by["clip"].loc["s0", "z_stouffer"] == pytest.approx(
+        (5.0 + 0.0 + 2.0) / np.sqrt(3))
+    assert by["clip"].loc["s1", "z_stouffer"] == pytest.approx(
+        (0.0 + 1.0 + 2.0) / np.sqrt(3))
+
+    # exclude: wrong-way member drops from sum AND k (k=2 here).
+    assert by["exclude"].loc["s0", "z_stouffer"] == pytest.approx(
+        (5.0 + 2.0) / np.sqrt(2))
+    assert by["exclude"].loc["s1", "z_stouffer"] == pytest.approx(
+        (1.0 + 2.0) / np.sqrt(2))
+    assert (scores["exclude"]["n_metabolites_used"] == 2).all()
+
+    # penalize: signed contributions cancel: s0 = (5 - 1 + 2)/sqrt(3);
+    # s1: A against its arrow gives -5, B as predicted gives +1,
+    # C gives +2 -> (-5 + 1 + 2)/sqrt(3).
+    assert by["penalize"].loc["s0", "z_stouffer"] == pytest.approx(
+        (5.0 - 1.0 + 2.0) / np.sqrt(3))
+    assert by["penalize"].loc["s1", "z_stouffer"] == pytest.approx(
+        (-5.0 + 1.0 + 2.0) / np.sqrt(3))
+
+    # unknown mode fails fast.
+    with pytest.raises(ValueError):
+        build_disease_panel_scores(
+            zscores, resolved, f2h, normal_mask=normal_mask,
+            min_metabolites=2, wrong_direction="bogus")
