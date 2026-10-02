@@ -1,0 +1,233 @@
+# Combined Batch Pipeline Configuration
+
+# Input/Output
+input_file: "data/combined_all_batches.csv"
+output_dir: "output/combined_batch_pipeline_v2"
+
+# Processing parameters
+frac: 0.5
+rt_threshold: 0.02
+ref_batch: null
+
+# ============================================================================
+# ComBat Configuration
+# ============================================================================
+# Controls for ComBat batch correction strength
+#
+# gamma: Shrinkage parameter (0 = no correction, 1 = full correction)
+#   Lower values (0.3-0.7) make correction milder, preventing overcorrection
+combat_gamma: 0.5
+
+# parametric: Use parametric ComBat (True) or non-parametric (False)
+#   Parametric is more conservative and less likely to overcorrect
+combat_parametric: true
+
+# ============================================================================
+# RobustScaler Configuration
+# ============================================================================
+# RobustScaler (median/IQR per feature, robust to outliers) is applied at the
+# end of the pipeline on the log10-transformed data. Each output has its own
+# toggle:
+#
+# apply_robust_scaler_final : final_corrected_data_for_analysis.csv
+#     (default true = the historical behaviour; false keeps the log10 scale)
+# apply_robust_scaler_merged : merged_data_for_analysis.csv
+#     (default false; the merged analysis file is normally written unscaled.
+#     Set true to RobustScale it per feature, like the final file.)
+
+apply_robust_scaler_final: true
+apply_robust_scaler_merged: false
+
+# Log10-transform merged_data_for_analysis.csv after the bridge-QC
+# alignment, before the optional RobustScaler. Zeros are first replaced with
+# half the per-feature minimum non-zero value (same as the final-output
+# path) so no feature hits log10(0). merged_data.csv (input to ComBat) stays
+# on the linear scale.
+apply_log10_merged: true
+
+# ============================================================================
+# Feature Filtering Configuration
+# ============================================================================
+# All filters are applied in order and are configurable.
+# Set any filter to false to disable it.
+#
+# Filter order:
+# 1. Low intensity (remove low-signal features first)
+# 2. Blank contaminants (removed to avoid skewing other filters)
+# 3. Low variance (near-constant features)
+# 4. Single batch features (gap-filled in others)
+# 5. High RSD in QC3 samples (remove features with RSD > 30% in QC3)
+# Note: QC present and QC intensity filters removed as per user request
+
+# Filter 1: Low intensity
+# Removes features with low intensity across all samples
+filter_low_intensity: false
+# Option A: Mean-based threshold (default)
+intensity_threshold: 100000.0  # Features with mean intensity < this are removed
+# Option B: Quantile-based (uncomment to use instead of absolute threshold)
+# intensity_quantile: 0.1  # Remove bottom N% by intensity
+# Option C: Max-based threshold (preserves rare high-signal features like IMD)
+intensity_use_max: false  # Use max intensity instead of mean
+intensity_max_threshold: 100000.0  # Minimum max intensity across all samples
+
+# Filter 2: Blank sample contaminants
+# Removes features that are high in blank samples (likely contaminants)
+filter_blank_contaminants: true
+blank_pattern: "blanco"  # Pattern to identify blank samples (case-insensitive)
+blank_ratio_threshold: 3.0  # Features with blank/bio ratio > this are removed
+blank_high_signal_threshold: 10.0  # Keep features if any bio sample >= this * blank_mean (loophole for high-signal features)
+
+# Filter 3: Low variance (near-constant features)
+# Removes features with almost no variation (uninformative or noise)
+filter_low_variance: false
+# variance_threshold: 0.01  # Absolute variance threshold (features with var < this are removed)
+# Alternative to threshold: use quantile to remove bottom N% by variance
+variance_quantile: 0.05  # Remove bottom 5% by variance
+# For gap-filled data: calculate variance only on non-gap-filled values
+variance_use_nonzero: false  # Enable to preserve features with real variation in non-gap-filled samples
+variance_nonzero_threshold: 10000.0  # Values below this are considered gap-filled (your gap-fill is ~6000)
+
+# Filter 4: Single batch features
+# Removes features only present in a single batch (gap-filled in others)
+filter_single_batch: false
+min_batches: 2  # Features must be present in at least this many batches
+single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global median (default: 10%)
+                                        # Increase to 0.25 or 0.50 if gap-filled values are higher
+# Preserve rare high-signal features (IMD) that may only be in one batch
+single_batch_preserve_high_signal: false  # Enable to preserve features with high signal in any batch
+single_batch_high_signal_threshold: 10000.0  # Keep if max in any batch >= this
+
+# Filter 5: High RSD in QC3 samples
+# Removes features with high RSD across all QC3 samples
+# Uses tiered RSD thresholds based on feature intensity:
+# - Features with mean intensity < 100000: RSD threshold = 50%
+# - Features with mean intensity >= 100000: RSD threshold = 25%
+# This accounts for low-intensity features naturally having higher CV/RSD
+filter_high_qc3_rsd: true
+qc3_rsd_threshold: 30.0  # Legacy single threshold (used if use_intensity_based_rsd is false)
+qc3_rsd_intensity_threshold: 100000.0  # Intensity threshold for tiered filtering
+qc3_rsd_low_intensity: 50.0  # RSD threshold for features below intensity threshold
+qc3_rsd_high_intensity: 25.0  # RSD threshold for features at or above intensity threshold
+use_intensity_based_rsd: true  # Enable tiered RSD filtering based on intensity
+
+# ============================================================================
+# QC Sample Detection
+# ============================================================================
+qc_pattern: "expQC"
+fallback_qc_pattern: "QC3"
+
+# ============================================================================
+# Legacy parameters (kept for backwards compatibility)
+# ============================================================================
+intensity_threshold: 100000
+qc_intensity_threshold: 0.1
+
+# ============================================================================
+# Logging
+# ============================================================================
+log_level: "INFO"
+log_file: "logs/combined_batch_pipeline_v2.log"
+
+# Options
+run_qc: true
+save_plots: true
+show_plots: false
+
+# ============================================================================
+# RALPS Configuration (Alternative Batch Correction)
+# ============================================================================
+# RALPS is run after ComBat for comparison
+# Set run_ralps to false to skip RALPS correction
+
+run_ralps: true
+
+# QC sample patterns for RALPS
+# QC3 samples are used for regularization (group column)
+# QC4 and blaauw samples are used for benchmarking (benchmark column)
+qc3_pattern: "QC3"
+qc4_pattern: "QC4"
+blaauw_pattern: "blaauw"
+
+# RALPS parameters (optional overrides)
+# These are passed to RALPS config file
+# See https://github.com/zamboni-lab/RALPS for full parameter descriptions
+ralps_config:
+  latent_dim: -1  # -1 = automatically derived from PCA
+  variance_ratio: "0.9,0.95,0.99"
+  n_replicates: 3
+  grid_size: 1
+  d_lr: "0.00005-0.005"
+  g_lr: "0.00005-0.005"
+  d_lambda: "0.-10."
+  g_lambda: "0.-10."
+  v_lambda: "0.-10."
+  train_ratio: 0.9
+  batch_size: "32,64,128"
+  epochs: 30
+  skip_epochs: 3
+  keep_checkpoints: false
+  device: "cpu"
+  min_relevant_intensity: 1000
+  allowed_vc_increase: 0.05
+
+# ============================================================================
+# PQN Normalization Configuration
+# ============================================================================
+# PQN (Probabilistic Quotient Normalization) is applied per-batch after LOESS
+# drift correction. Set to false to skip PQN and only use bridge-QC normalization.
+apply_pqn: true  # Set false to skip PQN normalization
+
+# ============================================================================
+# Bridge-QC Batch Alignment Configuration
+# ============================================================================
+# Aligns batches using cross-batch control (QC) samples that are the SAME
+# material run in every batch (QC3, QC4, blauw). Applied after PQN + LOESS,
+# before the merged data is saved. Removes the per-feature, per-batch offset
+# that within-batch corrections (PQN, LOESS on expQC) do not address.
+# Unlike expQC (a pool of each batch's own biological samples), these fixed
+# materials carry no batch-specific biology, so their between-batch differences
+# are pure instrument/batch effect.
+bridge_qc_scaling: false  # Set true to enable bridge-QC batch alignment
+bridge_qc_patterns: ["QC3", "QC4", "blauw"]  # Substrings identifying bridge QCs
+bridge_qc_min_batches: 8  # Feature must be present in bridge QCs in >= this many batches to be corrected
+bridge_qc_max_factor: 2.0  # Correction factors clipped to [1/this, this] (2.0 => [0.5, 2.0])
+
+# ============================================================================
+# Metabolite Ratio Features
+# ============================================================================
+# Adds clinically-informative metabolite ratios (e.g. acylcarnitine ratios)
+# as new feature rows. Ratios are added AFTER log10 transformation and BEFORE
+# RobustScaler, so they are computed on the log10 scale and then scaled
+# together with the other features.
+#
+# Each ratio has:
+#   name:        the output feature name (must be unique; must not collide with
+#                an existing feature name unless you intend to overwrite it)
+#   numerator:   list of feature names; summed on the raw concentration scale
+#   denominator: list of feature names; summed on the raw concentration scale
+#
+# Sums let you express ratio-of-sums such as L-carnitine / (C16 + C18).
+# Feature names must match the DataFrame index EXACTLY (case-sensitive) as
+# they appear after feature filtering -- e.g. "Propionylcarnitine.HMDB0000842".
+# A ratio whose numerator/denominator feature is missing from the data is
+# skipped with a warning.
+feature_ratios:
+  - name: "ratio_C3_C2"
+    numerator: ["Propionylcarnitine.HMDB0000842"]
+    denominator: ["L-Acetylcarnitine.HMDB0000201"]
+  - name: "ratio_C8_C10"
+    numerator: ["Octanoylcarnitine.HMDB0000791"]
+    denominator: ["Decanoylcarnitine.HMDB0000651"]
+  - name: "ratio_C14_1_C12_1"
+    numerator: ["cis-5-Tetradecenoylcarnitine.HMDB0002014"]
+    denominator: ["5-Dodecenoylcarnitine.HMDB0241212"]
+  - name: "ratio_C0_long"
+    numerator: ["L-carnitine.HMDB0000062"]
+    denominator:
+      - "Palmitoylcarnitine.HMDB0000222"
+      - "Stearoylcarnitine.HMDB0000848"
+  - name: "ratio_long_C2"
+    numerator:
+      - "Palmitoylcarnitine.HMDB0000222"
+      - "Oleoylcarnitine.HMDB0005065"
+    denominator: ["L-Acetylcarnitine.HMDB0000201"]
