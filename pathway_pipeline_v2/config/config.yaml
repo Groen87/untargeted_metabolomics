@@ -404,22 +404,9 @@ biomarker_channel:
   # counted twice. min_panel_metabolites is the minimum usable member
   # terms for a panel to score at all (a starved panel is skipped,
   # keeping the disease's max-z tests alive).
-  #
-  # wrong_direction controls how a panel member moving AGAINST its
-  # literature arrow is treated before the directed Stouffer sum:
-  #   clip     (default, historical): contributes 0 to the sum but still
-  #             counts in k -- inert, never punitive.
-  #   exclude: dropped from numerator and denominator -- an
-  #             uninformative member neither strengthens nor dilutes.
-  #   penalize: contributes its signed z -- wrong-direction evidence
-  #             actively cancels right-direction evidence (severe:
-  #             one large artifact can erase a true positive block).
-  # Try-out parameter: changing it changes panel scores and therefore
-  # the promoted-pathway channel; rerun and compare STEP 9/10 outputs.
   disease_pathways:
     enable: true
     min_panel_metabolites: 1
-    wrong_direction: "clip"
   # Source 2: resolved attachments CSV (smp_id or pathway_name +
   # hmdb_id already known) -- used when the disease table is absent, or
   # alongside it as a complement.

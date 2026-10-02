@@ -557,9 +557,6 @@ def _stage_disease_panel_promotion(config: Config,
             if unlinked is not None and not unlinked.empty:
                 name_matched = unlinked[
                     unlinked["matched_features"].fillna("") != ""]
-            wrong_direction = str(config.get(
-                "biomarker_channel.disease_pathways.wrong_direction",
-                "clip"))
             panel_scores = build_disease_panel_scores(
                 zscores_scored,
                 disease_resolved,
@@ -572,7 +569,6 @@ def _stage_disease_panel_promotion(config: Config,
                 max_abs_z=max_abs_z,
                 feature_scale_weights=feature_scale_weights,
                 name_matched=name_matched,
-                wrong_direction=wrong_direction,
             )
             if panel_scores.empty:
                 logger.warning("Disease panel promotion: no panel reached "
