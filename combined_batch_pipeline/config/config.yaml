@@ -63,12 +63,12 @@ apply_log10_merged: true
 # Removes features with low intensity across all samples
 filter_low_intensity: false
 # Option A: Mean-based threshold (default)
-intensity_threshold: 100000.0  # Features with mean intensity < this are removed
+intensity_threshold: 10000.0  # Features with mean intensity < this are removed
 # Option B: Quantile-based (uncomment to use instead of absolute threshold)
 # intensity_quantile: 0.1  # Remove bottom N% by intensity
 # Option C: Max-based threshold (preserves rare high-signal features like IMD)
 intensity_use_max: false  # Use max intensity instead of mean
-intensity_max_threshold: 100000.0  # Minimum max intensity across all samples
+intensity_max_threshold: 10000.0  # Minimum max intensity across all samples
 
 # Filter 2: Blank sample contaminants
 # Removes features that are high in blank samples (likely contaminants)
@@ -89,12 +89,12 @@ variance_nonzero_threshold: 10000.0  # Values below this are considered gap-fill
 
 # Filter 4: Single batch features
 # Removes features only present in a single batch (gap-filled in others)
-filter_single_batch: false
+filter_single_batch: true
 min_batches: 2  # Features must be present in at least this many batches
 single_batch_noise_quantile: 0.10  # Noise threshold = this quantile * global median (default: 10%)
                                         # Increase to 0.25 or 0.50 if gap-filled values are higher
 # Preserve rare high-signal features (IMD) that may only be in one batch
-single_batch_preserve_high_signal: false  # Enable to preserve features with high signal in any batch
+single_batch_preserve_high_signal: true  # Enable to preserve features with high signal in any batch
 single_batch_high_signal_threshold: 10000.0  # Keep if max in any batch >= this
 
 # Filter 5: High RSD in QC3 samples
@@ -108,7 +108,7 @@ qc3_rsd_threshold: 30.0  # Legacy single threshold (used if use_intensity_based_
 qc3_rsd_intensity_threshold: 100000.0  # Intensity threshold for tiered filtering
 qc3_rsd_low_intensity: 50.0  # RSD threshold for features below intensity threshold
 qc3_rsd_high_intensity: 35.0  # RSD threshold for features at or above intensity threshold
-use_intensity_based_rsd: false  # Enable tiered RSD filtering based on intensity
+use_intensity_based_rsd: true  # Enable tiered RSD filtering based on intensity
 
 # ============================================================================
 # QC Sample Detection
@@ -175,7 +175,7 @@ ralps_config:
 # ============================================================================
 # PQN (Probabilistic Quotient Normalization) is applied per-batch after LOESS
 # drift correction. Set to false to skip PQN and only use bridge-QC normalization.
-apply_pqn: true  # Set false to skip PQN normalization
+apply_pqn: false  # Set false to skip PQN normalization
 
 # ============================================================================
 # Bridge-QC Batch Alignment Configuration
@@ -187,7 +187,7 @@ apply_pqn: true  # Set false to skip PQN normalization
 # Unlike expQC (a pool of each batch's own biological samples), these fixed
 # materials carry no batch-specific biology, so their between-batch differences
 # are pure instrument/batch effect.
-bridge_qc_scaling: false  # Set true to enable bridge-QC batch alignment
+bridge_qc_scaling: true  # Set true to enable bridge-QC batch alignment
 bridge_qc_patterns: ["QC3", "QC4", "blauw"]  # Substrings identifying bridge QCs
 bridge_qc_min_batches: 8  # Feature must be present in bridge QCs in >= this many batches to be corrected
 bridge_qc_max_factor: 2.0  # Correction factors clipped to [1/this, this] (2.0 => [0.5, 2.0])
