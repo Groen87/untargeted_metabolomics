@@ -23,6 +23,9 @@ try:
 except ImportError:
     COMBAT_AVAILABLE = False
 
+# Same colorblind-safe seaborn style as pathway_pipeline_v2.
+sns.set_theme(style="whitegrid", context="paper", palette="colorblind")
+
 # Okabe-Ito colorblind-safe palette (Wong 2010, Nature Methods) --
 # same hex values as pathway_pipeline_v2/pipeline/visualize.py.
 OKABE_ITO = ["#E69F00", "#56B4E9", "#009E73", "#F0E442",
