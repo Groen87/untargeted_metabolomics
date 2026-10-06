@@ -103,12 +103,12 @@ single_batch_high_signal_threshold: 10000.0  # Keep if max in any batch >= this
 # - Features with mean intensity < 100000: RSD threshold = 50%
 # - Features with mean intensity >= 100000: RSD threshold = 25%
 # This accounts for low-intensity features naturally having higher CV/RSD
-filter_high_qc3_rsd: true
+filter_high_qc3_rsd: false
 qc3_rsd_threshold: 30.0  # Legacy single threshold (used if use_intensity_based_rsd is false)
 qc3_rsd_intensity_threshold: 100000.0  # Intensity threshold for tiered filtering
 qc3_rsd_low_intensity: 50.0  # RSD threshold for features below intensity threshold
 qc3_rsd_high_intensity: 25.0  # RSD threshold for features at or above intensity threshold
-use_intensity_based_rsd: true  # Enable tiered RSD filtering based on intensity
+use_intensity_based_rsd: false  # Enable tiered RSD filtering based on intensity
 
 # ============================================================================
 # QC Sample Detection
