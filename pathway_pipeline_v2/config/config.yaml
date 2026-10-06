@@ -120,7 +120,7 @@ ratio_features:
 # (Non-treated == 0 or empty) are reported in the 'other' group: treatment
 # normalizes the metabolome, so they are not the phenotype the screen must
 # catch. Reporting/stratification only -- never used to set thresholds.
-untreated_imd_only: true
+untreated_imd_only: false
 
 # ============================================================================
 # HMDB Database
