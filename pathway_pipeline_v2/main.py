@@ -1212,6 +1212,32 @@ def run_pipeline(input_file: str,
             hygiene.to_csv(out / "reference_hygiene.csv", index=False)
             logger.info(f"Wrote reference_hygiene.csv to {out}")
 
+    if (bool(config.get("save_validation_imd_overview", True))
+            and validation_mask is not None):
+        imd_val = decisions_labeled[
+            (decisions_labeled["group"] == "imd")
+            & decisions_labeled["validation"].astype(bool)
+        ].copy()
+        if not pathway_flags.empty and "sample_id" in pathway_flags.columns:
+            flagged_paths = (pathway_flags[pathway_flags["flagged"]]
+                             .groupby("sample_id")["pathway_name"]
+                             .agg(lambda g: "; ".join(sorted(set(g)))))
+            imd_val["flagged_pathways"] = (imd_val["sample_id"]
+                                           .map(flagged_paths).fillna(""))
+        else:
+            imd_val["flagged_pathways"] = ""
+        if biomarker_flags is not None and not biomarker_flags.empty:
+            bio_key = ("disease" if "disease" in biomarker_flags.columns
+                       else "pathway_name")
+            flagged_bio = (biomarker_flags[biomarker_flags["flagged"]]
+                           .groupby("sample_id")[bio_key]
+                           .agg(lambda g: "; ".join(sorted(set(g)))))
+            imd_val["flagged_disease_panels"] = (imd_val["sample_id"]
+                                                  .map(flagged_bio).fillna(""))
+        imd_val.to_csv(out / "validation_imd_overview.csv", index=False)
+        logger.info(f"Wrote validation_imd_overview.csv to {out} "
+                    f"({len(imd_val)} validation IMD samples)")
+
     _stage_report_figures(
         config, decisions_labeled, pathway_flags, pathway_scores,
         zscores_scored, feature_to_pathway, disease_resolved,

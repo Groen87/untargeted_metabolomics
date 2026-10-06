@@ -537,6 +537,10 @@ save_mapping_outputs: true
 save_zscore_outputs: true
 save_stouffer_outputs: true
 save_flagging_outputs: true
+# One row per IMD sample in the frozen validation half: the sample's flag
+# decision plus its flagged pathways and disease panels, so flagged/missed
+# IMDs can be reviewed directly (report-only).
+save_validation_imd_overview: true
 
 # ============================================================================
 # Report figures (STEP 8e): Seaborn visualizations of the existing outputs.
