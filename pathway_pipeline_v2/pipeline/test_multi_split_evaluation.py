@@ -113,6 +113,9 @@ def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
             .is_monotonic_decreasing)
     assert (miss_freq["n_splits_missed"]
             <= miss_freq["n_splits_validation"]).all()
+    for col in ("top_pathway_names", "top_pathway_excess", "top_biomarker"):
+        assert col in stability.columns, col
+        assert col in miss_freq.columns, col
     _write_report(out_root, [21, 22], runs, agg, missed, stability,
                   miss_freq)
     report = (out_root / "MULTI_SPLIT_REPORT.md").read_text()

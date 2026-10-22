@@ -96,6 +96,7 @@ METRICS = ("sensitivity", "specificity", "auc",
 
 MISSED_EVIDENCE_COLS = ("n_flagged_pathways", "sample_p_value",
                         "top_pathway_name", "top_excess",
+                        "top_pathway_names", "top_pathway_excess",
                         "max_metabolite_z", "top_metabolite",
                         "n_flagged_biomarkers", "top_biomarker",
                         "top_disease")
@@ -222,7 +223,9 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
                                       "validation",
                                       "flagged_pathway_channel",
                                       "biomarker_flagged", "top_excess",
-                                      "top_pathway_name", "top_biomarker",
+                                      "top_pathway_name",
+                                      "top_pathway_names",
+                                      "top_pathway_excess", "top_biomarker",
                                       "top_disease")
                           if c in decisions.columns]
         per_seed_samples = decisions[stability_cols].copy()
@@ -274,7 +277,8 @@ def _imd_miss_frequency(missed: pd.DataFrame, per_sample_frames: list,
         return pd.DataFrame(columns=["sample_id", "n_splits_validation",
                                      "n_splits_missed", "miss_rate",
                                      "mean_top_excess", "top_pathway_name",
-                                     "top_biomarker"])
+                                     "top_pathway_names",
+                                     "top_pathway_excess", "top_biomarker"])
     imd["validation"] = imd["validation"].fillna(False).astype(bool)
     grouped = imd.groupby("sample_id", sort=False)
     freq = pd.DataFrame({
@@ -283,6 +287,12 @@ def _imd_miss_frequency(missed: pd.DataFrame, per_sample_frames: list,
         if "top_excess" in imd.columns else float("nan"),
         "top_pathway_name": grouped["top_pathway_name"].agg(_modal_evidence)
         if "top_pathway_name" in imd.columns else "",
+        "top_pathway_names": grouped["top_pathway_names"]
+            .agg(_modal_evidence) if "top_pathway_names"
+            in imd.columns else "",
+        "top_pathway_excess": grouped["top_pathway_excess"]
+            .agg(_modal_evidence) if "top_pathway_excess"
+            in imd.columns else "",
         "top_biomarker": grouped["top_biomarker"].agg(_modal_evidence)
         if "top_biomarker" in imd.columns else "",
     })
@@ -319,6 +329,12 @@ def _sample_flag_stability(per_sample_frames: list) -> pd.DataFrame:
             if "top_excess" in all_samples.columns else float("nan"),
         "top_pathway_name": grouped["top_pathway_name"]
             .agg(_modal_evidence) if "top_pathway_name"
+            in all_samples.columns else "",
+        "top_pathway_names": grouped["top_pathway_names"]
+            .agg(_modal_evidence) if "top_pathway_names"
+            in all_samples.columns else "",
+        "top_pathway_excess": grouped["top_pathway_excess"]
+            .agg(_modal_evidence) if "top_pathway_excess"
             in all_samples.columns else "",
         "top_biomarker": grouped["top_biomarker"].agg(_modal_evidence)
             if "top_biomarker" in all_samples.columns else "",
