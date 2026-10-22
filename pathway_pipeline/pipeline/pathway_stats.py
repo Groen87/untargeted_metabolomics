@@ -783,7 +783,9 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
                             per_pathway_flag_rate: float = None,
                             max_sample_p: float = 0.05,
                             normal_mask: pd.Series = None,
-                            sample_rule: str = "empirical"
+                            sample_rule: str = "empirical",
+                            top_k_pathways: int = 3,
+                            iembase_pathways=None
                             ) -> pd.DataFrame:
     """Summarize the per-pathway flags into a per-sample decision.
 
@@ -818,16 +820,26 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
             the empirical and max_excess rules (falls back with a warning
             when absent).
         sample_rule: 'empirical', 'max_excess', 'binomial', or 'none'.
+        top_k_pathways: number of pathways reported in the
+            ``top_pathway_names`` ranking (the single ``top_pathway_name``
+            keeps reporting the sample's absolute top pathway).
+        iembase_pathways: names of the IEMbase disease panels promoted
+            into the pathway channel (or None). When the sample has any,
+            the ``top_pathway_names`` ranking lists the top disease panels
+            only; otherwise it ranks all pathways (PathBank included).
 
     Returns:
         DataFrame with one row per sample: ``sample_id``,
         ``n_flagged_pathways``, ``n_scored_pathways``, ``flagged``,
         ``sample_p_value`` (NaN when no null rule applies),
-        ``top_pathway_name``, ``top_z_stouffer_abs``, ``top_excess``.
+        ``top_pathway_name``, ``top_z_stouffer_abs``, ``top_excess`` and
+        ``top_pathway_names`` / ``top_pathway_excess`` (the top
+        ``top_k_pathways`` IEMbase disease panels by excess, as
+        semicolon-separated lists).
     """
     out_cols = ["sample_id", "n_flagged_pathways", "n_scored_pathways", "flagged",
                 "sample_p_value", "top_pathway_name", "top_z_stouffer_abs",
-                "top_excess"]
+                "top_excess", "top_pathway_names", "top_pathway_excess"]
     if pathway_flags.empty:
         return pd.DataFrame(columns=out_cols)
 
@@ -868,12 +880,26 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
                     f"{float(normal_max_excess.median()):.2f}, p95 "
                     f"{float(normal_max_excess.quantile(0.95)):.2f}).")
 
+    iembase = {str(p) for p in (iembase_pathways or [])}
+
+    def _ranked(g):
+        pool = g
+        if iembase:
+            pool = g[g["pathway_name"].astype(str).isin(iembase)]
+        pool = pool.dropna(subset=["excess"])
+        if pool.empty:
+            return pd.DataFrame(columns=["pathway_name", "excess"])
+        return (pool.sort_values("excess", ascending=False)
+                .head(max(int(top_k_pathways), 1))
+                [["pathway_name", "excess"]])
+
     def _agg(g):
         candidates = g.dropna(subset=["excess"])
         if candidates.empty:
             top = g.iloc[0]
         else:
             top = candidates.loc[candidates["excess"].idxmax()]
+        ranked = _ranked(g)
         n_flagged = int(g["flagged"].sum())
         n_scored = int(g["flagged"].sum() + (~g["flagged"].astype(bool)).sum())
         if sample_rule == "empirical":
@@ -901,6 +927,10 @@ def summarize_sample_flags(pathway_flags: pd.DataFrame,
             "top_pathway_name": top["pathway_name"],
             "top_z_stouffer_abs": top["z_stouffer_abs"],
             "top_excess": top["excess"],
+            "top_pathway_names": "; ".join(
+                str(n) for n in ranked["pathway_name"]),
+            "top_pathway_excess": ", ".join(
+                f"{float(e):.3f}" for e in ranked["excess"]),
         })
 
     summary = (pathway_flags.drop(columns=["sample_id"])

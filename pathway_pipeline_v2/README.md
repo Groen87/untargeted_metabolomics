@@ -301,7 +301,13 @@ A sample is flagged when it passes the count rule AND
 `sample_decisions.csv` reports the per-sample p-value together with the
 Classification/Oordeel group (`normal` = Class 0 + Oordeel 0, `imd` =
 Class 1 + Oordeel 1, `other`) and the development/validation half -- a
-**reporting-only** detection-vs-contamination summary. Thresholds are
+**reporting-only** detection-vs-contamination summary. The top pathway
+evidence lands in the same file: `top_pathway_name` / `top_excess` (the
+sample's absolute top pathway) and `top_pathway_names` /
+`top_pathway_excess` (the top 3 IEMbase disease panels by excess,
+semicolon-separated; PathBank pathways never enter the ranking when
+disease panels are promoted, and samples without a scored panel leave
+it empty). Thresholds are
 never tuned against the IMD labels; the development/validation protocol
 below is what keeps the flagging method scientifically valid.
 
@@ -372,7 +378,9 @@ beats the biomarker-restricted depth null of the reference normals at the
 same frozen `max_sample_p` as the pathway channel. The channel **ORs into
 the sample decision**: `sample_decisions.csv` gains
 `flagged_pathway_channel`, `biomarker_flagged`, `n_flagged_biomarkers`,
-`biomarker_depth_p`, `max_biomarker_z`, and `top_biomarker`, and every
+`biomarker_depth_p`, `max_biomarker_z`, and `top_biomarker` (filled for
+EVERY sample from its strongest directed test, not only the flagged
+ones), and every
 per-(sample, pathway, biomarker) flag lands in `biomarker_flags.csv` for
 audit. Duplicate features of the same biomarker are combined with the same
 scale^2 weighting as the Stouffer channel. When the disease table drives the

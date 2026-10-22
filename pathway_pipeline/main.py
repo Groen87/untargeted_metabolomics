@@ -713,6 +713,8 @@ def run_pipeline(input_file: str,
         max_sample_p=max_sample_p,
         normal_mask=normal_mask,
         sample_rule=sample_rule,
+        top_k_pathways=int(config.get("report_top_k_disease_panels", 3)),
+        iembase_pathways=promoted_diseases,
     )
 
     decisions_labeled = sample_decisions.merge(
@@ -771,6 +773,7 @@ def run_pipeline(input_file: str,
     # (disease, biomarker). Label-blind by construction.
     # ------------------------------------------------------------------
     biomarker_flags = None
+    biomarker_summary = None
     ratio_biomarker_specs = config.get(
         "biomarker_channel.ratio_biomarkers", None) or []
     ratio_biomarker_tests = None
@@ -841,14 +844,20 @@ def run_pipeline(input_file: str,
                     config.get("biomarker_channel.threshold_percentile", 99.0)),
                 feature_scale_weights=feature_scale_weights,
             )
-    if biomarker_flags is not None and not biomarker_flags.empty:
+    if biomarker_flags is not None:
         max_sample_p = float(config.get("max_sample_p", 0.05))
+        if biomarker_summary is None:
+            biomarker_summary = pd.DataFrame(columns=[
+                "sample_id", "biomarker_flagged", "n_flagged_biomarkers",
+                "biomarker_depth_p", "max_biomarker_z", "top_biomarker",
+                "top_disease"])
         biomarker_summary["biomarker_flagged"] = (
             (biomarker_summary["n_flagged_biomarkers"].fillna(0) >= 1)
             & (biomarker_summary["biomarker_depth_p"].fillna(1.0)
                <= max_sample_p)
         )
-        if bool(config.get("save_flagging_outputs", True)):
+        if (bool(config.get("save_flagging_outputs", True))
+                and not biomarker_flags.empty):
             biomarker_flags.to_csv(out / "biomarker_flags.csv",
                                    index=False)
             logger.info(f"Wrote biomarker_flags.csv to {out}")

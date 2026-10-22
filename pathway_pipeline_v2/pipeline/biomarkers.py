@@ -780,6 +780,23 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
         best = (best.sort_values("abs_z", ascending=False)
                 .groupby("sample_id", as_index=False).first())
 
+    # Top-biomarker attribution over ALL tests (not only the flagged
+    # pairs): the top biomarker is a report column for every sample, so
+    # it must be filled even when the sample stays below its thresholds
+    # or fails the global depth null.
+    top_overall = (flags.dropna(subset=["abs_z"])
+                   .sort_values("abs_z", ascending=False)
+                   .groupby("sample_id", as_index=False).first()[
+                       ["sample_id", "disease", "hmdb_id", "abs_z"]]
+                   .rename(columns={
+                       "disease": "top_disease_all",
+                       "hmdb_id": "top_biomarker_all",
+                       "abs_z": "max_biomarker_z_all"})
+                   if not flags.empty else pd.DataFrame(
+                       columns=["sample_id", "top_disease_all",
+                                "top_biomarker_all",
+                                "max_biomarker_z_all"]))
+
     samples = pd.Index(zscores.index, name="sample_id")
     summary = pd.DataFrame({"sample_id": samples})
     summary = summary.merge(best[["sample_id", "disease", "depth_p"]]
@@ -801,6 +818,7 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
         summary["n_flagged_biomarkers"] = 0
         summary["max_biomarker_z"] = np.nan
         summary["top_biomarker"] = None
+    summary = summary.merge(top_overall, on="sample_id", how="left")
     summary["biomarker_flagged"] = summary["sample_id"].isin(
         set(channel_decision[channel_decision].index))
     for col, fill in (("n_flagged_biomarkers", 0), ("max_biomarker_z", np.nan),
@@ -808,6 +826,19 @@ def flag_disease_biomarkers(zscores: pd.DataFrame,
                       ("biomarker_depth_p", np.nan)):
         if col in summary.columns:
             summary[col] = summary[col].where(summary[col].notna(), fill)
+    # Flag-only attribution stays intact for channel-flagged samples; for
+    # the rest the report column falls back to the sample's strongest
+    # directed test (filled instead of blank).
+    summary["top_disease"] = (summary["top_disease"]
+                              .fillna(summary["top_disease_all"]))
+    summary["top_biomarker"] = (summary["top_biomarker"]
+                                .fillna(summary["top_biomarker_all"]))
+    summary["max_biomarker_z"] = (summary["max_biomarker_z"]
+                                 .fillna(summary["max_biomarker_z_all"]))
+    summary = summary.drop(columns=[c for c in ("top_disease_all",
+                                                "top_biomarker_all",
+                                                "max_biomarker_z_all")
+                                    if c in summary.columns])
     summary = summary[summary_cols]
     n_diseases = resolved["disease"].nunique()
     n_tests = int(directed.shape[1])
