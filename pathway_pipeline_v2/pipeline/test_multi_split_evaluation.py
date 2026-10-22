@@ -125,6 +125,10 @@ def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
     figures = out_root / "figures"
     for name in ("confusion_matrix_seed_21.png",
                  "confusion_matrix_seed_22.png",
-                 "confusion_matrix_aggregate.png"):
+                 "confusion_matrix_aggregate.png",
+                 "agg_figA_anomaly_score_distribution.png",
+                 "agg_figB_excess_vs_depth.png",
+                 "agg_figC_flagged_pathway_counts.png",
+                 "agg_figD_pathway_excess_heatmap.png"):
         assert (figures / name).exists(), name
         assert (figures / name).stat().st_size > 0

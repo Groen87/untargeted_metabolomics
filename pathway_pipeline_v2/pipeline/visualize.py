@@ -762,6 +762,185 @@ def top_pathway_waterfall_figure(sample_id: str,
     return ok
 
 
+def multisplit_aggregate_figures(per_seed: dict,
+                                 out_dir: Path,
+                                 dpi: int = 200,
+                                 use_labels: bool = False,
+                                 max_pathways: int = 30) -> Dict[str, bool]:
+    """Aggregate the per-seed overview figures over all splits.
+
+    Pools each seed's ``sample_decisions``, ``pathway_flags`` and
+    ``pathway_scores`` (the same tables the per-seed overview figures
+    use) and renders the cohort-level views once for the whole
+    multi-split evaluation:
+
+    - Fig A: distribution of the anomaly score (top pathway excess),
+      pooled over splits, by flag status.
+    - Fig B: depth-vs-breadth evidence (top excess vs sample p-value),
+      pooled over splits.
+    - Fig C: pathways driving the flags across all splits (flagged
+      (sample, pathway) pair counts).
+    - Fig D: pathway excess heatmap (top pathways x sample), pooled
+      over splits.
+
+    Args:
+        per_seed: mapping seed -> dict with ``decisions``,
+            ``pathway_flags`` and ``pathway_scores`` (the pipeline
+            result tables; missing tables skip that figure).
+        out_dir: directory for the PNG files.
+        dpi: raster resolution.
+        use_labels: color by IMD group instead of flag status
+            (label-aware; opt-in like the per-seed figures).
+        max_pathways: cap on pathways shown per figure.
+
+    Returns:
+        Dict mapping figure file name -> written flag.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: Dict[str, bool] = {}
+    if not per_seed:
+        logger.info("Multi-split aggregate figures skipped: no seeds.")
+        return written
+
+    decisions = []
+    pathway_flags = []
+    pathway_scores = []
+    for seed in sorted(per_seed):
+        tables = per_seed[seed] or {}
+        d = tables.get("decisions")
+        if d is not None and len(d):
+            d = d.copy()
+            d["seed"] = seed
+            decisions.append(d)
+        pf = tables.get("pathway_flags")
+        if pf is not None and len(pf):
+            pf = pf.copy()
+            pf["seed"] = seed
+            pathway_flags.append(pf)
+        ps = tables.get("pathway_scores")
+        if ps is not None and len(ps):
+            ps = ps.copy()
+            ps["seed"] = seed
+            pathway_scores.append(ps)
+    decisions = (pd.concat(decisions, ignore_index=True)
+                 if decisions else pd.DataFrame())
+    pathway_flags = (pd.concat(pathway_flags, ignore_index=True)
+                     if pathway_flags else pd.DataFrame())
+    pathway_scores = (pd.concat(pathway_scores, ignore_index=True)
+                      if pathway_scores else pd.DataFrame())
+    if decisions.empty:
+        logger.info("Multi-split aggregate figures skipped: "
+                    "no sample decisions.")
+        return written
+
+    d = _hue_decisions(decisions, use_labels)
+    hue = _color_key(d, use_labels)
+    palette = GROUP_PALETTE if hue == "group" else FLAG_PALETTE
+
+    # Fig A: anomaly-score distribution pooled over splits.
+    try:
+        if "top_excess" in d.columns and d["top_excess"].notna().any():
+            fig, ax = plt.subplots(figsize=(7, 4))
+            sns.histplot(data=d, x="top_excess", hue=hue, element="step",
+                         fill=False, stat="density", common_norm=False,
+                         palette=palette, ax=ax)
+            ax.axvline(1.0, color="0.3", ls="--", lw=1)
+            ax.set_xlabel("Maximum pathway excess (score / threshold)")
+            ax.set_ylabel("Sample-split density")
+            ax.set_title("Anomaly score pooled over pre-declared splits "
+                         f"({len(per_seed)} seeds)")
+            written["agg_figA_anomaly_score_distribution.png"] = _save(
+                fig, out_dir / "agg_figA_anomaly_score_distribution.png",
+                dpi)
+    except Exception as exc:
+        logger.warning("Multi-split aggregate figA failed: %s", exc)
+
+    # Fig B: depth vs breadth evidence pooled over splits.
+    try:
+        if {"top_excess", "sample_p_value"}.issubset(d.columns) \
+                and d[["top_excess", "sample_p_value"]].notna().any().any():
+            fig, ax = plt.subplots(figsize=(7, 4.5))
+            sns.scatterplot(data=d.dropna(
+                subset=["top_excess", "sample_p_value"]),
+                x="top_excess", y="sample_p_value", hue=hue,
+                palette=palette, s=20, alpha=0.6, ax=ax)
+            ax.set_xscale("log")
+            ax.axhline(0.05, color="0.3", ls="--", lw=1)
+            ax.axvline(1.0, color="0.3", ls="--", lw=1)
+            ax.set_xlabel("Maximum pathway excess (log scale)")
+            ax.set_ylabel("Depth p-value")
+            ax.set_title("Depth vs breadth evidence pooled over splits "
+                         f"({len(per_seed)} seeds)")
+            written["agg_figB_excess_vs_depth.png"] = _save(
+                fig, out_dir / "agg_figB_excess_vs_depth.png", dpi)
+    except Exception as exc:
+        logger.warning("Multi-split aggregate figB failed: %s", exc)
+
+    # Fig C: pathways driving the flags across ALL splits.
+    try:
+        if not pathway_flags.empty \
+                and {"pathway_name", "flagged"}.issubset(
+                    pathway_flags.columns):
+            fl = pathway_flags[_canon_bool(pathway_flags["flagged"])]
+            counts = fl["pathway_name"].value_counts().head(max_pathways)
+            if len(counts):
+                fig, ax = plt.subplots(
+                    figsize=(7, 0.25 * len(counts) + 1.5))
+                sns.barplot(x=counts.values, y=counts.index, color=ACCENT,
+                            ax=ax)
+                ax.set_xlabel("Flagged (sample, pathway) pairs "
+                              "across splits")
+                ax.set_ylabel("")
+                ax.set_title("Pathways driving the flags pooled over "
+                             f"{len(per_seed)} splits")
+                written["agg_figC_flagged_pathway_counts.png"] = _save(
+                    fig, out_dir / "agg_figC_flagged_pathway_counts.png",
+                    dpi)
+    except Exception as exc:
+        logger.warning("Multi-split aggregate figC failed: %s", exc)
+
+    # Fig D: pathway excess heatmap pooled over splits (mean excess per
+    # (sample, pathway) over the seeds that scored it).
+    try:
+        if not pathway_flags.empty \
+                and {"sample_id", "pathway_name", "excess"}.issubset(
+                    pathway_flags.columns):
+            sub = pathway_flags[pathway_flags["excess"].notna()]
+            if len(sub):
+                top_pw = _top_categories(sub["pathway_name"], sub["excess"],
+                                         max_pathways)
+                sub = sub[sub["pathway_name"].isin(top_pw)]
+                mat = (sub.pivot_table(index="pathway_name",
+                                       columns="sample_id", values="excess",
+                                       aggfunc="mean").reindex(top_pw))
+                mat = mat.loc[:, mat.notna().sum().sort_values(
+                    ascending=False).index]
+                if mat.shape[0] and mat.shape[1]:
+                    fig, ax = plt.subplots(
+                        figsize=(1.5 + 0.055 * mat.shape[1],
+                                 4 + 0.2 * mat.shape[0]))
+                    sns.heatmap(mat, cmap="viridis", vmin=0, center=1.0,
+                                linewidths=0.1, linecolor="0.9",
+                                cbar_kws={"label": "Mean pathway excess "
+                                                    "over splits"}, ax=ax)
+                    ax.set_xlabel("")
+                    ax.set_ylabel("")
+                    ax.set_title("Pathway excess per sample, mean over "
+                                 f"{len(per_seed)} splits")
+                    plt.setp(ax.get_xticklabels(), rotation=90, fontsize=4)
+                    plt.setp(ax.get_yticklabels(), fontsize=5)
+                    written["agg_figD_pathway_excess_heatmap.png"] = _save(
+                        fig, out_dir / "agg_figD_pathway_excess_heatmap.png",
+                        dpi)
+    except Exception as exc:
+        logger.warning("Multi-split aggregate figD failed: %s", exc)
+
+    logger.info("Multi-split aggregate figures: %d written to %s",
+                sum(written.values()), out_dir)
+    return written
+
+
 def multisplit_figures(runs: pd.DataFrame,
                        stability: pd.DataFrame,
                        out_dir: Path,

@@ -42,6 +42,13 @@ Outputs (default outputs/multi_split_evaluation/)
                                      pre-declared splits (per-seed mean,
                                      NOT pooled samples; splits share
                                      samples)
+- figures/agg_figA..D_*.png          the per-seed overview figures
+                                     aggregated over all splits: anomaly
+                                     score distribution, depth-vs-breadth
+                                     evidence, pathways driving the flags
+                                     (pooled pair counts), and the pathway
+                                     excess heatmap (mean excess per
+                                     (sample, pathway) over the seeds)
 - runs/sample_flag_stability.csv     per sample across ALL splits: in how
                                      many of the pre-declared splits the
                                      sample flagged (flag_rate), per-channel
@@ -183,6 +190,7 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
     missed_frames = []
     per_sample_frames = []
     per_seed_decisions = {}
+    per_seed_tables = {}
     for seed in seeds:
         seed_dir = per_seed / f"seed_{seed}"
         seed_dir.mkdir(parents=True, exist_ok=True)
@@ -202,6 +210,11 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
             validation.reindex(decisions["sample_id"],
                                fill_value=False)).fillna(False).astype(bool)
         per_seed_decisions[seed] = decisions[val_mask.to_numpy()].copy()
+        per_seed_tables[seed] = {
+            "decisions": decisions,
+            "pathway_flags": result.get("pathway_flags"),
+            "pathway_scores": result.get("pathway_scores"),
+        }
         evaluation = (result.get("evaluation") or {}).get("validation")
         if evaluation is None:
             raise RuntimeError(
@@ -249,6 +262,19 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
         multisplit_confusion_matrices(per_seed_decisions, out_root / "figures")
     except Exception as exc:
         logger.warning("Multi-split confusion matrices skipped: %s", exc)
+    try:
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        vis = cfg.get("visualizations") or {}
+        from pathway_pipeline_v2.pipeline.visualize import (
+            multisplit_aggregate_figures)
+        multisplit_aggregate_figures(
+            per_seed_tables, out_root / "figures",
+            use_labels=bool(vis.get("use_labels", False)),
+            max_pathways=int(vis.get("max_pathways", 30)),
+        )
+    except Exception as exc:
+        logger.warning("Multi-split aggregate figures skipped: %s", exc)
     return runs, missed, stability, miss_freq
 
 
