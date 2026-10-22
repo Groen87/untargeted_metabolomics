@@ -449,7 +449,7 @@ def test_summarize_sample_flags_basic():
     assert set(summary.columns) == {
         "sample_id", "n_flagged_pathways", "n_scored_pathways", "flagged",
         "sample_p_value", "top_pathway_name", "top_z_stouffer_abs",
-        "top_excess"}
+        "top_excess", "top_pathway_names", "top_pathway_excess"}
 
     imd1 = summary[summary["sample_id"] == "imd1"].iloc[0]
     # imd1: flagged in A only (6.0); its 1.0 in B stays below the threshold.
@@ -463,6 +463,60 @@ def test_summarize_sample_flags_basic():
     # Small normal tail can flag (interpolated percentile) but stays rare.
     assert normals["n_flagged_pathways"].max() <= 1
     assert normals["flagged"].mean() <= 0.10
+
+
+
+
+def test_summarize_sample_flags_top3_iembase_only():
+    """top_pathway_names lists the top 3 IEMbase disease panels only --
+    PathBank pathways never enter the ranking when panels are declared."""
+    scores, normal_mask = _flags_inputs()
+    # Rename the pathways: Pathway A/B become IEMbase panels, plus a
+    # third PathBank pathway with a higher excess for the same sample.
+    scores = scores.copy()
+    scores["pathway_name"] = scores["pathway_name"].replace(
+        {"Pathway A": "MCAD deficiency", "Pathway B": "CBS deficiency"})
+    extra = scores[scores["sample_id"].str.startswith("n")].copy()
+    extra["pathway_name"] = "Alanine Metabolism"
+    extra["smp_id"] = "SMP9999999"
+    extra["z_stouffer_abs"] = 0.5
+    scores = pd.concat([scores, extra], ignore_index=True)
+    imd_extra = extra.iloc[[0]].copy()
+    imd_extra["sample_id"] = "imd1"
+    imd_extra["z_stouffer_abs"] = 50.0
+    scores = pd.concat([scores, imd_extra], ignore_index=True)
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=99.0)
+    summary = summarize_sample_flags(
+        flags, min_flagged_pathways=1,
+        top_k_pathways=3,
+        iembase_pathways=["MCAD deficiency", "CBS deficiency"])
+    imd1 = summary[summary["sample_id"] == "imd1"].iloc[0]
+    names = str(imd1["top_pathway_names"]).split("; ")
+    # IEMbase panels only (the higher-excess PathBank row is excluded),
+    # ranked by excess, capped at 3.
+    assert "Alanine Metabolism" not in names
+    assert names[0] == "MCAD deficiency"
+    assert "CBS deficiency" in names
+    assert len(names) <= 3
+    # Per-name excess values accompany the ranking.
+    excess = str(imd1["top_pathway_excess"]).split(", ")
+    assert len(excess) == len(names)
+    # The single-name column still reports the absolute top pathway
+    # (the highest-excess PathBank row, which the panel ranking skips).
+    assert imd1["top_pathway_name"] == "Alanine Metabolism"
+    assert float(imd1["top_excess"]) >= float(excess[0])
+
+
+def test_summarize_sample_flags_top3_no_panels_declared():
+    """Without declared panels the ranking falls back to all pathways."""
+    scores, normal_mask = _flags_inputs()
+    flags = flag_pathway_scores(scores, normal_mask, threshold_percentile=99.0)
+    summary = summarize_sample_flags(
+        flags, min_flagged_pathways=1, top_k_pathways=3)
+    imd1 = summary[summary["sample_id"] == "imd1"].iloc[0]
+    names = str(imd1["top_pathway_names"]).split("; ")
+    assert "Pathway A" in names
+
 
 
 def test_summarize_sample_flags_min_flagged_pathways():

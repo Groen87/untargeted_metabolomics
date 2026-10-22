@@ -375,6 +375,55 @@ def test_flag_disease_biomarkers_direction_and_disease_groups(tmp_path):
     assert int(normal_rows["n_flagged_biomarkers"].sum()) <= 3
 
 
+def test_flag_disease_biomarkers_top_biomarker_always_filled():
+    """The top-biomarker report columns are filled for EVERY sample with
+    tests -- not only the channel-flagged ones (regression: they were
+    blank for any sample that stayed below its thresholds or failed the
+    global depth null)."""
+    rng = np.random.default_rng(11)
+    n = 40
+    zscores = pd.DataFrame(
+        rng.normal(0, 1, size=(n, 2)),
+        index=[f"s{i}" for i in range(n)],
+        columns=["Octanoylcarnitine.HMDB0000215", "Glucose.HMDB0000122"])
+    normal_mask = pd.Series(
+        [True] * (n - 1) + [False], index=zscores.index)
+    # Only the last sample spikes; every other sample stays well within
+    # its normal range.
+    zscores.loc["s39", "Octanoylcarnitine.HMDB0000215"] = 25.0
+    resolved = pd.DataFrame([{
+        "disease": "MCAD deficiency", "biomarker": "Octanoylcarnitine",
+        "hmdb_id": "HMDB0000215", "direction": "up", "omim": "",
+        "smp_id": "SMP0000055", "pathway_name": "Alanine Metabolism",
+        "source": "IEMbase", "features": "Octanoylcarnitine.HMDB0000215",
+        "n_features": 1,
+    }, {
+        "disease": "MCAD deficiency", "biomarker": "Glucose",
+        "hmdb_id": "HMDB0000122", "direction": "down", "omim": "",
+        "smp_id": "SMP0000055", "pathway_name": "Alanine Metabolism",
+        "source": "IEMbase", "features": "Glucose.HMDB0000122",
+        "n_features": 1,
+    }])
+    f2h = pd.DataFrame([
+        {"feature": "Octanoylcarnitine.HMDB0000215",
+         "hmdb_id": "HMDB0000215"},
+        {"feature": "Glucose.HMDB0000122", "hmdb_id": "HMDB0000122"}])
+    flags, summary = flag_disease_biomarkers(
+        zscores, resolved, f2h, normal_mask=normal_mask,
+        threshold_percentile=99.0, max_sample_p=0.05)
+    flagged_rows = summary[summary["biomarker_flagged"]]
+    unflagged = summary[~summary["biomarker_flagged"].astype(bool)]
+    # Unflagged samples still carry their strongest directed test.
+    assert not unflagged.empty
+    assert unflagged["top_biomarker"].notna().all()
+    assert unflagged["top_disease"].notna().all()
+    assert unflagged["max_biomarker_z"].notna().all()
+    # The spiked sample flags and attributes to the spiked biomarker.
+    row = flagged_rows[flagged_rows["sample_id"] == "s39"].iloc[0]
+    assert bool(row["biomarker_flagged"])
+    assert row["top_biomarker"] == "HMDB0000215"
+
+
 def test_flag_disease_biomarkers_ratio_tests():
     """Declared ratio tests join the channel: direction-aware, in the
     same global depth null, and attributed to their disease."""
