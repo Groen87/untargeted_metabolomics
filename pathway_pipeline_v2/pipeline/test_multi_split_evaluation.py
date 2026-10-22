@@ -116,6 +116,21 @@ def test_multi_split_evaluation_writes_runs_and_report(tmp_path):
     for col in ("top_pathway_names", "top_pathway_excess", "top_biomarker"):
         assert col in stability.columns, col
         assert col in miss_freq.columns, col
+    # Aggregated per-sample report figures: every sample in the dataset
+    # gets the usual per-sample report figures rendered from the pooled
+    # (mean-over-splits) data.
+    agg_reports = out_root / "figures" / "sample_reports_agg"
+    assert agg_reports.exists()
+    n_samples = len(stability)
+    for sample_id in stability["sample_id"]:
+        for name in (f"{sample_id}_overview.png",
+                     f"{sample_id}_panelA_pathway_excess.png",
+                     f"{sample_id}_panelB_stouffer_vs_reference.png",
+                     f"{sample_id}_panelC_metabolite_z.png",
+                     f"{sample_id}_panelD_signed_vs_abs.png"):
+            assert (agg_reports / name).exists(), name
+            assert (agg_reports / name).stat().st_size > 0, name
+    assert len(list(agg_reports.glob("*.png"))) >= 5 * n_samples
     _write_report(out_root, [21, 22], runs, agg, missed, stability,
                   miss_freq)
     report = (out_root / "MULTI_SPLIT_REPORT.md").read_text()

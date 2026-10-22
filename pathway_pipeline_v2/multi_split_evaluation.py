@@ -49,6 +49,12 @@ Outputs (default outputs/multi_split_evaluation/)
                                      (pooled pair counts), and the pathway
                                      excess heatmap (mean excess per
                                      (sample, pathway) over the seeds)
+- figures/sample_reports_agg/       the usual per-sample report figures
+                                     (overview + panels A-D + top-pathway
+                                     waterfalls) for EVERY sample,
+                                     rendered from the data pooled over
+                                     all splits (mean z-scores, mean
+                                     excess, mean-flags decision)
 - runs/sample_flag_stability.csv     per sample across ALL splits: in how
                                      many of the pre-declared splits the
                                      sample flagged (flag_rate), per-channel
@@ -214,6 +220,13 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
             "decisions": decisions,
             "pathway_flags": result.get("pathway_flags"),
             "pathway_scores": result.get("pathway_scores"),
+            "zscores": result.get("zscores"),
+            "metabolite_flags": result.get("metabolite_flags"),
+            "normal_mask": result.get("normal_mask"),
+            "disease_resolved": result.get("disease_resolved"),
+            "promoted_diseases": result.get("promoted_diseases") or [],
+            "feature_scale_weights": result.get("feature_scale_weights"),
+            "feature_to_pathway": result.get("feature_to_pathway"),
         }
         evaluation = (result.get("evaluation") or {}).get("validation")
         if evaluation is None:
@@ -266,15 +279,25 @@ def run_multi_split_evaluation(input_file: str, config_path: str,
         with open(config_path) as f:
             cfg = yaml.safe_load(f) or {}
         vis = cfg.get("visualizations") or {}
-        from pathway_pipeline_v2.pipeline.visualize import (
-            multisplit_aggregate_figures)
-        multisplit_aggregate_figures(
-            per_seed_tables, out_root / "figures",
-            use_labels=bool(vis.get("use_labels", False)),
-            max_pathways=int(vis.get("max_pathways", 30)),
-        )
     except Exception as exc:
-        logger.warning("Multi-split aggregate figures skipped: %s", exc)
+        logger.warning("Multi-split visualization config unreadable: %s", exc)
+        vis = {}
+    if bool(vis.get("aggregate_sample_reports", True)) \
+            and bool(vis.get("enable", True)):
+        try:
+            from pathway_pipeline_v2.pipeline.visualize import (
+                multisplit_aggregate_figures)
+            multisplit_aggregate_figures(
+                per_seed_tables, out_root / "figures",
+                use_labels=bool(vis.get("use_labels", False)),
+                max_pathways=int(vis.get("max_pathways", 30)),
+            )
+        except Exception as exc:
+            logger.warning("Multi-split aggregate figures skipped: %s", exc)
+        try:
+            _agg_sample_reports(per_seed_tables, out_root)
+        except Exception as exc:
+            logger.warning("Aggregated sample reports skipped: %s", exc)
     return runs, missed, stability, miss_freq
 
 
@@ -372,6 +395,124 @@ def _sample_flag_stability(per_sample_frames: list) -> pd.DataFrame:
     stability = stability.sort_values(
         ["flag_rate", "mean_top_excess"], ascending=[False, False])
     return stability.reset_index(drop=True)
+
+
+def _mean_over_seeds(tables: list, keys: list) -> pd.DataFrame:
+    """Pool per-seed long tables and average duplicated key rows.
+
+    Splits share samples, so a pooled (sample_id, pathway/metabolite)
+    row appears once per seed that scored it; the aggregate keeps the
+    mean over those seeds (matching the cohort-level aggregate figures).
+    """
+    if not tables:
+        return pd.DataFrame()
+    pooled = pd.concat(tables, ignore_index=True)
+    if pooled.empty:
+        return pooled
+    return pooled.groupby(keys, sort=False, as_index=False).mean(
+        numeric_only=True)
+
+
+def _agg_sample_reports(per_seed_tables: dict, out_root: Path) -> None:
+    """STEP: per-sample report figures aggregated over ALL splits.
+
+    Pools each seed's z-scores, pathway flags/scores and metabolite
+    flags (mean per (sample, pathway/metabolite) over the seeds) and
+    renders the same 7 per-sample report figures the pipeline makes
+    per seed -- 4 evidence panels, 2 top-pathway waterfalls (IEMbase
+    + PathBank) and the sample overview -- for EVERY sample in the
+    dataset into <out_root>/figures/sample_reports_agg/.
+    """
+    if not per_seed_tables:
+        logger.info("Aggregated sample reports skipped: no seeds.")
+        return
+    zscore_frames = []
+    pathway_flag_frames = []
+    pathway_score_frames = []
+    metabolite_flag_frames = []
+    normal_frames = []
+    disease_resolved = None
+    promoted_diseases = []
+    feature_scale_weights = None
+    feature_to_pathway = None
+    for seed in sorted(per_seed_tables):
+        t = per_seed_tables[seed] or {}
+        for src, dst in (("zscores", zscore_frames),
+                         ("pathway_flags", pathway_flag_frames),
+                         ("pathway_scores", pathway_score_frames),
+                         ("metabolite_flags", metabolite_flag_frames),
+                         ("normal_mask", normal_frames)):
+            table = t.get(src)
+            if table is not None and len(table):
+                dst.append(table)
+        if disease_resolved is None:
+            disease_resolved = t.get("disease_resolved")
+        if not promoted_diseases:
+            promoted_diseases = list(t.get("promoted_diseases") or [])
+        if feature_scale_weights is None:
+            feature_scale_weights = t.get("feature_scale_weights")
+        if feature_to_pathway is None:
+            feature_to_pathway = t.get("feature_to_pathway")
+    if not zscore_frames:
+        logger.info("Aggregated sample reports skipped: no z-scores.")
+        return
+
+    zscores = pd.concat(zscore_frames).groupby(level=0, sort=False).mean()
+    normal_mask = (pd.concat(normal_frames).groupby(level=0, sort=False)
+                   .mean() >= 0.5) if normal_frames else None
+    pathway_flags = _mean_over_seeds(
+        pathway_flag_frames,
+        ["sample_id", "pathway_name", "smp_id"])
+    pathway_scores = _mean_over_seeds(
+        pathway_score_frames,
+        ["sample_id", "pathway_name", "smp_id"])
+    metabolite_flags = _mean_over_seeds(
+        metabolite_flag_frames, ["sample_id", "metabolite"])
+
+    # A pathway flags/scores only when the MEAN excess exceeds its
+    # (pooled-mean) threshold -- the aggregate analogue of the per-seed
+    # flag decision.
+    if not pathway_flags.empty and "threshold" in pathway_flags.columns \
+            and "excess" in pathway_flags.columns:
+        pathway_flags["flagged"] = (
+            pathway_flags["excess"] > pathway_flags["threshold"])
+    if not metabolite_flags.empty and "threshold" in metabolite_flags.columns \
+            and "abs_z" in metabolite_flags.columns:
+        metabolite_flags["flagged"] = (
+            metabolite_flags["abs_z"] > metabolite_flags["threshold"])
+
+    from pathway_pipeline_v2.pipeline.visualize import (
+        sample_report_figures, sample_overview_figure,
+        top_pathway_waterfall_figure)
+    out_dir = out_root / "figures" / "sample_reports_agg"
+    dpi = 200
+    n_written = 0
+    for sample_id in zscores.index:
+        written = sample_report_figures(
+            sample_id, zscores=zscores, pathway_scores=pathway_scores,
+            pathway_flags=pathway_flags, metabolite_flags=metabolite_flags,
+            normal_mask=normal_mask, out_dir=out_dir, dpi=dpi)
+        n_written += sum(written.values())
+        for channel in ("iembase", "pathbank"):
+            if top_pathway_waterfall_figure(
+                    sample_id, zscores=zscores,
+                    feature_to_pathway=feature_to_pathway,
+                    disease_resolved=disease_resolved,
+                    pathway_scores=pathway_scores,
+                    pathway_flags=pathway_flags,
+                    feature_scale_weights=feature_scale_weights,
+                    out_dir=out_dir, dpi=dpi, channel=channel,
+                    require_flagged=False):
+                n_written += 1
+        if sample_overview_figure(
+                sample_id, zscores=zscores,
+                pathway_scores=pathway_scores,
+                pathway_flags=pathway_flags,
+                promoted_diseases=promoted_diseases,
+                normal_mask=normal_mask, out_dir=out_dir, dpi=dpi):
+            n_written += 1
+    logger.info("Aggregated per-sample reports: %d figures written for "
+                "%d samples to %s", n_written, len(zscores.index), out_dir)
 
 
 def _aggregate(runs: pd.DataFrame) -> pd.DataFrame:

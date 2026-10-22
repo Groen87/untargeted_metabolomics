@@ -608,7 +608,8 @@ def top_pathway_waterfall_figure(sample_id: str,
                                  out_dir: Path = None,
                                  dpi: int = 200,
                                  max_members: int = 30,
-                                 channel: str = "auto") -> bool:
+                                 channel: str = "auto",
+                                 require_flagged: bool = True) -> bool:
     """Waterfall of the individual member z-scores of the sample's TOP
     flagging pathway: how the pathway's Stouffer sum decomposes.
 
@@ -658,9 +659,16 @@ def top_pathway_waterfall_figure(sample_id: str,
                     sample_id)
         return False
 
-    samp = pathway_flags[(pathway_flags["sample_id"] == sample_id)
-                         & _canon_bool(pathway_flags["flagged"])]
+    samp = pathway_flags[pathway_flags["sample_id"] == sample_id]
+    if require_flagged:
+        samp = samp[_canon_bool(samp["flagged"])]
     samp = samp.dropna(subset=["excess"])
+    if samp.empty:
+        logger.info("Top-pathway waterfall for %s skipped: sample not "
+                    "flagged." if require_flagged else
+                    "Top-pathway waterfall for %s skipped: no scored "
+                    "pathway.", sample_id)
+        return False
     disease_names = set()
     if disease_resolved is not None and len(disease_resolved) > 0:
         disease_names = set(disease_resolved["disease"].astype(str))
