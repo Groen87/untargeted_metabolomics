@@ -291,6 +291,30 @@ def test_assign_groups_imd_regardless_of_oordeel():
     assert groups.tolist() == ["imd", "imd", "normal"]
 
 
+def test_assign_groups_imd_requires_oordeel():
+    """With imd_requires_oordeel only plasma-detectable IMDs are 'imd'."""
+    meta = pd.DataFrame({
+        "Classification": [1, 1, 0],
+        "Oordeel targeted": [1, 0, 0],
+    }, index=["a", "b", "c"])
+    groups = assign_groups(meta, imd_requires_oordeel=True)
+    assert groups.tolist() == ["imd", "other", "normal"]
+    groups_default = assign_groups(meta)
+    assert groups_default.tolist() == ["imd", "imd", "normal"]
+
+
+def test_assign_groups_imd_requires_oordeel_with_untreated():
+    """The oordeel gate combines with untreated_imd_only."""
+    meta = pd.DataFrame({
+        "Classification": [1, 1, 1],
+        "Oordeel targeted": [1, 0, 1],
+        "Non-treated": [1, 0, 0],
+    }, index=["a", "b", "c"])
+    groups = assign_groups(meta, imd_requires_oordeel=True,
+                           untreated_imd_only=True)
+    assert groups.tolist() == ["imd", "other", "other"]
+
+
 def test_assign_groups_untreated_imd_only():
     """Treated IMDs (Non-treated != 1) demote to 'other' when requested."""
     meta = pd.DataFrame({

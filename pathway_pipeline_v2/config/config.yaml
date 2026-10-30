@@ -252,6 +252,14 @@ min_reference_scale: 0.08
 normal_classification: 0
 normal_oordeel: 0
 
+# IMD group definition: with imd_requires_oordeel, the 'imd' group is
+# restricted to plasma-detectable IMD samples (Classification == 1 AND
+# Oordeel targeted == 1); samples with Classification == 1 but
+# Oordeel targeted == 0 then fall to the 'other' group. When false (default),
+# every Classification == 1 sample is labeled IMD regardless of
+# Oordeel targeted.
+imd_requires_oordeel: false
+
 # Automated reference hygiene (label-blind): a candidate normal whose
 # leave-one-out max metabolite |z| exceeds this depth is excluded from the
 # calibration reference (it cannot mask its own disturbance; the peers'

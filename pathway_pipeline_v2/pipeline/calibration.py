@@ -34,14 +34,17 @@ def assign_groups(metadata: pd.DataFrame,
                   normal_mask: pd.Series = None,
                   normal_classification: int = 0,
                   normal_oordeel: int = 0,
-                  untreated_imd_only: bool = False) -> pd.Series:
+                  untreated_imd_only: bool = False,
+                  imd_requires_oordeel: bool = False) -> pd.Series:
     """Assign each sample a reporting group: normal, imd, or other.
 
     Normals are the configured reference set (``Classification ==
     normal_classification`` AND ``Oordeel targeted == normal_oordeel``;
-    defaults 0/0); IMD samples are ``Classification == 1`` regardless of
-    ``Oordeel targeted`` (a targeted-confirmed miss of the untargeted
-    pipeline is still an IMD patient). With ``untreated_imd_only`` (and the
+    defaults 0/0). IMD samples are all samples with ``Classification == 1``;
+    with ``imd_requires_oordeel`` the IMD label additionally requires
+    ``Oordeel targeted == 1`` (plasma-detectable IMD only), so samples
+    with ``Classification == 1`` and ``Oordeel targeted == 0`` fall to
+    ``other``. With ``untreated_imd_only`` (and the
     ``Non-treated`` column present in the metadata), an IMD sample counts
     as ``imd`` only when ``Non-treated == 1`` (untreated, a true IMD
     presentation); treated IMDs (``Non-treated == 0`` or empty) fall to
@@ -58,12 +61,17 @@ def assign_groups(metadata: pd.DataFrame,
         normal_oordeel: oordeel value marking normals.
         untreated_imd_only: demote treated IMDs (Non-treated != 1) to
             'other'; inert when the Non-treated column is absent.
+        imd_requires_oordeel: restrict the 'imd' group to samples with
+            Oordeel targeted == 1 (plasma-detectable) in addition to
+            Classification == 1.
     """
     group = pd.Series("other", index=metadata.index)
     if {CLASSIFICATION_COLUMN, OORDEEL_COLUMN}.issubset(metadata.columns):
         cls = pd.to_numeric(metadata[CLASSIFICATION_COLUMN], errors="coerce")
         oor = pd.to_numeric(metadata[OORDEEL_COLUMN], errors="coerce")
         imd_mask = cls == 1
+        if imd_requires_oordeel:
+            imd_mask = imd_mask & (oor == 1)
         if untreated_imd_only and NON_TREATED_COLUMN in metadata.columns:
             untreated = pd.to_numeric(metadata[NON_TREATED_COLUMN],
                                       errors="coerce").fillna(0)
