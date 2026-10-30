@@ -275,6 +275,32 @@ def average_duplicates(
             col_groups[base] = []
         col_groups[base].append(col)
     
+    # Check for suspicious groupings
+    unsuffixed_cols = {c.split('Area: ')[1].split('.raw')[0].split(' (')[0].strip() for c in sample_cols
+                       if not c.split('Area: ')[1].split('.raw')[0].split(' (')[0].strip().endswith(('_1', '_2'))}
+    
+    for base, cols in col_groups.items():
+        if len(cols) > 1 and base in unsuffixed_cols:
+            logger.warning(
+                f"Duplicate-group mismatch: unsuffixed column '{base}' will be averaged "
+                f"together with suffixed duplicates {cols}. If '{base}' is a distinct "
+                f"sample, rename it or its duplicates to avoid unintended averaging."
+            )
+        elif len(cols) == 1 and cols[0].split('Area: ')[1].split('.raw')[0].split(' (')[0].strip().endswith(('_1', '_2')):
+            logger.warning(
+                f"Orphaned duplicate: '{cols[0]}' has a _1/_2 suffix but no counterpart; "
+                f"it will be kept as a single sample (renamed to '{base}')."
+            )
+    
+    single_unsuffixed = [base for base, cols in col_groups.items()
+                         if len(cols) == 1 and base in unsuffixed_cols]
+    if single_unsuffixed:
+        logger.info(
+            f"{len(single_unsuffixed)} sample(s) without _1/_2 suffix kept as-is "
+            f"(no averaging): {single_unsuffixed[:10]}"
+            + (" ..." if len(single_unsuffixed) > 10 else "")
+        )
+    
     # Create averaged DataFrame
     df_averaged = pd.DataFrame(index=df.index)
     col_mapping: Dict[str, str] = {}
