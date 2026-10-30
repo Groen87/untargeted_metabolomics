@@ -427,6 +427,21 @@ def merge_batch_results(
         merged_data_for_analysis = merged_data_no_qc.T
         merged_data_for_analysis.index.name = "Sample"
         
+        # Warn about sample-name collisions after cleaning: distinct original
+        # columns that reduce to the same cleaned sample ID (e.g. samples from
+        # different batches sharing the same trailing digit-run) would produce
+        # duplicate index entries and silently overwrite each other in the CSV.
+        dup_mask = merged_data_for_analysis.index.duplicated(keep=False)
+        if dup_mask.any():
+            dup_names = merged_data_for_analysis.index[dup_mask]
+            logger.warning(
+                f"{dup_mask.sum()} sample column(s) share a cleaned sample ID after "
+                f"name cleanup; the saved CSV will contain duplicate 'Sample' rows "
+                f"and data may be overwritten. Affected IDs: "
+                f"{sorted(set(dup_names))[:10]}"
+                + (" ..." if dup_mask.sum() > 10 else "")
+            )
+        
         # Save merged_data_for_analysis.csv
         merged_data_for_analysis.to_csv(output_dir / "merged_data_for_analysis.csv")
         
