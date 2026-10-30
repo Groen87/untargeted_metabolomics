@@ -303,10 +303,9 @@ def _stage_cohort_and_reference(config: Config, metadata: pd.DataFrame,
     if (bool(config.get("untreated_imd_only", False))
             and "Non-treated" in metadata.columns):
         cls = pd.to_numeric(metadata["Classification"], errors="coerce")
-        oor = pd.to_numeric(metadata["Oordeel targeted"], errors="coerce")
         untreated = pd.to_numeric(metadata["Non-treated"],
                                  errors="coerce").fillna(0)
-        n_demoted = int(((cls == 1) & (oor == 1) & (untreated != 1)).sum())
+        n_demoted = int(((cls == 1) & (untreated != 1)).sum())
         logger.info(
             f"untreated_imd_only: {n_demoted} treated IMD samples "
             "reported in the 'other' group"

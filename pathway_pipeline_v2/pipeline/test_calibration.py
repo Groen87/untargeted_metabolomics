@@ -281,11 +281,21 @@ def test_assign_groups_labels():
     assert groups.tolist() == ["normal", "other", "imd", "other"]
 
 
+def test_assign_groups_imd_regardless_of_oordeel():
+    """Classification == 1 is IMD regardless of Oordeel targeted."""
+    meta = pd.DataFrame({
+        "Classification": [1, 1, 0],
+        "Oordeel targeted": [1, 0, 0],
+    }, index=["a", "b", "c"])
+    groups = assign_groups(meta)
+    assert groups.tolist() == ["imd", "imd", "normal"]
+
+
 def test_assign_groups_untreated_imd_only():
     """Treated IMDs (Non-treated != 1) demote to 'other' when requested."""
     meta = pd.DataFrame({
         "Classification": [1, 1, 1],
-        "Oordeel targeted": [1, 1, 1],
+        "Oordeel targeted": [0, 1, 1],
         "Non-treated": [1, 0, None],
     }, index=["a", "b", "c"])
     groups = assign_groups(meta, untreated_imd_only=True)

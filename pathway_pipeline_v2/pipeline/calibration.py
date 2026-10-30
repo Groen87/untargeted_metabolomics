@@ -39,8 +39,9 @@ def assign_groups(metadata: pd.DataFrame,
 
     Normals are the configured reference set (``Classification ==
     normal_classification`` AND ``Oordeel targeted == normal_oordeel``;
-    defaults 0/0); IMD samples are ``Classification == 1`` AND
-    ``Oordeel targeted == 1``. With ``untreated_imd_only`` (and the
+    defaults 0/0); IMD samples are ``Classification == 1`` regardless of
+    ``Oordeel targeted`` (a targeted-confirmed miss of the untargeted
+    pipeline is still an IMD patient). With ``untreated_imd_only`` (and the
     ``Non-treated`` column present in the metadata), an IMD sample counts
     as ``imd`` only when ``Non-treated == 1`` (untreated, a true IMD
     presentation); treated IMDs (``Non-treated == 0`` or empty) fall to
@@ -62,7 +63,7 @@ def assign_groups(metadata: pd.DataFrame,
     if {CLASSIFICATION_COLUMN, OORDEEL_COLUMN}.issubset(metadata.columns):
         cls = pd.to_numeric(metadata[CLASSIFICATION_COLUMN], errors="coerce")
         oor = pd.to_numeric(metadata[OORDEEL_COLUMN], errors="coerce")
-        imd_mask = (cls == 1) & (oor == 1)
+        imd_mask = cls == 1
         if untreated_imd_only and NON_TREATED_COLUMN in metadata.columns:
             untreated = pd.to_numeric(metadata[NON_TREATED_COLUMN],
                                       errors="coerce").fillna(0)
